@@ -39,7 +39,7 @@ public class tfup implements Callable<Integer> {
     private static final String EXE_NAME = OS_NAME.equals("windows") ? "terraform.exe" : "terraform";
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    public static void main(String... args) {
+    static void main(String... args) {
         var exitCode = new CommandLine(new tfup()).execute(args);
         System.exit(exitCode);
     }
