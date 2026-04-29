@@ -1,0 +1,8 @@
+{
+  "aliases": {
+    "tfup": {
+      "script-ref": "tfup.java",
+      "description": "Fetches and installs Terraform."
+    }
+  }
+}
