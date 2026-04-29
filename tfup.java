@@ -1,10 +1,9 @@
 //usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 25
-//DEPS tools.jackson.core:jackson-databind:3.1.0
-//DEPS info.picocli:picocli:4.7.5
+//DEPS tools.jackson.core:jackson-databind:3.1.2
+//DEPS info.picocli:picocli:4.7.7
 //NATIVE_OPTIONS -O2 --no-fallback
 
-import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -41,18 +40,18 @@ public class tfup implements Callable<Integer> {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public static void main(String... args) {
-        int exitCode = new CommandLine(new tfup()).execute(args);
+        var exitCode = new CommandLine(new tfup()).execute(args);
         System.exit(exitCode);
     }
 
     @Override
     public Integer call() throws Exception {
-        Path binDir = customPath != null ? customPath : DEFAULT_BIN_DIR;
+        var binDir = customPath != null ? customPath : DEFAULT_BIN_DIR;
         Files.createDirectories(binDir);
-        Path tfExe = binDir.resolve(EXE_NAME);
+        var tfExe = binDir.resolve(EXE_NAME);
 
         System.out.println("Checking local version...");
-        String localVer = getLocalVersion(tfExe);
+        var localVer = getLocalVersion(tfExe);
 
         String targetVer;
         if (versionToInstall != null) {
@@ -83,7 +82,7 @@ public class tfup implements Callable<Integer> {
         updateTerraform(targetVer, binDir, tfExe);
 
         System.out.println("Verifying installation...");
-        String installedVer = getLocalVersion(tfExe);
+        var installedVer = getLocalVersion(tfExe);
         System.out.println("Current Version: " + installedVer);
         
         checkPath(binDir);
@@ -91,14 +90,14 @@ public class tfup implements Callable<Integer> {
     }
 
     private static String getOsName() {
-        String os = System.getProperty("os.name").toLowerCase(Locale.ROOT);
+        var os = System.getProperty("os.name").toLowerCase(Locale.ROOT);
         if (os.contains("win")) return "windows";
         if (os.contains("mac")) return "darwin";
         return "linux";
     }
 
     private static String getOsArch() {
-        String arch = System.getProperty("os.arch").toLowerCase(Locale.ROOT);
+        var arch = System.getProperty("os.arch").toLowerCase(Locale.ROOT);
         if (arch.contains("amd64") || arch.contains("x86_64")) return "amd64";
         if (arch.contains("aarch64") || arch.contains("arm64")) return "arm64";
         if (arch.contains("x86") || arch.contains("i386") || arch.contains("i686")) return "386";
@@ -107,10 +106,10 @@ public class tfup implements Callable<Integer> {
     }
 
     private static void checkPath(Path binDir) {
-        String pathEnv = System.getenv("PATH");
+        var pathEnv = System.getenv("PATH");
         if (pathEnv != null) {
-            String[] paths = pathEnv.split(File.pathSeparator);
-            for (String p : paths) {
+            var paths = pathEnv.split(File.pathSeparator);
+            for (var p : paths) {
                 if (Paths.get(p).normalize().equals(binDir.normalize())) {
                     return; // binDir is already in PATH
                 }
@@ -134,9 +133,9 @@ public class tfup implements Callable<Integer> {
         if (!Files.exists(tfExe))
             return null;
         try {
-            Process process = new ProcessBuilder(tfExe.toString(), "-v", "-json").start();
-            byte[] bytes = process.getInputStream().readAllBytes();
-            JsonNode node = MAPPER.readTree(bytes);
+            var process = new ProcessBuilder(tfExe.toString(), "-v", "-json").start();
+            var bytes = process.getInputStream().readAllBytes();
+            var node = MAPPER.readTree(bytes);
             return node.get("terraform_version").asString();
         } catch (Exception e) {
             return null;
@@ -144,37 +143,37 @@ public class tfup implements Callable<Integer> {
     }
 
     private static String getLatestVersion() throws IOException, InterruptedException {
-        HttpClient client = HttpClient.newBuilder()
+        var client = HttpClient.newBuilder()
             .followRedirects(HttpClient.Redirect.NORMAL)
             .build();
 
-        HttpRequest request = HttpRequest.newBuilder()
+        var request = HttpRequest.newBuilder()
             .uri(URI.create(GITHUB_API))
             .header("User-Agent", "jbang-tfup-script")
             .build();
 
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        var response = client.send(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() == 200) {
-            JsonNode node = MAPPER.readTree(response.body());
-            String tag = node.get("tag_name").asString();
+            var node = MAPPER.readTree(response.body());
+            var tag = node.get("tag_name").asString();
             return tag.startsWith("v") ? tag.substring(1) : tag;
         }
         return null;
     }
 
     private static void updateTerraform(String version, Path binDir, Path tfExe) throws IOException, InterruptedException {
-        String zipName = String.format("terraform_%s_%s.zip", version, TF_PLATFORM);
-        String url = DOWNLOAD_BASE + version + "/" + zipName;
+        var zipName = String.format("terraform_%s_%s.zip", version, TF_PLATFORM);
+        var url = DOWNLOAD_BASE + version + "/" + zipName;
 
         System.out.println("Downloading: " + url);
-        HttpClient client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.ALWAYS).build();
-        HttpRequest request = HttpRequest.newBuilder().uri(URI.create(url)).build();
+        var client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.ALWAYS).build();
+        var request = HttpRequest.newBuilder().uri(URI.create(url)).build();
 
-        Path tempZip = Files.createTempFile("tf_update", ".zip");
+        var tempZip = Files.createTempFile("tf_update", ".zip");
         client.send(request, HttpResponse.BodyHandlers.ofFile(tempZip));
 
         System.out.println("Extracting to: " + binDir);
-        try (ZipInputStream zis = new ZipInputStream(Files.newInputStream(tempZip))) {
+        try (var zis = new ZipInputStream(Files.newInputStream(tempZip))) {
             ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
                 if (entry.getName().equals(EXE_NAME)) {
@@ -187,8 +186,8 @@ public class tfup implements Callable<Integer> {
         Files.deleteIfExists(tempZip);
 
         if (!OS_NAME.equals("windows")) {
-            // Ignored standard java way of doing this
-            tfExe.toFile().setExecutable(true);
+            @SuppressWarnings("unused")
+            boolean ignored = tfExe.toFile().setExecutable(true);
         }
 
         System.out.println("Installation of v" + version + " complete.");
