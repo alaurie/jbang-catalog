@@ -125,3 +125,11 @@ keep your presence status active.
   -V, --version             Print version information and exit.
 ```
 
+
+## Development
+
+To automatically run `jbang-fmt` on staged `.java` files before committing, enable the repository's pre-commit hook:
+
+```bash
+git config core.hooksPath .githooks
+```

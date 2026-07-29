@@ -1,0 +1,20 @@
+#!/bin/sh
+# Pre-commit hook to format Java files with jbang-fmt before committing.
+
+JBANG_FMT=""
+if command -v jbang-fmt >/dev/null 2>&1; then
+    JBANG_FMT="jbang-fmt"
+elif [ -x "$HOME/.jbang/bin/jbang-fmt" ]; then
+    JBANG_FMT="$HOME/.jbang/bin/jbang-fmt"
+fi
+
+if [ -n "$JBANG_FMT" ]; then
+    STAGED_JAVA_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.java$')
+    if [ -n "$STAGED_JAVA_FILES" ]; then
+        echo "Running jbang-fmt on staged Java files..."
+        $JBANG_FMT $STAGED_JAVA_FILES
+        git add $STAGED_JAVA_FILES
+    fi
+else
+    echo "Warning: jbang-fmt not found in PATH or ~/.jbang/bin. Skipping auto-formatting."
+fi
