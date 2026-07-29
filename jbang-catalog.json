@@ -3,6 +3,10 @@
     "tfup": {
       "script-ref": "tfup.java",
       "description": "Fetches and installs Terraform."
+    },
+    "serve": {
+      "script-ref": "serve.java",
+      "description": "Serves the given directory on the specified port."
     }
   }
 }
