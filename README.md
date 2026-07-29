@@ -134,10 +134,12 @@ jbang keep-presence.java
 ### Options
 
 ```
-Usage: keep-presence [-chV] [-m=<mode>] [-p=<pixels>] [-s=<seconds>]
-                     [-r=<START> <STOP> <START> <STOP>]...
+Usage: keep-presence [-chV] [-b=<buffer>] [-m=<mode>] [-p=<pixels>]
+                     [-s=<seconds>] [-r=<START> <STOP> <START> <STOP>]...
 Simulates user activity (mouse movement, key press, scrolling) when idle to
 keep your presence status active.
+  -b, --buffer=<buffer>     Initial buffer delay in seconds before the first
+                              check. Default: same as check interval.
   -c, --circular            Move mouse in a circle pattern. Default move
                               out-and-back.
   -h, --help                Show this help message and exit.

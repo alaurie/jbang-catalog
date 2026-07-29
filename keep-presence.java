@@ -22,7 +22,7 @@ import java.util.concurrent.Callable;
 @Command(
         name = "keep-presence",
         mixinStandardHelpOptions = true,
-        version = "keep-presence 1.1",
+        version = "keep-presence 1.2",
         description = "Simulates user activity (mouse movement, key press, scrolling) when idle to keep your presence status active."
 )
 class keep_presence implements Callable<Integer> {
@@ -33,6 +33,9 @@ class keep_presence implements Callable<Integer> {
 
     @Option(names = {"-s", "--seconds"}, description = "Define in seconds how long to wait between idle checks. Default 300.")
     private int seconds = 300;
+
+    @Option(names = {"-b", "--buffer"}, description = "Initial buffer delay in seconds before the first check. Default: same as check interval.")
+    private Integer buffer;
 
     @Option(names = {"-p", "--pixels"}, description = "Set how many pixels the mouse should move. Default 5.")
     private int pixels = 5;
@@ -105,11 +108,15 @@ class keep_presence implements Callable<Integer> {
         if (isMouseEnabled) {
             log(String.format("Mouse is enabled, moving %d pixels%s", pixels, circular ? " (circularly)" : " (out-and-back)"));
         }
+
+        int initialDelay = buffer != null ? buffer : (randomRange != null ? random.nextInt(randStop - randStart + 1) + randStart : seconds);
+
         if (randomRange != null) {
             log(String.format("Random timing is enabled between %d and %d seconds.", randStart, randStop));
         } else {
             log(String.format("Running every %d seconds", seconds));
         }
+        log(String.format("Initial start buffer: waiting %d seconds before first check...", initialDelay));
         System.out.println("--------");
 
         Point lastPosition = getMousePosition();
@@ -117,6 +124,13 @@ class keep_presence implements Callable<Integer> {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("\nBye bye ;-)\n");
         }));
+
+        try {
+            Thread.sleep(initialDelay * 1000L);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return 0;
+        }
 
         while (!Thread.currentThread().isInterrupted()) {
             Point currentPosition = getMousePosition();
@@ -193,7 +207,6 @@ class keep_presence implements Callable<Integer> {
             robot.mouseMove(target.x, target.y);
             robot.delay(50);
         } else {
-            // Out-and-back movement: move away by step, then return to original position
             int deltaX = (current.x + step < screenSize.width) ? step : -step;
             int deltaY = (current.y + step < screenSize.height) ? step : -step;
 
@@ -208,7 +221,6 @@ class keep_presence implements Callable<Integer> {
 
         Point actual = getMousePosition();
         if (actual != null && actual.equals(current) && circular) {
-            // Fallback if cursor stuck at edge
             robot.mouseMove(clampToScreen(current.x + 10, current.y + 10).x, clampToScreen(current.x + 10, current.y + 10).y);
             robot.delay(50);
             actual = getMousePosition();
@@ -222,7 +234,6 @@ class keep_presence implements Callable<Integer> {
             log("Moved mouse");
         }
 
-        // On macOS or restricted desktop environments, verify if movement actually took place
         if (actual != null && actual.equals(current) && circular) {
             log("Warning: Mouse position did not change. Check system permissions (e.g. macOS Accessibility).");
         }
