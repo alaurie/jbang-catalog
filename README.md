@@ -35,21 +35,6 @@ Fetches and installs Terraform.
   -V, --version   Print version information and exit.
 ```
 
-### Adding to your own catalog
-
-If you'd like to include `tfup` in your own `jbang-catalog.json`:
-
-```json
-{
-  "aliases": {
-    "tfup": {
-      "script-ref": "https://raw.githubusercontent.com/<your-github-username>/jbang-catalog/main/tfup.java",
-      "description": "Fetches and installs Terraform."
-    }
-  }
-}
-```
-
 ## serve
 
 `serve` is a simple HTTP file server inspired by `python -m http.server`.
@@ -90,21 +75,6 @@ Simple HTTP file server inspired by python -m http.server
   -p, --port=<port>      Port to listen on (default: 8080)
   -v, --verbose          Enable verbose request logging
   -V, --version          Print version information and exit.
-```
-
-### Adding to your own catalog
-
-If you'd like to include `serve` in your own `jbang-catalog.json`:
-
-```json
-{
-  "aliases": {
-    "serve": {
-      "script-ref": "https://raw.githubusercontent.com/<your-github-username>/jbang-catalog/main/serve.java",
-      "description": "Serves the given directory on the specified port."
-    }
-  }
-}
 ```
 
 ## keep-presence
@@ -155,17 +125,3 @@ keep your presence status active.
   -V, --version             Print version information and exit.
 ```
 
-### Adding to your own catalog
-
-If you'd like to include `keep-presence` in your own `jbang-catalog.json`:
-
-```json
-{
-  "aliases": {
-    "keep-presence": {
-      "script-ref": "https://raw.githubusercontent.com/<your-github-username>/jbang-catalog/main/keep-presence.java",
-      "description": "Simulates user activity (mouse movement, key press, scrolling) to keep your presence status active."
-    }
-  }
-}
-```
