@@ -138,12 +138,13 @@ Usage: keep-presence [-chV] [-m=<mode>] [-p=<pixels>] [-s=<seconds>]
                      [-r=<START> <STOP> <START> <STOP>]...
 Simulates user activity (mouse movement, key press, scrolling) when idle to
 keep your presence status active.
-  -c, --circular            Move mouse in a circle. Default move diagonally.
+  -c, --circular            Move mouse in a circle pattern. Default move
+                              out-and-back.
   -h, --help                Show this help message and exit.
   -m, --mode=<mode>         Action mode: mouse, keyboard, both, scroll.
                               Default: mouse.
   -p, --pixels=<pixels>     Set how many pixels the mouse should move. Default
-                              1.
+                              5.
   -r, --random=<START> <STOP> <START> <STOP>
                             Execute actions using a random interval between
                               START and STOP seconds. Overrides --seconds.

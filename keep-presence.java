@@ -6,10 +6,12 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
+import java.awt.Dimension;
 import java.awt.GraphicsEnvironment;
 import java.awt.MouseInfo;
 import java.awt.Point;
 import java.awt.Robot;
+import java.awt.Toolkit;
 import java.awt.event.KeyEvent;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
@@ -20,7 +22,7 @@ import java.util.concurrent.Callable;
 @Command(
         name = "keep-presence",
         mixinStandardHelpOptions = true,
-        version = "keep-presence 1.0",
+        version = "keep-presence 1.1",
         description = "Simulates user activity (mouse movement, key press, scrolling) when idle to keep your presence status active."
 )
 class keep_presence implements Callable<Integer> {
@@ -32,10 +34,10 @@ class keep_presence implements Callable<Integer> {
     @Option(names = {"-s", "--seconds"}, description = "Define in seconds how long to wait between idle checks. Default 300.")
     private int seconds = 300;
 
-    @Option(names = {"-p", "--pixels"}, description = "Set how many pixels the mouse should move. Default 1.")
-    private int pixels = 1;
+    @Option(names = {"-p", "--pixels"}, description = "Set how many pixels the mouse should move. Default 5.")
+    private int pixels = 5;
 
-    @Option(names = {"-c", "--circular"}, description = "Move mouse in a circle. Default move diagonally.")
+    @Option(names = {"-c", "--circular"}, description = "Move mouse in a circle pattern. Default move out-and-back.")
     private boolean circular;
 
     @Option(names = {"-m", "--mode"}, description = "Action mode: mouse, keyboard, both, scroll. Default: mouse.")
@@ -49,6 +51,7 @@ class keep_presence implements Callable<Integer> {
     private Robot robot;
     private final Random random = new Random();
     private int mouseDirection = 0;
+    private Dimension screenSize;
 
     public static void main(String... args) {
         int exitCode = new CommandLine(new keep_presence()).execute(args);
@@ -58,9 +61,11 @@ class keep_presence implements Callable<Integer> {
     @Override
     public Integer call() {
         if (GraphicsEnvironment.isHeadless()) {
-            System.err.println("Error: Headless environment detected. java.awt.Robot requires a GUI environment to simulate input.");
+            System.err.println("Error: Headless environment detected. java.awt.Robot requires a desktop GUI environment.");
             return 1;
         }
+
+        checkEnvironmentWarnings();
 
         int randStart = 0;
         int randStop = 0;
@@ -79,6 +84,8 @@ class keep_presence implements Callable<Integer> {
 
         try {
             robot = new Robot();
+            robot.setAutoDelay(40);
+            screenSize = Toolkit.getDefaultToolkit().getScreenSize();
         } catch (Exception e) {
             System.err.printf("Error initializing Robot: %s%n", e.getMessage());
             return 1;
@@ -96,7 +103,7 @@ class keep_presence implements Callable<Integer> {
             log("Mouse wheel scroll is enabled");
         }
         if (isMouseEnabled) {
-            log(String.format("Mouse is enabled, moving %d pixels%s", pixels, circular ? " (circularly)" : ""));
+            log(String.format("Mouse is enabled, moving %d pixels%s", pixels, circular ? " (circularly)" : " (out-and-back)"));
         }
         if (randomRange != null) {
             log(String.format("Random timing is enabled between %d and %d seconds.", randStart, randStop));
@@ -153,6 +160,19 @@ class keep_presence implements Callable<Integer> {
         return 0;
     }
 
+    private void checkEnvironmentWarnings() {
+        String os = System.getProperty("os.name", "").toLowerCase();
+        if (os.contains("mac")) {
+            log("Note: On macOS, ensure Terminal/Java has Accessibility permissions (System Settings -> Privacy & Security -> Accessibility).");
+        }
+        String sessionType = System.getenv("XDG_SESSION_TYPE");
+        String waylandDisplay = System.getenv("WAYLAND_DISPLAY");
+        if ("wayland".equalsIgnoreCase(sessionType) || (waylandDisplay != null && !waylandDisplay.isEmpty())) {
+            log("Warning: Wayland display server detected. Wayland compositors may block simulated mouse/keyboard events.");
+            log("If mouse movement fails, switch to an X11 session or use --mode keyboard.");
+        }
+    }
+
     private Point getMousePosition() {
         var info = MouseInfo.getPointerInfo();
         return info != null ? info.getLocation() : null;
@@ -161,34 +181,72 @@ class keep_presence implements Callable<Integer> {
     private Point moveMouse(Point current) {
         if (current == null) return null;
 
-        int deltaX, deltaY;
+        int step = Math.max(1, pixels);
+        Point target;
+
         if (circular) {
-            deltaX = (mouseDirection == 0 || mouseDirection == 3) ? pixels : -pixels;
-            deltaY = (mouseDirection == 0 || mouseDirection == 1) ? pixels : -pixels;
+            int deltaX = (mouseDirection == 0 || mouseDirection == 3) ? step : -step;
+            int deltaY = (mouseDirection == 0 || mouseDirection == 1) ? step : -step;
             mouseDirection = (mouseDirection + 1) % 4;
+
+            target = clampToScreen(current.x + deltaX, current.y + deltaY);
+            robot.mouseMove(target.x, target.y);
+            robot.delay(50);
         } else {
-            deltaX = (mouseDirection == 0) ? pixels : -pixels;
-            deltaY = (mouseDirection == 0) ? pixels : -pixels;
-            mouseDirection = (mouseDirection + 1) % 2;
+            // Out-and-back movement: move away by step, then return to original position
+            int deltaX = (current.x + step < screenSize.width) ? step : -step;
+            int deltaY = (current.y + step < screenSize.height) ? step : -step;
+
+            Point out = clampToScreen(current.x + deltaX, current.y + deltaY);
+            robot.mouseMove(out.x, out.y);
+            robot.delay(80);
+
+            robot.mouseMove(current.x, current.y);
+            robot.delay(50);
+            target = current;
         }
 
-        int targetX = current.x + deltaX;
-        int targetY = current.y + deltaY;
-        robot.mouseMove(targetX, targetY);
+        Point actual = getMousePosition();
+        if (actual != null && actual.equals(current) && circular) {
+            // Fallback if cursor stuck at edge
+            robot.mouseMove(clampToScreen(current.x + 10, current.y + 10).x, clampToScreen(current.x + 10, current.y + 10).y);
+            robot.delay(50);
+            actual = getMousePosition();
+        }
 
-        Point newPos = getMousePosition();
-        log(String.format("Moved mouse to: %s", newPos != null ? String.format("(%d, %d)", newPos.x, newPos.y) : "unknown"));
-        return newPos;
+        if (actual != null && actual.equals(current) && !circular) {
+            log(String.format("Moved mouse out (%d, %d) and back to (%d, %d)", current.x + step, current.y + step, current.x, current.y));
+        } else if (actual != null) {
+            log(String.format("Moved mouse from (%d, %d) to (%d, %d)", current.x, current.y, actual.x, actual.y));
+        } else {
+            log("Moved mouse");
+        }
+
+        // On macOS or restricted desktop environments, verify if movement actually took place
+        if (actual != null && actual.equals(current) && circular) {
+            log("Warning: Mouse position did not change. Check system permissions (e.g. macOS Accessibility).");
+        }
+
+        return actual;
+    }
+
+    private Point clampToScreen(int x, int y) {
+        int cx = Math.max(0, Math.min(x, screenSize.width - 1));
+        int cy = Math.max(0, Math.min(y, screenSize.height - 1));
+        return new Point(cx, cy);
     }
 
     private void scrollMouse() {
         robot.mouseWheel(2);
+        robot.delay(50);
         log("Mouse wheel scrolled");
     }
 
     private void pressShiftKey() {
         robot.keyPress(KeyEvent.VK_SHIFT);
+        robot.delay(40);
         robot.keyRelease(KeyEvent.VK_SHIFT);
+        robot.delay(50);
         log("Shift key pressed");
     }
 
