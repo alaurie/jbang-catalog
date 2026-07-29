@@ -116,13 +116,13 @@ If you'd like to include `serve` in your own `jbang-catalog.json`:
 To run it via jbang from this catalog repository:
 
 ```bash
-jbang keep-presence@alaurie/jbang-catalog
+jbang keep-presence@alaurie
 ```
 
 Or with custom parameters (e.g. keyboard mode every 180 seconds):
 
 ```bash
-jbang keep-presence@alaurie/jbang-catalog -m keyboard -s 180
+jbang keep-presence@alaurie -m keyboard -s 180
 ```
 
 Or, if you clone the repository locally:
