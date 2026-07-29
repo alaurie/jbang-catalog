@@ -11,7 +11,7 @@ This repository contains a [jbang](https://jbang.dev/) catalog of useful scripts
 To run it via jbang from this catalog repository:
 
 ```bash
-jbang tfup@alaurie/jbang-catalog
+jbang tfup@alaurie
 ```
 
 Or, if you clone the repository locally:
@@ -59,7 +59,7 @@ If you'd like to include `tfup` in your own `jbang-catalog.json`:
 To run it via jbang from this catalog repository:
 
 ```bash
-jbang serve@alaurie/jbang-catalog
+jbang serve@alaurie
 ```
 
 Or with optional port and/or directory positional arguments:
