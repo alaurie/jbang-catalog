@@ -65,8 +65,8 @@ jbang serve@alaurie
 Or with optional port and/or directory positional arguments:
 
 ```bash
-jbang serve@alaurie/jbang-catalog 8000
-jbang serve@alaurie/jbang-catalog /path/to/dir 8000
+jbang serve@alaurie 8000
+jbang serve@alaurie /path/to/dir 8000
 ```
 
 Or, if you clone the repository locally:
