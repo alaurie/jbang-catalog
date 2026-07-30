@@ -39,12 +39,13 @@ Fetches and installs Terraform.
   -V, --version   Print version information and exit.
 ```
 
+---
+
 ## serve
 
 `serve` is a simple HTTP file server inspired by `python -m http.server`.
 
 ### Usage
-
 To run it via jbang from this catalog repository:
 
 ```bash
@@ -81,12 +82,13 @@ Simple HTTP file server inspired by python -m http.server
   -V, --version          Print version information and exit.
 ```
 
+---
+
 ## keep-presence
 
 `keep-presence` is a tool inspired by `carrot69/keep-presence` that simulates user activity (mouse movement, key press, or scrolling) when idle to keep your Microsoft Teams presence status active.
 
 ### Usage
-
 To run it via jbang from this catalog repository:
 
 ```bash
@@ -129,6 +131,7 @@ keep your presence status active.
   -V, --version             Print version information and exit.
 ```
 
+---
 
 ## Development
 
