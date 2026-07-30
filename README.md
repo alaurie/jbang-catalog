@@ -86,7 +86,7 @@ Simple HTTP file server inspired by python -m http.server
 
 ## keep-presence
 
-`keep-presence` is a tool inspired by `carrot69/keep-presence` that simulates user activity (mouse movement, key press, or scrolling) when idle to keep your Microsoft Teams presence status active.
+`keep-presence` is a tool inspired by `carrot69/keep-presence` that simulates user activity (mouse movement, key press, or scrolling) when idle.
 
 ### Usage
 To run it via jbang from this catalog repository:
