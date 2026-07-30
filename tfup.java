@@ -1,5 +1,5 @@
 //usr/bin/env jbang "$0" "$@" ; exit $?
-//JAVA 25
+//JAVA 25+
 //DEPS tools.jackson.core:jackson-databind:3.1.2
 //DEPS info.picocli:picocli:4.7.7
 //NATIVE_OPTIONS -O2 --no-fallback
