@@ -1,15 +1,15 @@
 {
   "aliases": {
     "tfup": {
-      "script-ref": "tfup.java",
+      "script-ref": "apps/tfup/tfup.java",
       "description": "Fetches and installs Terraform."
     },
     "serve": {
-      "script-ref": "serve.java",
+      "script-ref": "apps/serve/serve.java",
       "description": "Serves the given directory on the specified port."
     },
     "keep-presence": {
-      "script-ref": "keep-presence.java",
+      "script-ref": "apps/keep-presence/keep-presence.java",
       "description": "Simulates user activity (mouse movement, key press, scrolling) to keep your presence status active."
     }
   }

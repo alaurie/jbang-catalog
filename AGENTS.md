@@ -112,13 +112,14 @@ All utilities **MUST** be fully functional across Windows, macOS, and Linux by d
 
 ## 5. Catalog Registration & Documentation Standards
 
-### 1. Catalog Manifest (`jbang-catalog.json`)
+### 1. Repository Directory Structure & Catalog Manifest (`jbang-catalog.json`)
+Applications live in dedicated subdirectories under `apps/`: `apps/<app-name>/<app-name>.java`.
 Every new utility must be registered under `"aliases"` in `jbang-catalog.json`:
 ```json
 {
   "aliases": {
     "my-script": {
-      "script-ref": "my-script.java",
+      "script-ref": "apps/my-script/my-script.java",
       "description": "Short description of the utility."
     }
   }
