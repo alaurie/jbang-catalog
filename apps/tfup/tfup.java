@@ -1,4 +1,4 @@
-//usr/bin/env jbang "$0" "$@" ; exit $?
+///usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 25+
 //DEPS tools.jackson.core:jackson-databind:3.1.2
 //DEPS info.picocli:picocli:4.7.7
@@ -9,13 +9,20 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
-import java.io.*;
+import java.io.File;
+import java.io.IOException;
 import java.net.URI;
-import java.net.http.*;
-import java.nio.file.*;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.util.Locale;
 import java.util.concurrent.Callable;
-import java.util.zip.*;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 @Command(name = "tfup", version = "tfup 1.0", description = "Fetches and installs Terraform.")
 public class tfup implements Callable<Integer> {
@@ -45,8 +52,8 @@ public class tfup implements Callable<Integer> {
   private static final String EXE_NAME = OS_NAME.equals("windows") ? "terraform.exe" : "terraform";
   private static final ObjectMapper MAPPER = new ObjectMapper();
 
-  static void main(String... args) {
-    var exitCode = new CommandLine(new tfup()).execute(args);
+  void main(String... args) {
+    var exitCode = new CommandLine(this).execute(args);
     System.exit(exitCode);
   }
 

@@ -58,8 +58,8 @@ class keep_presence implements Callable<Integer> {
   private int mouseDirection = 0;
   private Dimension screenSize;
 
-  public static void main(String... args) {
-    int exitCode = new CommandLine(new keep_presence()).execute(args);
+  void main(String... args) {
+    int exitCode = new CommandLine(this).execute(args);
     System.exit(exitCode);
   }
 

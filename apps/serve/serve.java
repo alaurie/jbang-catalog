@@ -47,8 +47,8 @@ class serve implements Callable<Integer> {
       description = "Optional directory path and/or port number")
   private List<String> positionalArgs = new ArrayList<>();
 
-  static void main(String... args) {
-    int exitCode = new CommandLine(new serve()).execute(args);
+  void main(String... args) {
+    int exitCode = new CommandLine(this).execute(args);
     System.exit(exitCode);
   }
 
