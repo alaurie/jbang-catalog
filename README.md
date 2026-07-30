@@ -140,3 +140,9 @@ To automatically run `jbang-fmt` on staged `.java` files before committing, enab
 ```bash
 git config core.hooksPath .githooks
 ```
+
+---
+
+## License
+
+Distributed under the [MIT License](LICENSE).
