@@ -133,6 +133,49 @@ keep your presence status active.
 
 ---
 
+## type-clipboard
+
+`type-clipboard` reads your system clipboard (or a custom string) and simulates keystroke-by-keystroke typing into your active window after a countdown delay. Useful for remote consoles, VDIs, or VMs where copy-paste is blocked but keystrokes work.
+
+### Usage
+
+To run it via jbang from this catalog repository:
+
+```bash
+jbang type-clipboard@alaurie
+```
+
+Or with custom countdown delay and typing speed:
+
+```bash
+jbang type-clipboard@alaurie -d 3 -s 20
+```
+
+Or with custom text instead of clipboard:
+
+```bash
+jbang type-clipboard@alaurie -t "my-secret-password"
+```
+
+### Options
+
+```
+Usage: type-clipboard [-hvV] [-d=<delay>] [-s=<speed>] [-t=<customText>]
+Simulates typing clipboard text (or specified string) into the active window
+after a countdown delay.
+  -d, --delay=<delay>       Countdown delay in seconds before typing starts
+                              (default: 5).
+  -h, --help                Show this help message and exit.
+  -s, --speed=<speed>       Typing speed delay in milliseconds between
+                              keystrokes (default: 10).
+  -t, --text=<customText>   Custom text to type instead of reading from the
+                              system clipboard.
+  -v, --verbose             Print characters as they are typed.
+  -V, --version             Print version information and exit.
+```
+
+---
+
 ## Development
 
 To automatically run `jbang-fmt` on staged `.java` files before committing, enable the repository's pre-commit hook:

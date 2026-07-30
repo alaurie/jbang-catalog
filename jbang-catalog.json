@@ -11,6 +11,10 @@
     "keep-presence": {
       "script-ref": "apps/keep-presence/keep-presence.java",
       "description": "Simulates user activity (mouse movement, key press, scrolling) to keep your presence status active."
+    },
+    "type-clipboard": {
+      "script-ref": "apps/type-clipboard/type-clipboard.java",
+      "description": "Simulates typing clipboard text (or custom string) into active window after countdown."
     }
   }
 }
