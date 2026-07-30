@@ -66,9 +66,20 @@ Instructions, conventions, and engineering standards for AI coding agents operat
   - `-h`, `--help`: Display usage options and exit.
   - `-v` / `-V`, `--version`: Display version information and exit.
   - Handle option collisions gracefully (e.g., if custom `-v` is used for version-to-install or verbose logging, declare explicit `@Option(names = {"-h", "--help"}, usageHelp = true)` fields).
-- **Main Method Pattern**:
+- **Main Method Entry Point (Java 25+)**:
+  In Java 25+, `public` access modifiers and `static` declarations are **no longer required** for main entry points (JEP 495). You can use flexible instance or package-private main methods:
+  
+  *Option A — Instance Main (Recommended for Picocli)*:
   ```java
-  public static void main(String... args) {
+  void main(String... args) {
+    int exitCode = new CommandLine(this).execute(args);
+    System.exit(exitCode);
+  }
+  ```
+  
+  *Option B — Package-Private Static Main*:
+  ```java
+  static void main(String... args) {
     int exitCode = new CommandLine(new MyScriptClass()).execute(args);
     System.exit(exitCode);
   }
