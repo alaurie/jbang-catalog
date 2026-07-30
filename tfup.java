@@ -17,189 +17,193 @@ import java.util.Locale;
 import java.util.concurrent.Callable;
 import java.util.zip.*;
 
-@Command(name = "tfup", mixinStandardHelpOptions = true, version = "tfup 1.0", description = "Fetches and installs Terraform.")
+@Command(name = "tfup", version = "tfup 1.0", description = "Fetches and installs Terraform.")
 public class tfup implements Callable<Integer> {
 
-	@Option(names = { "-f", "--force" }, description = "Force update even if versions match.")
-	private boolean force;
+  @Option(names = {"-h", "--help"}, usageHelp = true,
+      description = "Show this help message and exit.")
+  private boolean helpRequested;
 
-	@Option(names = { "-p", "--path" }, description = "Custom installation directory path.")
-	private Path customPath;
+  @Option(names = {"-f", "--force"}, description = "Force update even if versions match.")
+  private boolean force;
 
-	@Option(names = { "-v",
-			"--version" }, description = "Specific version to install (e.g., 1.9.0). If omitted, latest is fetched.")
-	private String versionToInstall;
+  @Option(names = {"-p", "--path"}, description = "Custom installation directory path.")
+  private Path customPath;
 
-	private static final String GITHUB_API = "https://api.github.com/repos/hashicorp/terraform/releases/latest";
-	private static final String DOWNLOAD_BASE = "https://releases.hashicorp.com/terraform/";
-	private static final Path DEFAULT_BIN_DIR = Paths.get(System.getProperty("user.home"), ".local", "bin");
-	private static final String OS_NAME = getOsName();
-	private static final String OS_ARCH = getOsArch();
-	private static final String TF_PLATFORM = OS_NAME + "_" + OS_ARCH;
-	private static final String EXE_NAME = OS_NAME.equals("windows") ? "terraform.exe" : "terraform";
-	private static final ObjectMapper MAPPER = new ObjectMapper();
+  @Option(names = {"-v", "--version"},
+      description = "Specific version to install (e.g., 1.9.0). If omitted, latest is fetched.")
+  private String versionToInstall;
 
-	static void main(String... args) {
-		var exitCode = new CommandLine(new tfup()).execute(args);
-		System.exit(exitCode);
-	}
+  private static final String GITHUB_API =
+      "https://api.github.com/repos/hashicorp/terraform/releases/latest";
+  private static final String DOWNLOAD_BASE = "https://releases.hashicorp.com/terraform/";
+  private static final Path DEFAULT_BIN_DIR =
+      Paths.get(System.getProperty("user.home"), ".local", "bin");
+  private static final String OS_NAME = getOsName();
+  private static final String OS_ARCH = getOsArch();
+  private static final String TF_PLATFORM = OS_NAME + "_" + OS_ARCH;
+  private static final String EXE_NAME = OS_NAME.equals("windows") ? "terraform.exe" : "terraform";
+  private static final ObjectMapper MAPPER = new ObjectMapper();
 
-	@Override
-	public Integer call() throws Exception {
-		var binDir = customPath != null ? customPath : DEFAULT_BIN_DIR;
-		Files.createDirectories(binDir);
-		var tfExe = binDir.resolve(EXE_NAME);
+  static void main(String... args) {
+    var exitCode = new CommandLine(new tfup()).execute(args);
+    System.exit(exitCode);
+  }
 
-		System.out.println("Checking local version...");
-		var localVer = getLocalVersion(tfExe);
+  @Override
+  public Integer call() throws Exception {
+    var binDir = customPath != null ? customPath : DEFAULT_BIN_DIR;
+    Files.createDirectories(binDir);
+    var tfExe = binDir.resolve(EXE_NAME);
 
-		String targetVer;
-		if (versionToInstall != null) {
-			targetVer = versionToInstall;
-			if (targetVer.startsWith("v"))
-				targetVer = targetVer.substring(1);
-			System.out.println("Requested specific version: " + targetVer);
-		} else {
-			System.out.println("Checking GitHub for latest release...");
-			targetVer = getLatestVersion();
-			if (targetVer == null) {
-				System.err.println("Error: Failed to fetch latest version from GitHub.");
-				return 1;
-			}
-		}
+    System.out.println("Checking local version...");
+    var localVer = getLocalVersion(tfExe);
 
-		if (!force && targetVer.equals(localVer)) {
-			System.out.println("Terraform is already at requested version (v" + localVer + ").");
-			checkPath(binDir);
-			return 0;
-		}
+    String targetVer;
+    if (versionToInstall != null) {
+      targetVer = versionToInstall;
+      if (targetVer.startsWith("v"))
+        targetVer = targetVer.substring(1);
+      System.out.println("Requested specific version: " + targetVer);
+    } else {
+      System.out.println("Checking GitHub for latest release...");
+      targetVer = getLatestVersion();
+      if (targetVer == null) {
+        System.err.println("Error: Failed to fetch latest version from GitHub.");
+        return 1;
+      }
+    }
 
-		if (force) {
-			System.out.printf("Forcing installation of: %s%n", targetVer);
-		} else {
-			System.out.printf("Installation required: %s -> %s%n", (localVer == null ? "None" : localVer), targetVer);
-		}
+    if (!force && targetVer.equals(localVer)) {
+      System.out.println("Terraform is already at requested version (v" + localVer + ").");
+      checkPath(binDir);
+      return 0;
+    }
 
-		updateTerraform(targetVer, binDir, tfExe);
+    if (force) {
+      System.out.printf("Forcing installation of: %s%n", targetVer);
+    } else {
+      System.out.printf("Installation required: %s -> %s%n", (localVer == null ? "None" : localVer),
+          targetVer);
+    }
 
-		System.out.println("Verifying installation...");
-		var installedVer = getLocalVersion(tfExe);
-		System.out.println("Current Version: " + installedVer);
+    updateTerraform(targetVer, binDir, tfExe);
 
-		checkPath(binDir);
-		return 0;
-	}
+    System.out.println("Verifying installation...");
+    var installedVer = getLocalVersion(tfExe);
+    System.out.println("Current Version: " + installedVer);
 
-	private static String getOsName() {
-		var os = System.getProperty("os.name").toLowerCase(Locale.ROOT);
-		if (os.contains("win"))
-			return "windows";
-		if (os.contains("mac"))
-			return "darwin";
-		return "linux";
-	}
+    checkPath(binDir);
+    return 0;
+  }
 
-	private static String getOsArch() {
-		var arch = System.getProperty("os.arch").toLowerCase(Locale.ROOT);
-		if (arch.contains("amd64") || arch.contains("x86_64"))
-			return "amd64";
-		if (arch.contains("aarch64") || arch.contains("arm64"))
-			return "arm64";
-		if (arch.contains("x86") || arch.contains("i386") || arch.contains("i686"))
-			return "386";
-		if (arch.contains("arm"))
-			return "arm";
-		return "amd64";
-	}
+  private static String getOsName() {
+    var os = System.getProperty("os.name").toLowerCase(Locale.ROOT);
+    if (os.contains("win"))
+      return "windows";
+    if (os.contains("mac"))
+      return "darwin";
+    return "linux";
+  }
 
-	private static void checkPath(Path binDir) {
-		var pathEnv = System.getenv("PATH");
-		if (pathEnv != null) {
-			var paths = pathEnv.split(File.pathSeparator);
-			for (var p : paths) {
-				if (Paths.get(p).normalize().equals(binDir.normalize())) {
-					return; // binDir is already in PATH
-				}
-			}
-		}
+  private static String getOsArch() {
+    var arch = System.getProperty("os.arch").toLowerCase(Locale.ROOT);
+    if (arch.contains("amd64") || arch.contains("x86_64"))
+      return "amd64";
+    if (arch.contains("aarch64") || arch.contains("arm64"))
+      return "arm64";
+    if (arch.contains("x86") || arch.contains("i386") || arch.contains("i686"))
+      return "386";
+    if (arch.contains("arm"))
+      return "arm";
+    return "amd64";
+  }
 
-		System.out.println("\n--- WARNING ---");
-		System.out.println("The directory " + binDir + " is not in your PATH.");
-		if (OS_NAME.equals("windows")) {
-			System.out.println("To use terraform, add it to your PATH via System Properties > Environment Variables.");
-			System.out.println("Or run this in PowerShell:");
-			System.out.println(
-					"[Environment]::SetEnvironmentVariable(\"Path\", [Environment]::GetEnvironmentVariable(\"Path\", \"User\") + \";"
-							+ binDir + "\", \"User\")");
-		} else {
-			System.out.println("To use terraform, add this line to your ~/.bashrc or ~/.zshrc:");
-			System.out.println("export PATH=\"" + binDir + ":$PATH\"");
-		}
-		System.out.println("---------------\n");
-	}
+  private static void checkPath(Path binDir) {
+    var pathEnv = System.getenv("PATH");
+    if (pathEnv != null) {
+      var paths = pathEnv.split(File.pathSeparator);
+      for (var p : paths) {
+        if (Paths.get(p).normalize().equals(binDir.normalize())) {
+          return; // binDir is already in PATH
+        }
+      }
+    }
 
-	private static String getLocalVersion(Path tfExe) {
-		if (!Files.exists(tfExe))
-			return null;
-		try {
-			var process = new ProcessBuilder(tfExe.toString(), "-v", "-json").start();
-			var bytes = process.getInputStream().readAllBytes();
-			var node = MAPPER.readTree(bytes);
-			return node.get("terraform_version").asString();
-		} catch (Exception e) {
-			return null;
-		}
-	}
+    System.out.println("\n--- WARNING ---");
+    System.out.println("The directory " + binDir + " is not in your PATH.");
+    if (OS_NAME.equals("windows")) {
+      System.out.println(
+          "To use terraform, add it to your PATH via System Properties > Environment Variables.");
+      System.out.println("Or run this in PowerShell:");
+      System.out.println(
+          "[Environment]::SetEnvironmentVariable(\"Path\", [Environment]::GetEnvironmentVariable(\"Path\", \"User\") + \";"
+              + binDir + "\", \"User\")");
+    } else {
+      System.out.println("To use terraform, add this line to your ~/.bashrc or ~/.zshrc:");
+      System.out.println("export PATH=\"" + binDir + ":$PATH\"");
+    }
+    System.out.println("---------------\n");
+  }
 
-	private static String getLatestVersion() throws IOException, InterruptedException {
-		var client = HttpClient.newBuilder()
-			.followRedirects(HttpClient.Redirect.NORMAL)
-			.build();
+  private static String getLocalVersion(Path tfExe) {
+    if (!Files.exists(tfExe))
+      return null;
+    try {
+      var process = new ProcessBuilder(tfExe.toString(), "-v", "-json").start();
+      var bytes = process.getInputStream().readAllBytes();
+      var node = MAPPER.readTree(bytes);
+      return node.get("terraform_version").asString();
+    } catch (Exception e) {
+      return null;
+    }
+  }
 
-		var request = HttpRequest.newBuilder()
-			.uri(URI.create(GITHUB_API))
-			.header("User-Agent", "jbang-tfup-script")
-			.build();
+  private static String getLatestVersion() throws IOException, InterruptedException {
+    var client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build();
 
-		var response = client.send(request, HttpResponse.BodyHandlers.ofString());
-		if (response.statusCode() == 200) {
-			var node = MAPPER.readTree(response.body());
-			var tag = node.get("tag_name").asString();
-			return tag.startsWith("v") ? tag.substring(1) : tag;
-		}
-		return null;
-	}
+    var request = HttpRequest.newBuilder().uri(URI.create(GITHUB_API))
+        .header("User-Agent", "jbang-tfup-script").build();
 
-	private static void updateTerraform(String version, Path binDir, Path tfExe)
-			throws IOException, InterruptedException {
-		var zipName = String.format("terraform_%s_%s.zip", version, TF_PLATFORM);
-		var url = DOWNLOAD_BASE + version + "/" + zipName;
+    var response = client.send(request, HttpResponse.BodyHandlers.ofString());
+    if (response.statusCode() == 200) {
+      var node = MAPPER.readTree(response.body());
+      var tag = node.get("tag_name").asString();
+      return tag.startsWith("v") ? tag.substring(1) : tag;
+    }
+    return null;
+  }
 
-		System.out.println("Downloading: " + url);
-		var client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.ALWAYS).build();
-		var request = HttpRequest.newBuilder().uri(URI.create(url)).build();
+  private static void updateTerraform(String version, Path binDir, Path tfExe)
+      throws IOException, InterruptedException {
+    var zipName = String.format("terraform_%s_%s.zip", version, TF_PLATFORM);
+    var url = DOWNLOAD_BASE + version + "/" + zipName;
 
-		var tempZip = Files.createTempFile("tf_update", ".zip");
-		client.send(request, HttpResponse.BodyHandlers.ofFile(tempZip));
+    System.out.println("Downloading: " + url);
+    var client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.ALWAYS).build();
+    var request = HttpRequest.newBuilder().uri(URI.create(url)).build();
 
-		System.out.println("Extracting to: " + binDir);
-		try (var zis = new ZipInputStream(Files.newInputStream(tempZip))) {
-			ZipEntry entry;
-			while ((entry = zis.getNextEntry()) != null) {
-				if (entry.getName().equals(EXE_NAME)) {
-					Files.copy(zis, tfExe, StandardCopyOption.REPLACE_EXISTING);
-					zis.closeEntry();
-					break;
-				}
-			}
-		}
-		Files.deleteIfExists(tempZip);
+    var tempZip = Files.createTempFile("tf_update", ".zip");
+    client.send(request, HttpResponse.BodyHandlers.ofFile(tempZip));
 
-		if (!OS_NAME.equals("windows")) {
-			@SuppressWarnings("unused")
-			boolean ignored = tfExe.toFile().setExecutable(true);
-		}
+    System.out.println("Extracting to: " + binDir);
+    try (var zis = new ZipInputStream(Files.newInputStream(tempZip))) {
+      ZipEntry entry;
+      while ((entry = zis.getNextEntry()) != null) {
+        if (entry.getName().equals(EXE_NAME)) {
+          Files.copy(zis, tfExe, StandardCopyOption.REPLACE_EXISTING);
+          zis.closeEntry();
+          break;
+        }
+      }
+    }
+    Files.deleteIfExists(tempZip);
 
-		System.out.println("Installation of v" + version + " complete.");
-	}
+    if (!OS_NAME.equals("windows")) {
+      @SuppressWarnings("unused")
+      boolean ignored = tfExe.toFile().setExecutable(true);
+    }
+
+    System.out.println("Installation of v" + version + " complete.");
+  }
 }
