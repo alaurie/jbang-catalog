@@ -33,11 +33,13 @@ Instructions, conventions, and engineering standards for AI coding agents operat
 - **Indentation**: Exactly **2 spaces** (never use tab `\t` characters).
 - **Line Length**: **100 characters** maximum.
 - **Imports**: Group static imports first, followed by alphabetical standard Java packages and third-party packages. No wildcard star imports (`import java.util.*`).
+- **Javadoc Documentation**:
+  - Class-level Javadoc (`/** ... */`) describing the utility's purpose, background, and platform/OS notes.
+  - Method-level Javadoc for helper methods describing behavior, parameters (`@param`), return values (`@return`), and exceptions (`@throws`).
 - **Automated Formatting Hook**: Pre-commit hook at `.githooks/pre-commit` enforces `jbang-fmt --style=google` on all staged Java files. Enable via:
   ```bash
   git config core.hooksPath .githooks
   ```
-
 ### Modern Java Idioms
 - **Type Inference (`var`)**: Use `var` for local variables whenever the right-hand type assignment or initialization is clear.
 - **HTTP Communications**: Use `java.net.http.HttpClient`, `HttpRequest`, and `HttpResponse` (async or sync) instead of legacy `HttpURLConnection`.

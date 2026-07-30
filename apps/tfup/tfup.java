@@ -4,11 +4,6 @@
 //DEPS info.picocli:picocli:4.7.7
 //NATIVE_OPTIONS -O2 --no-fallback
 
-import tools.jackson.databind.ObjectMapper;
-import picocli.CommandLine;
-import picocli.CommandLine.Command;
-import picocli.CommandLine.Option;
-
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
@@ -23,7 +18,18 @@ import java.util.Locale;
 import java.util.concurrent.Callable;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
+import tools.jackson.databind.ObjectMapper;
 
+/**
+ * Cross-platform installer utility for HashiCorp Terraform.
+ *
+ * <p>
+ * Fetches release metadata from GitHub, compares current installed binary version, and downloads
+ * the official Terraform release binary for Windows, macOS, or Linux.
+ */
 @Command(name = "tfup", version = "tfup 1.0", description = "Fetches and installs Terraform.")
 public class tfup implements Callable<Integer> {
 
@@ -52,11 +58,22 @@ public class tfup implements Callable<Integer> {
   private static final String EXE_NAME = OS_NAME.equals("windows") ? "terraform.exe" : "terraform";
   private static final ObjectMapper MAPPER = new ObjectMapper();
 
+  /**
+   * Main entry point for the JBang script execution.
+   *
+   * @param args Command-line arguments.
+   */
   void main(String... args) {
     var exitCode = new CommandLine(this).execute(args);
     System.exit(exitCode);
   }
 
+  /**
+   * Executes local version check, resolves latest release, and performs download/update.
+   *
+   * @return Status code 0 for success, 1 for failure.
+   * @throws Exception On unexpected HTTP, I/O, or execution errors.
+   */
   @Override
   public Integer call() throws Exception {
     var binDir = customPath != null ? customPath : DEFAULT_BIN_DIR;
@@ -81,94 +98,115 @@ public class tfup implements Callable<Integer> {
       }
     }
 
-    if (!force && targetVer.equals(localVer)) {
-      System.out.println("Terraform is already at requested version (v" + localVer + ").");
-      checkPath(binDir);
-      return 0;
-    }
-
-    if (force) {
-      System.out.printf("Forcing installation of: %s%n", targetVer);
+    if (localVer != null) {
+      System.out.println("Installed version: " + localVer);
+      System.out.println("Target version:    " + targetVer);
+      if (localVer.equals(targetVer) && !force) {
+        System.out.println("Terraform is already up to date. Use --force to reinstall.");
+        checkPath(binDir);
+        return 0;
+      }
     } else {
-      System.out.printf("Installation required: %s -> %s%n", (localVer == null ? "None" : localVer),
-          targetVer);
+      System.out.println("Terraform is not installed. Target version: " + targetVer);
     }
 
     updateTerraform(targetVer, binDir, tfExe);
-
-    System.out.println("Verifying installation...");
-    var installedVer = getLocalVersion(tfExe);
-    System.out.println("Current Version: " + installedVer);
-
     checkPath(binDir);
+
     return 0;
   }
 
+  /**
+   * Resolves normalized OS name string.
+   *
+   * @return Normalized OS string ("windows", "darwin", or "linux").
+   */
   private static String getOsName() {
     var os = System.getProperty("os.name").toLowerCase(Locale.ROOT);
     if (os.contains("win"))
       return "windows";
-    if (os.contains("mac"))
+    if (os.contains("mac") || os.contains("darwin"))
       return "darwin";
     return "linux";
   }
 
+  /**
+   * Resolves normalized CPU architecture string.
+   *
+   * @return Normalized architecture string ("amd64" or "arm64").
+   */
   private static String getOsArch() {
     var arch = System.getProperty("os.arch").toLowerCase(Locale.ROOT);
-    if (arch.contains("amd64") || arch.contains("x86_64"))
-      return "amd64";
     if (arch.contains("aarch64") || arch.contains("arm64"))
       return "arm64";
-    if (arch.contains("x86") || arch.contains("i386") || arch.contains("i686"))
-      return "386";
-    if (arch.contains("arm"))
-      return "arm";
     return "amd64";
   }
 
+  /**
+   * Checks if installation binary directory is present in PATH environment variable.
+   *
+   * @param binDir Directory path to check.
+   */
   private static void checkPath(Path binDir) {
     var pathEnv = System.getenv("PATH");
-    if (pathEnv != null) {
-      var paths = pathEnv.split(File.pathSeparator);
-      for (var p : paths) {
-        if (Paths.get(p).normalize().equals(binDir.normalize())) {
-          return; // binDir is already in PATH
-        }
+    if (pathEnv == null)
+      return;
+
+    var absBinDir = binDir.toAbsolutePath().normalize().toString();
+    var paths = pathEnv.split(File.pathSeparator);
+    var inPath = false;
+    for (var p : paths) {
+      if (Paths.get(p).toAbsolutePath().normalize().toString().equalsIgnoreCase(absBinDir)) {
+        inPath = true;
+        break;
       }
     }
 
-    System.out.println("\n--- WARNING ---");
-    System.out.println("The directory " + binDir + " is not in your PATH.");
-    if (OS_NAME.equals("windows")) {
-      System.out.println(
-          "To use terraform, add it to your PATH via System Properties > Environment Variables.");
-      System.out.println("Or run this in PowerShell:");
-      System.out.println(
-          "[Environment]::SetEnvironmentVariable(\"Path\", [Environment]::GetEnvironmentVariable(\"Path\", \"User\") + \";"
-              + binDir + "\", \"User\")");
-    } else {
-      System.out.println("To use terraform, add this line to your ~/.bashrc or ~/.zshrc:");
-      System.out.println("export PATH=\"" + binDir + ":$PATH\"");
+    if (!inPath) {
+      System.out.println("\n[NOTICE] " + absBinDir + " is not in your PATH.");
+      if (OS_NAME.equals("windows")) {
+        System.out.println("Add it via System Properties -> Environment Variables.");
+      } else {
+        System.out.println("Add it to your shell profile (e.g. ~/.bashrc or ~/.zshrc):");
+        System.out.println("  export PATH=\"" + absBinDir + ":$PATH\"");
+      }
     }
-    System.out.println("---------------\n");
   }
 
+  /**
+   * Retrieves version string of locally installed Terraform executable.
+   *
+   * @param tfExe Path to terraform executable binary.
+   * @return Installed version string, or {@code null} if not found or executable fails.
+   */
   private static String getLocalVersion(Path tfExe) {
     if (!Files.exists(tfExe))
       return null;
     try {
-      var process = new ProcessBuilder(tfExe.toString(), "-v", "-json").start();
-      var bytes = process.getInputStream().readAllBytes();
-      var node = MAPPER.readTree(bytes);
-      return node.get("terraform_version").asString();
+      var pb = new ProcessBuilder(tfExe.toString(), "version");
+      var process = pb.start();
+      try (var reader =
+          new java.io.BufferedReader(new java.io.InputStreamReader(process.getInputStream()))) {
+        var line = reader.readLine();
+        if (line != null && line.contains("Terraform v")) {
+          return line.split("v")[1].trim();
+        }
+      }
     } catch (Exception e) {
-      return null;
+      // Ignored
     }
+    return null;
   }
 
+  /**
+   * Fetches latest release tag version string from HashiCorp Terraform GitHub API.
+   *
+   * @return Latest version string, or {@code null} on failure.
+   * @throws IOException On I/O errors.
+   * @throws InterruptedException On request interruption.
+   */
   private static String getLatestVersion() throws IOException, InterruptedException {
     var client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build();
-
     var request = HttpRequest.newBuilder().uri(URI.create(GITHUB_API))
         .header("User-Agent", "jbang-tfup-script").build();
 
@@ -181,6 +219,15 @@ public class tfup implements Callable<Integer> {
     return null;
   }
 
+  /**
+   * Downloads official Terraform release zip archive and extracts binary into target directory.
+   *
+   * @param version Version string to download.
+   * @param binDir Directory to install binary into.
+   * @param tfExe Target executable file path.
+   * @throws IOException On I/O or network errors.
+   * @throws InterruptedException On request interruption.
+   */
   private static void updateTerraform(String version, Path binDir, Path tfExe)
       throws IOException, InterruptedException {
     var zipName = String.format("terraform_%s_%s.zip", version, TF_PLATFORM);

@@ -2,19 +2,26 @@
 //JAVA 25+
 //DEPS info.picocli:picocli:4.7.7
 
-import picocli.CommandLine;
-import picocli.CommandLine.Command;
-import picocli.CommandLine.Option;
-
 import java.awt.GraphicsEnvironment;
 import java.awt.Robot;
 import java.awt.Toolkit;
 import java.awt.datatransfer.DataFlavor;
 import java.awt.event.KeyEvent;
 import java.util.concurrent.Callable;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
 
+/**
+ * Simulates typing clipboard text (or a custom text string) into the active desktop window.
+ *
+ * <p>
+ * Designed for remote sessions, VDIs (Citrix, VMware Horizon, RDP), and virtual machines where
+ * copy-paste is blocked by security policy, but keyboard input events are accepted.
+ */
 @Command(name = "type-clipboard", mixinStandardHelpOptions = true, version = "type-clipboard 1.0",
-    description = "Simulates typing clipboard text (or specified string) into the active window after a countdown delay.")
+    description = "Simulates typing clipboard text (or specified string) into the active window after a"
+        + " countdown delay.")
 class type_clipboard implements Callable<Integer> {
 
   @Option(names = {"-d", "--delay"},
@@ -34,16 +41,27 @@ class type_clipboard implements Callable<Integer> {
 
   private Robot robot;
 
+  /**
+   * Main entry point for the JBang script execution.
+   *
+   * @param args Command-line arguments.
+   */
   void main(String... args) {
     var exitCode = new CommandLine(this).execute(args);
     System.exit(exitCode);
   }
 
+  /**
+   * Executes the countdown, reads the target text, and simulates character-by-character typing.
+   *
+   * @return Status code 0 for success, 1 for failure or invalid environment.
+   */
   @Override
   public Integer call() {
     if (GraphicsEnvironment.isHeadless()) {
-      System.err.println(
-          "Error: Headless environment detected. java.awt.Robot requires a desktop GUI environment.");
+      System.err
+          .println("Error: Headless environment detected. java.awt.Robot requires a desktop GUI"
+              + " environment.");
       return 1;
     }
 
@@ -109,21 +127,31 @@ class type_clipboard implements Callable<Integer> {
     return 0;
   }
 
+  /**
+   * Checks for OS-specific desktop security policies (macOS Accessibility, Linux Wayland).
+   */
   private void checkEnvironmentWarnings() {
     var os = System.getProperty("os.name", "").toLowerCase();
     if (os.contains("mac")) {
       System.out.println(
-          "Note: On macOS, ensure Terminal/Java has Accessibility permissions (System Settings -> Privacy & Security -> Accessibility).");
+          "Note: On macOS, ensure Terminal/Java has Accessibility permissions (System Settings ->"
+              + " Privacy & Security -> Accessibility).");
     }
     var sessionType = System.getenv("XDG_SESSION_TYPE");
     var waylandDisplay = System.getenv("WAYLAND_DISPLAY");
     if ("wayland".equalsIgnoreCase(sessionType)
         || (waylandDisplay != null && !waylandDisplay.isEmpty())) {
       System.out.println(
-          "Warning: Wayland display server detected. Wayland compositors may block simulated key events.");
+          "Warning: Wayland display server detected. Wayland compositors may block simulated key"
+              + " events.");
     }
   }
 
+  /**
+   * Reads plain text string content from the system clipboard.
+   *
+   * @return String content from clipboard, or {@code null} if clipboard is empty or non-text.
+   */
   private String readClipboardText() {
     try {
       var clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
@@ -136,6 +164,11 @@ class type_clipboard implements Callable<Integer> {
     return null;
   }
 
+  /**
+   * Translates a single character into AWT virtual key codes and simulates key press and release.
+   *
+   * @param c The character to type.
+   */
   private void typeChar(char c) {
     if (c == '\r') {
       return; // Handled by \n
@@ -260,7 +293,6 @@ class type_clipboard implements Callable<Integer> {
           shift = true;
         }
         default -> {
-          // Unsupported characters ignored or fallback
           return;
         }
       }

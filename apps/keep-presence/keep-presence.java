@@ -2,10 +2,6 @@
 //JAVA 25+
 //DEPS info.picocli:picocli:4.7.7
 
-import picocli.CommandLine;
-import picocli.CommandLine.Command;
-import picocli.CommandLine.Option;
-
 import java.awt.Dimension;
 import java.awt.GraphicsEnvironment;
 import java.awt.MouseInfo;
@@ -18,11 +14,23 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.Callable;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
 
+/**
+ * Utility to keep your desktop presence active (preventing status from changing to "Away").
+ *
+ * <p>
+ * Periodically checks for user idle status by inspecting pointer coordinates. When idle, it
+ * simulates subtle mouse movements (out-and-back or circular), Shift key presses, or scrolling.
+ */
 @Command(name = "keep-presence", mixinStandardHelpOptions = true, version = "keep-presence 1.2",
-    description = "Simulates user activity (mouse movement, key press, scrolling) when idle to keep your presence status active.")
+    description = "Simulates user activity (mouse movement, key press, scrolling) when idle to keep your"
+        + " presence status active.")
 class keep_presence implements Callable<Integer> {
 
+  /** Available action modes executed upon idle detection. */
   public enum Mode {
     mouse, keyboard, both, scroll
   }
@@ -32,7 +40,8 @@ class keep_presence implements Callable<Integer> {
   private int seconds = 300;
 
   @Option(names = {"-b", "--buffer"},
-      description = "Initial buffer delay in seconds before the first check. Default: same as check interval.")
+      description = "Initial buffer delay in seconds before the first check. Default: same as check"
+          + " interval.")
   private Integer buffer;
 
   @Option(names = {"-p", "--pixels"},
@@ -48,7 +57,8 @@ class keep_presence implements Callable<Integer> {
   private Mode mode = Mode.mouse;
 
   @Option(names = {"-r", "--random"}, arity = "2", paramLabel = "<START> <STOP>",
-      description = "Execute actions using a random interval between START and STOP seconds. Overrides --seconds.")
+      description = "Execute actions using a random interval between START and STOP seconds. Overrides"
+          + " --seconds.")
   private List<Integer> randomRange;
 
   private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss");
@@ -58,16 +68,27 @@ class keep_presence implements Callable<Integer> {
   private int mouseDirection = 0;
   private Dimension screenSize;
 
+  /**
+   * Main entry point for the JBang script execution.
+   *
+   * @param args Command-line arguments.
+   */
   void main(String... args) {
     int exitCode = new CommandLine(this).execute(args);
     System.exit(exitCode);
   }
 
+  /**
+   * Initializes AWT Robot, starts the initial buffer delay, and enters the idle detection loop.
+   *
+   * @return Status code 0 for success, 1 for errors.
+   */
   @Override
   public Integer call() {
     if (GraphicsEnvironment.isHeadless()) {
-      System.err.println(
-          "Error: Headless environment detected. java.awt.Robot requires a desktop GUI environment.");
+      System.err
+          .println("Error: Headless environment detected. java.awt.Robot requires a desktop GUI"
+              + " environment.");
       return 1;
     }
 
@@ -183,25 +204,39 @@ class keep_presence implements Callable<Integer> {
     return 0;
   }
 
+  /** Checks for OS-specific environment warnings (macOS Accessibility, Linux Wayland). */
   private void checkEnvironmentWarnings() {
     String os = System.getProperty("os.name", "").toLowerCase();
     if (os.contains("mac")) {
-      log("Note: On macOS, ensure Terminal/Java has Accessibility permissions (System Settings -> Privacy & Security -> Accessibility).");
+      log("Note: On macOS, ensure Terminal/Java has Accessibility permissions (System Settings ->"
+          + " Privacy & Security -> Accessibility).");
     }
     String sessionType = System.getenv("XDG_SESSION_TYPE");
     String waylandDisplay = System.getenv("WAYLAND_DISPLAY");
     if ("wayland".equalsIgnoreCase(sessionType)
         || (waylandDisplay != null && !waylandDisplay.isEmpty())) {
-      log("Warning: Wayland display server detected. Wayland compositors may block simulated mouse/keyboard events.");
+      log("Warning: Wayland display server detected. Wayland compositors may block simulated"
+          + " mouse/keyboard events.");
       log("If mouse movement fails, switch to an X11 session or use --mode keyboard.");
     }
   }
 
+  /**
+   * Retrieves the current mouse pointer screen coordinates.
+   *
+   * @return {@link Point} location of cursor, or {@code null} if pointer info unavailable.
+   */
   private Point getMousePosition() {
     var info = MouseInfo.getPointerInfo();
     return info != null ? info.getLocation() : null;
   }
 
+  /**
+   * Moves mouse cursor according to configured mode (out-and-back or circular).
+   *
+   * @param current The starting cursor position.
+   * @return The updated cursor position after movement.
+   */
   private Point moveMouse(Point current) {
     if (current == null)
       return null;
@@ -255,18 +290,27 @@ class keep_presence implements Callable<Integer> {
     return actual;
   }
 
+  /**
+   * Clamps given coordinates within screen boundaries.
+   *
+   * @param x X coordinate.
+   * @param y Y coordinate.
+   * @return Clamped {@link Point} on screen.
+   */
   private Point clampToScreen(int x, int y) {
     int cx = Math.max(0, Math.min(x, screenSize.width - 1));
     int cy = Math.max(0, Math.min(y, screenSize.height - 1));
     return new Point(cx, cy);
   }
 
+  /** Simulates a mouse wheel scroll. */
   private void scrollMouse() {
     robot.mouseWheel(2);
     robot.delay(50);
     log("Mouse wheel scrolled");
   }
 
+  /** Simulates pressing and releasing the Shift key. */
   private void pressShiftKey() {
     robot.keyPress(KeyEvent.VK_SHIFT);
     robot.delay(40);
@@ -275,6 +319,11 @@ class keep_presence implements Callable<Integer> {
     log("Shift key pressed");
   }
 
+  /**
+   * Prints timestamped log message to stdout.
+   *
+   * @param message Message string.
+   */
   private void log(String message) {
     System.out.printf("%s %s%n", LocalTime.now().format(TIME_FORMATTER), message);
   }

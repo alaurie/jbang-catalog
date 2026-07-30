@@ -7,11 +7,6 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.SimpleFileServer;
 import com.sun.net.httpserver.SimpleFileServer.OutputLevel;
-import picocli.CommandLine;
-import picocli.CommandLine.Command;
-import picocli.CommandLine.Option;
-import picocli.CommandLine.Parameters;
-
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.BindException;
@@ -21,7 +16,17 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.Parameters;
 
+/**
+ * Lightweight HTTP file server utility inspired by {@code python -m http.server}.
+ *
+ * <p>
+ * Built using Java's built-in {@link SimpleFileServer} and {@link HttpServer} APIs.
+ */
 @Command(name = "serve", mixinStandardHelpOptions = true, version = "serve 1.0",
     description = "Simple HTTP file server inspired by python -m http.server")
 class serve implements Callable<Integer> {
@@ -47,11 +52,21 @@ class serve implements Callable<Integer> {
       description = "Optional directory path and/or port number")
   private List<String> positionalArgs = new ArrayList<>();
 
+  /**
+   * Main entry point for the JBang script execution.
+   *
+   * @param args Command-line arguments.
+   */
   void main(String... args) {
     int exitCode = new CommandLine(this).execute(args);
     System.exit(exitCode);
   }
 
+  /**
+   * Resolves arguments, validates directory and port parameters, and launches the file server.
+   *
+   * @return Status code 0 for success, 1 for errors.
+   */
   @Override
   public Integer call() {
     resolveArguments();
@@ -140,6 +155,7 @@ class serve implements Callable<Integer> {
     return 0;
   }
 
+  /** Resolves positional arguments to determine directory and port options. */
   private void resolveArguments() {
     String posDir = null;
     Integer posPort = null;
@@ -166,6 +182,12 @@ class serve implements Callable<Integer> {
     }
   }
 
+  /**
+   * Helper method checking whether a string represents a valid integer.
+   *
+   * @param s String value to inspect.
+   * @return {@code true} if integer, {@code false} otherwise.
+   */
   private static boolean isInteger(String s) {
     try {
       Integer.parseInt(s);
