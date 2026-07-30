@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="jbang-catalog logo" width="300" />
+</p>
+
 # jbang-catalog
 
 This repository contains a [jbang](https://jbang.dev/) catalog of useful scripts.
