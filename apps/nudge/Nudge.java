@@ -1,6 +1,10 @@
-///usr/bin/env jbang "$0" "$@" ; exit $?
+/// usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 25+
 //DEPS info.picocli:picocli:4.7.7
+
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
 
 import java.awt.Dimension;
 import java.awt.GraphicsEnvironment;
@@ -14,9 +18,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.Callable;
-import picocli.CommandLine;
-import picocli.CommandLine.Command;
-import picocli.CommandLine.Option;
 
 /**
  * Utility to keep your desktop presence active (preventing status from changing to "Away").
@@ -25,46 +26,35 @@ import picocli.CommandLine.Option;
  * Periodically checks for user idle status by inspecting pointer coordinates. When idle, it
  * simulates subtle mouse movements (out-and-back or circular), Shift key presses, or scrolling.
  */
-@Command(name = "keep-presence", mixinStandardHelpOptions = true, version = "keep-presence 1.2",
+@Command(name = "nudge", mixinStandardHelpOptions = true, version = "nudge 1.2",
     description = "Simulates user activity (mouse movement, key press, scrolling) when idle to keep your"
         + " presence status active.")
-class keep_presence implements Callable<Integer> {
+@SuppressWarnings("unused")
+class Nudge implements Callable<Integer> {
 
-  /** Available action modes executed upon idle detection. */
-  public enum Mode {
-    mouse, keyboard, both, scroll
-  }
-
+  private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss");
+  private final Random random = new Random();
   @Option(names = {"-s", "--seconds"},
       description = "Define in seconds how long to wait between idle checks. Default 300.")
   private int seconds = 300;
-
   @Option(names = {"-b", "--buffer"},
       description = "Initial buffer delay in seconds before the first check. Default: same as check"
           + " interval.")
   private Integer buffer;
-
   @Option(names = {"-p", "--pixels"},
       description = "Set how many pixels the mouse should move. Default 5.")
   private int pixels = 5;
-
   @Option(names = {"-c", "--circular"},
       description = "Move mouse in a circle pattern. Default move out-and-back.")
   private boolean circular;
-
   @Option(names = {"-m", "--mode"},
       description = "Action mode: mouse, keyboard, both, scroll. Default: mouse.")
   private Mode mode = Mode.mouse;
-
   @Option(names = {"-r", "--random"}, arity = "2", paramLabel = "<START> <STOP>",
       description = "Execute actions using a random interval between START and STOP seconds. Overrides"
           + " --seconds.")
   private List<Integer> randomRange;
-
-  private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss");
-
   private Robot robot;
-  private final Random random = new Random();
   private int mouseDirection = 0;
   private Dimension screenSize;
 
@@ -151,9 +141,7 @@ class keep_presence implements Callable<Integer> {
 
     Point lastPosition = getMousePosition();
 
-    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-      System.out.println("\nBye bye ;-)\n");
-    }));
+    Runtime.getRuntime().addShutdownHook(new Thread(() -> System.out.println("\nBye bye ;-)\n")));
 
     try {
       Thread.sleep(initialDelay * 1000L);
@@ -194,6 +182,7 @@ class keep_presence implements Callable<Integer> {
       System.out.println("--------");
 
       try {
+        //noinspection BusyWait
         Thread.sleep(delaySeconds * 1000L);
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
@@ -204,15 +193,17 @@ class keep_presence implements Callable<Integer> {
     return 0;
   }
 
-  /** Checks for OS-specific environment warnings (macOS Accessibility, Linux Wayland). */
+  /**
+   * Checks for OS-specific environment warnings (macOS Accessibility, Linux Wayland).
+   */
   private void checkEnvironmentWarnings() {
-    String os = System.getProperty("os.name", "").toLowerCase();
+    var os = System.getProperty("os.name", "").toLowerCase();
     if (os.contains("mac")) {
       log("Note: On macOS, ensure Terminal/Java has Accessibility permissions (System Settings ->"
           + " Privacy & Security -> Accessibility).");
     }
-    String sessionType = System.getenv("XDG_SESSION_TYPE");
-    String waylandDisplay = System.getenv("WAYLAND_DISPLAY");
+    var sessionType = System.getenv("XDG_SESSION_TYPE");
+    var waylandDisplay = System.getenv("WAYLAND_DISPLAY");
     if ("wayland".equalsIgnoreCase(sessionType)
         || (waylandDisplay != null && !waylandDisplay.isEmpty())) {
       log("Warning: Wayland display server detected. Wayland compositors may block simulated"
@@ -242,33 +233,32 @@ class keep_presence implements Callable<Integer> {
       return null;
 
     int step = Math.max(1, pixels);
-    Point target;
 
+    int deltaX;
+    int deltaY;
     if (circular) {
-      int deltaX = (mouseDirection == 0 || mouseDirection == 3) ? step : -step;
-      int deltaY = (mouseDirection == 0 || mouseDirection == 1) ? step : -step;
+      deltaX = (mouseDirection == 0 || mouseDirection == 3) ? step : -step;
+      deltaY = (mouseDirection == 0 || mouseDirection == 1) ? step : -step;
       mouseDirection = (mouseDirection + 1) % 4;
 
-      target = clampToScreen(current.x + deltaX, current.y + deltaY);
+      var target = clampToScreen(current.x + deltaX, current.y + deltaY);
       robot.mouseMove(target.x, target.y);
-      robot.delay(50);
     } else {
-      int deltaX = (current.x + step < screenSize.width) ? step : -step;
-      int deltaY = (current.y + step < screenSize.height) ? step : -step;
+      deltaX = (current.x + step < screenSize.width) ? step : -step;
+      deltaY = (current.y + step < screenSize.height) ? step : -step;
 
       Point out = clampToScreen(current.x + deltaX, current.y + deltaY);
       robot.mouseMove(out.x, out.y);
       robot.delay(80);
 
       robot.mouseMove(current.x, current.y);
-      robot.delay(50);
-      target = current;
     }
+    robot.delay(50);
 
     Point actual = getMousePosition();
     if (actual != null && actual.equals(current) && circular) {
-      robot.mouseMove(clampToScreen(current.x + 10, current.y + 10).x,
-          clampToScreen(current.x + 10, current.y + 10).y);
+      var fallback = clampToScreen(current.x + 10, current.y + 10);
+      robot.mouseMove(fallback.x, fallback.y);
       robot.delay(50);
       actual = getMousePosition();
     }
@@ -298,19 +288,23 @@ class keep_presence implements Callable<Integer> {
    * @return Clamped {@link Point} on screen.
    */
   private Point clampToScreen(int x, int y) {
-    int cx = Math.max(0, Math.min(x, screenSize.width - 1));
-    int cy = Math.max(0, Math.min(y, screenSize.height - 1));
+    int cx = Math.clamp(x, 0, screenSize.width - 1);
+    int cy = Math.clamp(y, 0, screenSize.height - 1);
     return new Point(cx, cy);
   }
 
-  /** Simulates a mouse wheel scroll. */
+  /**
+   * Simulates a mouse wheel scroll.
+   */
   private void scrollMouse() {
     robot.mouseWheel(2);
     robot.delay(50);
     log("Mouse wheel scrolled");
   }
 
-  /** Simulates pressing and releasing the Shift key. */
+  /**
+   * Simulates pressing and releasing the Shift key.
+   */
   private void pressShiftKey() {
     robot.keyPress(KeyEvent.VK_SHIFT);
     robot.delay(40);
@@ -326,5 +320,12 @@ class keep_presence implements Callable<Integer> {
    */
   private void log(String message) {
     System.out.printf("%s %s%n", LocalTime.now().format(TIME_FORMATTER), message);
+  }
+
+  /**
+   * Available action modes executed upon idle detection.
+   */
+  public enum Mode {
+    mouse, keyboard, both, scroll
   }
 }

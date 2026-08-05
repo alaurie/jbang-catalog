@@ -84,33 +84,33 @@ Simple HTTP file server inspired by python -m http.server
 
 ---
 
-## keep-presence
+## nudge
 
-`keep-presence` is a tool inspired by `carrot69/keep-presence` that simulates user activity (mouse movement, key press, or scrolling) when idle.
+`nudge` is a tool inspired by `carrot69/keep-presence` that simulates user activity (mouse movement, key press, or scrolling) when idle to keep your Microsoft Teams presence status active.
 
 ### Usage
 To run it via jbang from this catalog repository:
 
 ```bash
-jbang keep-presence@alaurie
+jbang nudge@alaurie
 ```
 
 Or with custom parameters (e.g. keyboard mode every 180 seconds):
 
 ```bash
-jbang keep-presence@alaurie -m keyboard -s 180
+jbang nudge@alaurie -m keyboard -s 180
 ```
 
 Or, if you clone the repository locally:
 
 ```bash
-jbang keep-presence.java
+jbang nudge
 ```
 
 ### Options
 
 ```
-Usage: keep-presence [-chV] [-b=<buffer>] [-m=<mode>] [-p=<pixels>]
+Usage: nudge [-chV] [-b=<buffer>] [-m=<mode>] [-p=<pixels>]
                      [-s=<seconds>] [-r=<START> <STOP> <START> <STOP>]...
 Simulates user activity (mouse movement, key press, scrolling) when idle to
 keep your presence status active.
@@ -133,34 +133,34 @@ keep your presence status active.
 
 ---
 
-## type-clipboard
+## typeit
 
-`type-clipboard` reads your system clipboard (or a custom string) and simulates keystroke-by-keystroke typing into your active window after a countdown delay. Useful for remote consoles, VDIs, or VMs where copy-paste is blocked but keystrokes work.
+`typeit` reads your system clipboard (or a custom string) and simulates keystroke-by-keystroke typing into your active window after a countdown delay. Useful for remote consoles, VDIs, or VMs where copy-paste is blocked but keystrokes work.
 
 ### Usage
 
 To run it via jbang from this catalog repository:
 
 ```bash
-jbang type-clipboard@alaurie
+jbang typeit@alaurie
 ```
 
 Or with custom countdown delay and typing speed:
 
 ```bash
-jbang type-clipboard@alaurie -d 3 -s 20
+jbang typeit@alaurie -d 3 -s 20
 ```
 
 Or with custom text instead of clipboard:
 
 ```bash
-jbang type-clipboard@alaurie -t "my-secret-password"
+jbang typeit@alaurie -t "my-secret-password"
 ```
 
 ### Options
 
 ```
-Usage: type-clipboard [-hvV] [-d=<delay>] [-s=<speed>] [-t=<customText>]
+Usage: typeit [-hvV] [-d=<delay>] [-s=<speed>] [-t=<customText>]
 Simulates typing clipboard text (or specified string) into the active window
 after a countdown delay.
   -d, --delay=<delay>       Countdown delay in seconds before typing starts

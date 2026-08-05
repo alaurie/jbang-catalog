@@ -49,6 +49,8 @@ Instructions, conventions, and engineering standards for AI coding agents operat
   - **Pattern Matching** for `instanceof` and `switch` statements.
   - **Text Blocks** (`""" ... """`) for multiline strings, templates, or help text.
   - **Streams & Functional Pipelines**: Use `.stream()`, `.map()`, `.filter()`, `.toList()`, and `.collect()` for collection processing.
+  - **Clamping**: Use `Math.clamp(value, min, max)` (Java 21+) instead of `Math.max(min, Math.min(value, max))`.
+  - **Lambdas**: Prefer expression lambdas (`() -> expr`) over statement lambdas (`() -> { expr; }`) for single-statement bodies.
 
 ---
 
@@ -84,6 +86,19 @@ Instructions, conventions, and engineering standards for AI coding agents operat
   static void main(String... args) {
     int exitCode = new CommandLine(new MyScriptClass()).execute(args);
     System.exit(exitCode);
+  }
+  ```
+
+### Picocli Field Rules
+- **Never mark `@Option` or `@Parameters` fields `final`**: picocli assigns them via reflection at runtime; `final` prevents injection in Java 9+ module-aware environments.
+- **Always add `@SuppressWarnings("unused")` on every picocli command class**: IDEs cannot see reflection-based assignment and will incorrectly flag `@Option`/`@Parameters` fields as never assigned or never used.
+- **Suppress at class level, not field level**: one annotation covers all injected fields cleanly.
+  ```java
+  @Command(name = "my-tool", ...)
+  @SuppressWarnings("unused")
+  class MyTool implements Callable<Integer> {
+      @Option(names = {"-n", "--count"})
+      private int count = 1; // NOT final — picocli must write to this
   }
   ```
 

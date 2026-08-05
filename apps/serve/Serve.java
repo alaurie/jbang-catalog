@@ -1,4 +1,4 @@
-///usr/bin/env jbang "$0" "$@" ; exit $?
+/// usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 25+
 //DEPS info.picocli:picocli:4.7.7
 
@@ -7,6 +7,11 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.SimpleFileServer;
 import com.sun.net.httpserver.SimpleFileServer.OutputLevel;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.Parameters;
+
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.BindException;
@@ -16,10 +21,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
-import picocli.CommandLine;
-import picocli.CommandLine.Command;
-import picocli.CommandLine.Option;
-import picocli.CommandLine.Parameters;
 
 /**
  * Lightweight HTTP file server utility inspired by {@code python -m http.server}.
@@ -29,7 +30,8 @@ import picocli.CommandLine.Parameters;
  */
 @Command(name = "serve", mixinStandardHelpOptions = true, version = "serve 1.0",
     description = "Simple HTTP file server inspired by python -m http.server")
-class serve implements Callable<Integer> {
+@SuppressWarnings("unused")
+class Serve implements Callable<Integer> {
 
   @Option(names = {"-p", "--port"}, description = "Port to listen on (default: 8080)")
   private Integer port;
@@ -53,6 +55,21 @@ class serve implements Callable<Integer> {
   private List<String> positionalArgs = new ArrayList<>();
 
   /**
+   * Helper method checking whether a string represents a valid integer.
+   *
+   * @param s String value to inspect.
+   * @return {@code true} if integer, {@code false} otherwise.
+   */
+  private static boolean isInteger(String s) {
+    try {
+      Integer.parseInt(s);
+      return true;
+    } catch (NumberFormatException e) {
+      return false;
+    }
+  }
+
+  /**
    * Main entry point for the JBang script execution.
    *
    * @param args Command-line arguments.
@@ -67,6 +84,7 @@ class serve implements Callable<Integer> {
    *
    * @return Status code 0 for success, 1 for errors.
    */
+  @SuppressWarnings("HttpUrlsUsage")
   @Override
   public Integer call() {
     resolveArguments();
@@ -179,21 +197,6 @@ class serve implements Callable<Integer> {
     }
     if (this.port == null) {
       this.port = posPort != null ? posPort : 8080;
-    }
-  }
-
-  /**
-   * Helper method checking whether a string represents a valid integer.
-   *
-   * @param s String value to inspect.
-   * @return {@code true} if integer, {@code false} otherwise.
-   */
-  private static boolean isInteger(String s) {
-    try {
-      Integer.parseInt(s);
-      return true;
-    } catch (NumberFormatException e) {
-      return false;
     }
   }
 }

@@ -1,19 +1,19 @@
 {
   "aliases": {
     "tfup": {
-      "script-ref": "apps/tfup/tfup.java",
+      "script-ref": "apps/tfup/Tfup.java",
       "description": "Fetches and installs Terraform."
     },
     "serve": {
-      "script-ref": "apps/serve/serve.java",
+      "script-ref": "apps/serve/Serve.java",
       "description": "Serves the given directory on the specified port."
     },
-    "keep-presence": {
-      "script-ref": "apps/keep-presence/keep-presence.java",
+    "nudge": {
+      "script-ref": "apps/nudge/Nudge.java",
       "description": "Simulates user activity (mouse movement, key press, scrolling) to keep your presence status active."
     },
-    "type-clipboard": {
-      "script-ref": "apps/type-clipboard/type-clipboard.java",
+    "typeit": {
+      "script-ref": "apps/typeit/Typeit.java",
       "description": "Simulates typing clipboard text (or custom string) into active window after countdown."
     }
   }

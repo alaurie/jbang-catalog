@@ -1,6 +1,10 @@
-///usr/bin/env jbang "$0" "$@" ; exit $?
+/// usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 25+
 //DEPS info.picocli:picocli:4.7.7
+
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
 
 import java.awt.GraphicsEnvironment;
 import java.awt.Robot;
@@ -8,9 +12,6 @@ import java.awt.Toolkit;
 import java.awt.datatransfer.DataFlavor;
 import java.awt.event.KeyEvent;
 import java.util.concurrent.Callable;
-import picocli.CommandLine;
-import picocli.CommandLine.Command;
-import picocli.CommandLine.Option;
 
 /**
  * Simulates typing clipboard text (or a custom text string) into the active desktop window.
@@ -19,10 +20,11 @@ import picocli.CommandLine.Option;
  * Designed for remote sessions, VDIs (Citrix, VMware Horizon, RDP), and virtual machines where
  * copy-paste is blocked by security policy, but keyboard input events are accepted.
  */
-@Command(name = "type-clipboard", mixinStandardHelpOptions = true, version = "type-clipboard 1.0",
+@Command(name = "typeit", mixinStandardHelpOptions = true, version = "typeit 1.0",
     description = "Simulates typing clipboard text (or specified string) into the active window after a"
         + " countdown delay.")
-class type_clipboard implements Callable<Integer> {
+@SuppressWarnings("unused")
+class Typeit implements Callable<Integer> {
 
   @Option(names = {"-d", "--delay"},
       description = "Countdown delay in seconds before typing starts (default: 5).")
@@ -185,7 +187,7 @@ class type_clipboard implements Callable<Integer> {
     }
 
     boolean shift = false;
-    int keyCode = -1;
+    int keyCode;
 
     if (c >= 'a' && c <= 'z') {
       keyCode = KeyEvent.VK_A + (c - 'a');
@@ -298,15 +300,13 @@ class type_clipboard implements Callable<Integer> {
       }
     }
 
-    if (keyCode != -1) {
-      if (shift) {
-        robot.keyPress(KeyEvent.VK_SHIFT);
-      }
-      robot.keyPress(keyCode);
-      robot.keyRelease(keyCode);
-      if (shift) {
-        robot.keyRelease(KeyEvent.VK_SHIFT);
-      }
+    if (shift) {
+      robot.keyPress(KeyEvent.VK_SHIFT);
+    }
+    robot.keyPress(keyCode);
+    robot.keyRelease(keyCode);
+    if (shift) {
+      robot.keyRelease(KeyEvent.VK_SHIFT);
     }
   }
 }
