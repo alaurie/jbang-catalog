@@ -176,7 +176,148 @@ after a countdown delay.
 
 ---
 
+## jwt
+
+`jwt` is a CLI utility to inspect and decode JSON Web Tokens (JWT) safely off-line without sending sensitive tokens to external web services.
+
+### Usage
+
+To run it via jbang from this catalog repository:
+
+```bash
+jbang jwt@alaurie [tokenOrFile]
+```
+
+Or check token validity:
+
+```bash
+jbang jwt@alaurie --check-exp <token>
+```
+
+Or read token from stdin:
+
+```bash
+cat token.txt | jbang jwt@alaurie -
+```
+
+Or, if you clone the repository locally:
+
+```bash
+jbang jwt
+```
+
+### Options
+
+```
+Usage: jwt [-cHHpV] [<tokenOrFile>]
+Inspect and decode JSON Web Tokens (JWT) without sending tokens to third
+parties.
+      [<tokenOrFile>]   JWT token string, file path containing token, or '-'
+                          for stdin.
+  -c, --check-exp       Validate token expiry state and exit 0 (valid) or 1
+                          (expired).
+  -h, --help            Show this help message and exit.
+  -H, --header-only     Print header JSON only.
+  -p, --payload-only    Print payload JSON only.
+  -V, --version         Print version information and exit.
+```
+
+---
+
+## killport
+
+`killport` is a cross-platform CLI utility to find and terminate processes listening on specified network ports.
+
+### Usage
+
+To run it via jbang from this catalog repository:
+
+```bash
+jbang killport@alaurie 8080
+```
+
+Or inspect matching processes without terminating them (dry-run):
+
+```bash
+jbang killport@alaurie -d 8080 3000
+```
+
+Or forcefully kill processes listening on multiple ports:
+
+```bash
+jbang killport@alaurie -f 8080 9000
+```
+
+Or, if you clone the repository locally:
+
+```bash
+jbang killport
+```
+
+### Options
+
+```
+Usage: killport [-dfhV] <port>...
+Find and terminate processes listening on specified network ports.
+      <port>...   One or more port numbers to inspect or kill.
+  -d, --dry-run   Show matching processes without killing them.
+  -f, --force     Forcefully terminate process (SIGKILL / taskkill /F).
+  -h, --help      Show this help message and exit.
+  -V, --version   Print version information and exit.
+```
+
+---
+
+## hash
+
+`hash` is a CLI utility to compute and verify cryptographic checksums (MD5, SHA-1, SHA-256, SHA-512, SHA3-256, SHA3-512) for files, string text, or stdin.
+
+### Usage
+
+To run it via jbang from this catalog repository:
+
+```bash
+jbang hash@alaurie myfile.tar.gz
+```
+
+Or compute a SHA-512 checksum of string text:
+
+```bash
+jbang hash@alaurie -a SHA-512 -t "my-password-string"
+```
+
+Or verify files against a checksum file:
+
+```bash
+jbang hash@alaurie -c checksums.sha256
+```
+
+Or, if you clone the repository locally:
+
+```bash
+jbang hash
+```
+
+### Options
+
+```
+Usage: hash [-chV] [-a=<algorithm>] [-c=<checkFile>] [-t=<textInput>]
+            [<file>...]
+Compute and verify cryptographic checksums for files or text input.
+      [<file>...]         One or more file paths to hash, or '-' for stdin.
+  -a, --algorithm=<algorithm>
+                          Hash algorithm: MD5, SHA-1, SHA-256, SHA-512,
+                            SHA3-256, SHA3-512. Default: SHA-256.
+  -c, --check=<checkFile> Verify checksums from specified checksum file.
+  -h, --help              Show this help message and exit.
+  -t, --text=<textInput>  Compute hash for string text input instead of file.
+  -V, --version           Print version information and exit.
+```
+
+---
+
 ## Development
+
 
 To automatically run `jbang-fmt` on staged `.java` files before committing, enable the repository's pre-commit hook:
 

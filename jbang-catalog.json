@@ -15,6 +15,19 @@
     "typeit": {
       "script-ref": "apps/typeit/Typeit.java",
       "description": "Simulates typing clipboard text (or custom string) into active window after countdown."
+    },
+    "jwt": {
+      "script-ref": "apps/jwt/Jwt.java",
+      "description": "Inspect and decode JSON Web Tokens (JWT) safely off-line."
+    },
+    "killport": {
+      "script-ref": "apps/killport/Killport.java",
+      "description": "Find and terminate processes listening on specified network ports."
+    },
+    "hash": {
+      "script-ref": "apps/hash/Hash.java",
+      "description": "Compute and verify cryptographic checksums for files or text input."
     }
   }
 }
+

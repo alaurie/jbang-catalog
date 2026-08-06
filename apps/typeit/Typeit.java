@@ -1,6 +1,7 @@
 /// usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 25+
 //DEPS info.picocli:picocli:4.7.7
+//NATIVE_OPTIONS -O2 --no-fallback
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
