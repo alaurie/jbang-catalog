@@ -1,16 +1,16 @@
 /// usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 25+
 //DEPS info.picocli:picocli:4.7.7
-//DEPS tools.jackson.core:jackson-databind:3.2.1
+//DEPS com.fasterxml.jackson.core:jackson-databind:2.18.2
 //NATIVE_OPTIONS -O2 --no-fallback
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
-import tools.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
