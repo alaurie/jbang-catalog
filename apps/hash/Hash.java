@@ -1,4 +1,4 @@
-/// usr/bin/env jbang "$0" "$@" ; exit $?
+///usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 25+
 //DEPS info.picocli:picocli:4.7.7
 //NATIVE_OPTIONS -O2 --no-fallback
@@ -78,6 +78,10 @@ class Hash implements Callable<Integer> {
     }
 
     if (files == null || files.isEmpty()) {
+      if (System.console() != null) {
+        CommandLine.usage(this, System.out);
+        return 0;
+      }
       return hashStream(System.in, "-");
     }
 

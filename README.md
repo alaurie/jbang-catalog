@@ -29,15 +29,13 @@ jbang tfup
 ```
 Usage: tfup [-fhV] [-p=<customPath>] [-v=<versionToInstall>]
 Fetches and installs Terraform.
-  -f, --force     Force update even if versions match.
-  -h, --help      Show this help message and exit.
-  -p, --path=<customPath>
-                  Custom installation directory path.
+  -f, --force               Force update even if versions match.
+  -h, --help                Show this help message and exit.
+  -p, --path=<customPath>   Custom installation directory path.
   -v, --version=<versionToInstall>
-                  Specific version to install (e.g., 1.9.0). If omitted, latest
-                    is fetched.
-  -V, --version   Print version information and exit.
-```
+                            Specific version to install (e.g., 1.9.0). If
+                              omitted, latest is fetched.
+  -V                        Print version information and exit.
 
 ---
 
@@ -209,7 +207,7 @@ jbang jwt
 ### Options
 
 ```
-Usage: jwt [-cHHpV] [<tokenOrFile>]
+Usage: jwt [-chHpV] [<tokenOrFile>]
 Inspect and decode JSON Web Tokens (JWT) without sending tokens to third
 parties.
       [<tokenOrFile>]   JWT token string, file path containing token, or '-'
@@ -301,18 +299,16 @@ jbang hash
 ### Options
 
 ```
-Usage: hash [-chV] [-a=<algorithm>] [-c=<checkFile>] [-t=<textInput>]
-            [<file>...]
+Usage: hash [-hV] [-a=<algorithm>] [-c=<checkFile>] [-t=<textInput>] [<file>...]
 Compute and verify cryptographic checksums for files or text input.
-      [<file>...]         One or more file paths to hash, or '-' for stdin.
+      [<file>...]           One or more file paths to hash, or '-' for stdin.
   -a, --algorithm=<algorithm>
-                          Hash algorithm: MD5, SHA-1, SHA-256, SHA-512,
-                            SHA3-256, SHA3-512. Default: SHA-256.
-  -c, --check=<checkFile> Verify checksums from specified checksum file.
-  -h, --help              Show this help message and exit.
-  -t, --text=<textInput>  Compute hash for string text input instead of file.
-  -V, --version           Print version information and exit.
-```
+                            Hash algorithm: MD5, SHA-1, SHA-256, SHA-512,
+                              SHA3-256, SHA3-512. Default: SHA-256.
+  -c, --check=<checkFile>   Verify checksums from specified checksum file.
+  -h, --help                Show this help message and exit.
+  -t, --text=<textInput>    Compute hash for string text input instead of file.
+  -V, --version             Print version information and exit.
 
 ---
 

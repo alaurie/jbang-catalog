@@ -1,4 +1,4 @@
-/// usr/bin/env jbang "$0" "$@" ; exit $?
+///usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 25+
 //DEPS tools.jackson.core:jackson-databind:3.2.1
 //DEPS info.picocli:picocli:4.7.7
@@ -8,6 +8,7 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -20,6 +21,7 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.concurrent.Callable;
@@ -46,10 +48,12 @@ class Tfup implements Callable<Integer> {
   private static final String OS_ARCH = getOsArch();
   private static final String TF_PLATFORM = OS_NAME + "_" + OS_ARCH;
   private static final String EXE_NAME = OS_NAME.equals("windows") ? "terraform.exe" : "terraform";
-  private static final ObjectMapper MAPPER = new ObjectMapper();
+  private static final ObjectMapper MAPPER = JsonMapper.builder().build();
   @Option(names = {"-h", "--help"}, usageHelp = true,
       description = "Show this help message and exit.")
   private boolean helpRequested;
+  @Option(names = {"-V"}, versionHelp = true, description = "Print version information and exit.")
+  private boolean versionRequested;
   @Option(names = {"-f", "--force"}, description = "Force update even if versions match.")
   private boolean force;
   @Option(names = {"-p", "--path"}, description = "Custom installation directory path.")
@@ -100,7 +104,17 @@ class Tfup implements Callable<Integer> {
 
     if (!inPath) {
       System.out.println("\n[NOTICE] " + absBinDir + " is not in your PATH.");
-      if (OS_NAME.equals("windows")) {
+      var githubPath = System.getenv("GITHUB_PATH");
+      if (githubPath != null && !githubPath.isBlank()) {
+        try {
+          Files.writeString(Path.of(githubPath), absBinDir + System.lineSeparator(),
+              StandardOpenOption.APPEND);
+          System.out.println("[NOTICE] Added " + absBinDir
+              + " to $GITHUB_PATH for subsequent GitHub Actions steps.");
+        } catch (Exception e) {
+          System.err.println("Failed to write to GITHUB_PATH: " + e.getMessage());
+        }
+      } else if (OS_NAME.equals("windows")) {
         System.out.println("Add it via System Properties -> Environment Variables.");
       } else {
         System.out.println("Add it to your shell profile (e.g. ~/.bashrc or ~/.zshrc):");
@@ -148,7 +162,7 @@ class Tfup implements Callable<Integer> {
     var response = client.send(request, HttpResponse.BodyHandlers.ofString());
     if (response.statusCode() == 200) {
       var node = MAPPER.readTree(response.body());
-      var tag = node.get("tag_name").asString();
+      var tag = node.get("tag_name").asText();
       return tag.startsWith("v") ? tag.substring(1) : tag;
     }
     return null;

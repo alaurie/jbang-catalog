@@ -102,6 +102,12 @@ Instructions, conventions, and engineering standards for AI coding agents operat
   }
   ```
 
+### Stdin & Interactive Execution
+- **No-Argument Stdin Handling**: Utilities that process files or stdin (e.g. `hash`, `jwt`) must never block indefinitely on `System.in` when executed interactively without arguments.
+- **Terminal Detection**: Use `System.console() != null` to detect interactive terminal execution:
+  - When executed in an interactive terminal with no required inputs or arguments, print usage help via `CommandLine.usage(this, System.out)` and return `0` instead of hanging on `System.in`.
+  - When standard input is piped/redirected (`System.console() == null`) or explicitly requested via `-`, process `System.in`.
+
 ---
 
 ## 4. Cross-Platform Guidelines (Windows, macOS, Linux)

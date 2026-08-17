@@ -1,16 +1,17 @@
-/// usr/bin/env jbang "$0" "$@" ; exit $?
+///usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 25+
 //DEPS info.picocli:picocli:4.7.7
-//DEPS com.fasterxml.jackson.core:jackson-databind:2.18.2
+//DEPS tools.jackson.core:jackson-databind:3.2.1
 //NATIVE_OPTIONS -O2 --no-fallback
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.SerializationFeature;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -37,7 +38,7 @@ import java.util.concurrent.Callable;
 class Jwt implements Callable<Integer> {
 
   private static final ObjectMapper MAPPER =
-      new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
+      JsonMapper.builder().enable(SerializationFeature.INDENT_OUTPUT).build();
   private static final DateTimeFormatter DATE_FORMATTER =
       DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z");
 
@@ -74,6 +75,10 @@ class Jwt implements Callable<Integer> {
   public Integer call() throws Exception {
     var rawToken = resolveToken();
     if (rawToken == null || rawToken.isBlank()) {
+      if (tokenOrFile == null && System.console() != null) {
+        CommandLine.usage(this, System.out);
+        return 0;
+      }
       System.err.println("Error: No JWT token provided via argument, file, or stdin.");
       return 1;
     }
