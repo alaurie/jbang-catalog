@@ -164,9 +164,11 @@ class Serve implements Callable<Integer> {
       var logFilter = SimpleFileServer.createOutputFilter(System.out, outputLevel);
 
       if (ssl) {
-        tempKeystore = Files.createTempFile("serve_keystore_", ".p12");
+        tempKeystore = Path.of(System.getProperty("java.io.tmpdir", "/tmp"),
+            "serve_ks_" + System.currentTimeMillis() + "_" + System.nanoTime() + ".p12");
         if (!generateSelfSignedKeystore(tempKeystore)) {
-          System.err.println("Error: Failed to generate on-the-fly SSL certificate using keytool.");
+          System.err
+              .println("Error: Failed to generate on-the-fly SSL certificate using JDK keytool.");
           return 1;
         }
 
@@ -301,8 +303,13 @@ class Serve implements Callable<Integer> {
    */
   private boolean generateSelfSignedKeystore(Path keystorePath) {
     try {
+      Files.deleteIfExists(keystorePath);
+
       var javaHome = System.getProperty("java.home", "");
       var keytoolBin = Path.of(javaHome, "bin", "keytool").toString();
+      if (!Files.exists(Path.of(keytoolBin)) && !Files.exists(Path.of(keytoolBin + ".exe"))) {
+        keytoolBin = Path.of(javaHome, "keytool").toString();
+      }
       if (!Files.exists(Path.of(keytoolBin)) && !Files.exists(Path.of(keytoolBin + ".exe"))) {
         keytoolBin = "keytool";
       }
