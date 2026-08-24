@@ -338,6 +338,56 @@ verification
 
 ---
 
+## reach
+
+`reach` is a network diagnostic CLI utility to test TCP reachability, measure handshake latency, inspect TLS/SSL certificates, and track connection stats.
+
+### Usage
+
+To run it via jbang from this catalog repository:
+
+```bash
+jbang reach@alaurie github.com:443
+```
+
+Or inspect TLS certificate details and test connection:
+
+```bash
+jbang reach@alaurie example.com 443
+```
+
+Or continuously probe until stopped via Ctrl+C:
+
+```bash
+jbang reach@alaurie -c database.internal 5432
+```
+
+Or, if you clone the repository locally:
+
+```bash
+jbang reach github.com:443
+```
+
+### Options
+
+```
+Usage: reach [-chsV] [-i=<interval>] [-n=<count>] [-t=<timeout>] <target>
+             [<portParam>]
+Network diagnostic CLI utility to test TCP reachability and inspect TLS certs.
+      <target>              Target host, host:port, or IP address.
+      [<portParam>]         Port number (default: 80 or 443).
+  -c, --continuous          Continuous probing until stopped via Ctrl+C.
+  -h, --help                Show this help message and exit.
+  -i, --interval=<interval> Interval between probes in milliseconds (default:
+                              1000).
+  -n, --count=<count>       Number of probe attempts (default: 4).
+  -s, --ssl, --tls          Force TLS/SSL certificate inspection.
+  -t, --timeout=<timeout>   Connection timeout in milliseconds (default: 2000).
+  -V, --version             Print version information and exit.
+```
+
+---
+
 ## Development
 
 To automatically run `jbang-fmt` on staged `.java` files before committing, enable the repository's pre-commit hook:

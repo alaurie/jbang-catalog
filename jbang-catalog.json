@@ -27,6 +27,10 @@
     "fetch": {
       "script-ref": "apps/fetch/Fetch.java",
       "description": "Multithreaded download utility with automatic checksum capability."
+    },
+    "reach": {
+      "script-ref": "apps/reach/Reach.java",
+      "description": "Network diagnostic CLI utility to test TCP reachability and inspect TLS certs."
     }
   }
 }
