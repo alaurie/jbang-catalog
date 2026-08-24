@@ -33,16 +33,22 @@ jbang serve
 ### Options
 
 ```
-Usage: serve [-ahvV] [-b=<bind>] [-d=<directory>] [-p=<port>] [[dirOrPort]...]
+Usage: serve [-ahvV] [--spa] [--auth=<authCredentials>] [-b=<bind>]
+             [-d=<directory>] [-p=<port>] [[dirOrPort]...]
 Simple HTTP file server inspired by python -m http.server
       [[dirOrPort]...]   Optional directory path and/or port number
   -a, --download         Force browser to download files instead of displaying
                            inline
+      --auth=<authCredentials>
+                         HTTP Basic Authentication credentials (format: user:
+                           password)
   -b, --bind=<bind>      Address to bind to (default: 0.0.0.0)
   -d, --directory=<directory>
                          Directory to serve (default: current directory)
   -h, --help             Show this help message and exit.
   -p, --port=<port>      Port to listen on (default: 8080)
+      --spa              Single Page Application mode: fallback 404 requests to
+                           index.html
   -v, --verbose          Enable verbose request logging
   -V, --version          Print version information and exit.
 ```
@@ -75,12 +81,16 @@ jbang nudge
 ### Options
 
 ```
-Usage: nudge [-chV] [-b=<buffer>] [-m=<mode>] [-p=<pixels>]
-                     [-s=<seconds>] [-r=<START> <STOP> <START> <STOP>]...
+Usage: nudge [-chV] [-b=<buffer>] [-m=<mode>] [-p=<pixels>] [-s=<seconds>]
+             [--between=<START> <STOP> <START> <STOP>]... [-r=<START> <STOP>
+             <START> <STOP>]...
 Simulates user activity (mouse movement, key press, scrolling) when idle to
 keep your presence status active.
   -b, --buffer=<buffer>     Initial buffer delay in seconds before the first
                               check. Default: same as check interval.
+      --between=<START> <STOP> <START> <STOP>
+                            Only perform nudges between HH:mm and HH:mm working
+                              hours window.
   -c, --circular            Move mouse in a circle pattern. Default move
                               out-and-back.
   -h, --help                Show this help message and exit.
@@ -125,12 +135,15 @@ jbang typeit@alaurie -t "my-secret-password"
 ### Options
 
 ```
-Usage: typeit [-hvV] [-d=<delay>] [-s=<speed>] [-t=<customText>]
+Usage: typeit [-ehpvV] [-d=<delay>] [-s=<speed>] [-t=<customText>]
 Simulates typing clipboard text (or specified string) into the active window
 after a countdown delay.
   -d, --delay=<delay>       Countdown delay in seconds before typing starts
                               (default: 5).
+  -e, --enter               Press Enter key after typing completes.
   -h, --help                Show this help message and exit.
+  -p, --password            Prompt securely for password input without echoing
+                              characters to terminal.
   -s, --speed=<speed>       Typing speed delay in milliseconds between
                               keystrokes (default: 10).
   -t, --text=<customText>   Custom text to type instead of reading from the
@@ -138,6 +151,7 @@ after a countdown delay.
   -v, --verbose             Print characters as they are typed.
   -V, --version             Print version information and exit.
 ```
+
 
 ---
 
@@ -174,20 +188,23 @@ jbang jwt
 ### Options
 
 ```
-Usage: jwt [-chHpV] [<tokenOrFile>]
+Usage: jwt [-cehHpV] [-s=<secret>] [<tokenOrFile>]
 Inspect and decode JSON Web Tokens (JWT) without sending tokens to third
 parties.
-      [<tokenOrFile>]   JWT token string, file path containing token, or '-'
-                          for stdin.
-  -c, --check-exp       Validate token expiry state and exit 0 (valid) or 1
-                          (expired).
-  -h, --help            Show this help message and exit.
-  -H, --header-only     Print header JSON only.
-  -p, --payload-only    Print payload JSON only.
-  -V, --version         Print version information and exit.
+      [<tokenOrFile>]     JWT token string, file path containing token, or '-'
+                            for stdin.
+  -c, --check-exp         Validate token expiry state and exit 0 (valid) or 1
+                            (expired).
+  -e, --env, --export     Format payload claims as shell environment variables
+                            (export KEY=VAL).
+  -h, --help              Show this help message and exit.
+  -H, --header-only       Print header JSON only.
+  -p, --payload-only      Print payload JSON only.
+  -s, --secret=<secret>   HMAC secret key to verify token signature (HS256,
+                            HS384, HS512).
+  -V, --version           Print version information and exit.
 ```
 
----
 
 ## killport
 
@@ -222,16 +239,18 @@ jbang killport
 ### Options
 
 ```
-Usage: killport [-dfhV] <port>...
+Usage: killport [-dfhiV] [-s=<signal>] <port>...
 Find and terminate processes listening on specified network ports.
-      <port>...   One or more port numbers to inspect or kill.
-  -d, --dry-run   Show matching processes without killing them.
-  -f, --force     Forcefully terminate process (SIGKILL / taskkill /F).
-  -h, --help      Show this help message and exit.
-  -V, --version   Print version information and exit.
+      <port>...           One or more port numbers to inspect or kill.
+  -d, --dry-run           Show matching processes without killing them.
+  -f, --force             Forcefully terminate process (SIGKILL / taskkill /F).
+  -h, --help              Show this help message and exit.
+  -i, --interactive       Prompt confirmation [y/N] before killing each process.
+  -s, --signal=<signal>   Termination signal: TERM (graceful) or KILL
+                            (forceful). Default: TERM.
+  -V, --version           Print version information and exit.
 ```
 
----
 
 ## hash
 
@@ -266,23 +285,24 @@ jbang hash
 ### Options
 
 ```
-Usage: hash [-hV] [-a=<algorithm>] [-c=<checkFile>] [-t=<textInput>] [<file>...]
+Usage: hash [-chrV] [-a=<algorithm>] [-c=<checkFile>] [-t=<textInput>]
+            [--benchmark] [<file>...]
 Compute and verify cryptographic checksums for files or text input.
-      [<file>...]           One or more file paths to hash, or '-' for stdin.
+      [<file>...]           One or more file paths or directories to hash, or
+                              '-' for stdin.
   -a, --algorithm=<algorithm>
                             Hash algorithm: MD5, SHA-1, SHA-256, SHA-512,
                               SHA3-256, SHA3-512. Default: SHA-256.
+      --benchmark           Benchmark CPU hashing throughput across algorithms
+                              (MB/s).
   -c, --check=<checkFile>   Verify checksums from specified checksum file.
   -h, --help                Show this help message and exit.
+  -r, --recursive           Recursively compute checksum manifest for
+                              directories.
   -t, --text=<textInput>    Compute hash for string text input instead of file.
   -V, --version             Print version information and exit.
 ```
 
----
-
-## fetch
-
-`fetch` is a high-performance multithreaded CLI file downloader with live progress and automatic checksum detection and verification.
 
 ### Usage
 
