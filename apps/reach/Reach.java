@@ -7,16 +7,23 @@
 //NATIVE_OPTIONS -O2 --no-fallback
 
 import java.io.IOException;
+import java.net.Inet4Address;
+import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.URI;
 import java.net.UnknownHostException;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.DoubleSummaryStatistics;
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -31,10 +38,10 @@ import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
 /**
- * Reach is a network diagnostic CLI tool to test TCP connectivity, measure handshake latency,
- * inspect TLS/SSL certificates, and track connection stats.
+ * Reach is an advanced network diagnostic CLI tool to test TCP connectivity, measure handshake
+ * latency, inspect TLS/SSL certificates, probe HTTP/HTTPS status, and export JSON stats.
  */
-@Command(name = "reach", mixinStandardHelpOptions = true, version = "reach 1.0",
+@Command(name = "reach", mixinStandardHelpOptions = true, version = "reach 1.1",
     description = "Network diagnostic CLI utility to test TCP reachability and inspect TLS certs.")
 @SuppressWarnings("unused")
 class Reach implements Callable<Integer> {
@@ -42,11 +49,18 @@ class Reach implements Callable<Integer> {
   @Parameters(index = "0", description = "Target host, host:port, or IP address.")
   private String target;
 
-  @Parameters(index = "1", arity = "0..1", description = "Port number (default: 80 or 443).")
-  private Integer portParam;
+  @Parameters(index = "1", arity = "0..1",
+      description = "Port, list (80,443), or range (80-85). Default: 80 or 443.")
+  private String portSpec;
+
+  @Option(names = {"-4", "--ipv4"}, description = "Force IPv4 address resolution.")
+  private boolean ipv4Only;
+
+  @Option(names = {"-6", "--ipv6"}, description = "Force IPv6 address resolution.")
+  private boolean ipv6Only;
 
   @Option(names = {"-n", "--count"}, defaultValue = "4",
-      description = "Number of probe attempts (default: 4).")
+      description = "Number of probe attempts per port (default: 4).")
   private int count = 4;
 
   @Option(names = {"-c", "--continuous"},
@@ -64,14 +78,31 @@ class Reach implements Callable<Integer> {
   @Option(names = {"-s", "--ssl", "--tls"}, description = "Force TLS/SSL certificate inspection.")
   private Boolean forceSsl;
 
+  @Option(names = {"-H", "--http"},
+      description = "Probe Layer 7 HTTP/HTTPS status code and Time-To-First-Byte (TTFB).")
+  private boolean checkHttp;
+
+  @Option(names = {"-j", "--json"}, description = "Output diagnostic results in JSON format.")
+  private boolean jsonOutput;
+
+  @Option(names = {"-w", "--warn-days"},
+      description = "Exit code 2 if SSL certificate expires within specified days threshold.")
+  private Integer warnDaysThreshold;
+
   private static final DateTimeFormatter DATE_FORMATTER =
       DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z").withZone(ZoneId.systemDefault());
 
-  /**
-   * Main entry point using Java 25 instance main convention.
-   *
-   * @param args Command line arguments
-   */
+  /** Record carrying TLS inspection results. */
+  private record TlsInfo(String subject, String issuer, Instant notAfter, long daysRemaining,
+      String protocol, String cipherSuite, String error) {}
+
+  /** Record carrying HTTP probe results. */
+  private record HttpInfo(int statusCode, double ttfbMs, String serverHeader, String error) {}
+
+  /** Record carrying overall single-port probe results. */
+  private record PortResult(int port, boolean isSsl, TlsInfo tls, HttpInfo http, int transmitted,
+      int received, double lossPercent, double minRtt, double avgRtt, double maxRtt) {}
+
   void main(String... args) {
     int exitCode = new CommandLine(this).execute(args);
     System.exit(exitCode);
@@ -80,74 +111,128 @@ class Reach implements Callable<Integer> {
   @Override
   public Integer call() throws Exception {
     var host = target;
-    var port = 80;
+    String rawPortStr = null;
 
     if (target.contains(":")) {
       var parts = target.split(":", 2);
       host = parts[0];
-      try {
-        port = Integer.parseInt(parts[1]);
-      } catch (NumberFormatException e) {
-        System.err.println("Error: Invalid port in target specifier: " + parts[1]);
-        return 1;
-      }
-    } else if (portParam != null) {
-      port = portParam;
-    } else if (Boolean.TRUE.equals(forceSsl)) {
-      port = 443;
+      rawPortStr = parts[1];
+    } else if (portSpec != null && !portSpec.isBlank()) {
+      rawPortStr = portSpec;
     }
 
-    var isSsl = Boolean.TRUE.equals(forceSsl) || (forceSsl == null && port == 443);
-
-    System.out.println("REACH " + host + ":" + port);
+    List<Integer> ports = parsePorts(rawPortStr, Boolean.TRUE.equals(forceSsl));
+    if (ports.isEmpty()) {
+      System.err.println("Error: No valid ports specified.");
+      return 1;
+    }
 
     // 1. DNS Resolution
     var dnsStart = System.nanoTime();
     InetAddress address;
     try {
-      address = InetAddress.getByName(host);
+      var allAddresses = InetAddress.getAllByName(host);
+      address = Arrays.stream(allAddresses).filter(addr -> {
+        if (ipv4Only)
+          return addr instanceof Inet4Address;
+        if (ipv6Only)
+          return addr instanceof Inet6Address;
+        return true;
+      }).findFirst().orElse(null);
+
+      if (address == null) {
+        var mode = ipv4Only ? "IPv4" : "IPv6";
+        System.err.println("Error: No " + mode + " address found for host '" + host + "'");
+        return 1;
+      }
     } catch (UnknownHostException e) {
       System.err.println("Error: Could not resolve hostname '" + host + "'");
       return 1;
     }
     var dnsTimeMs = (System.nanoTime() - dnsStart) / 1_000_000.0;
-    System.out.printf("DNS: Resolved %s -> %s in %.2f ms%n", host, address.getHostAddress(),
-        dnsTimeMs);
 
-    // 2. Optional TLS Cert Inspection
-    if (isSsl) {
-      inspectTls(host, port);
+    var overallSuccess = true;
+    var certWarningTriggered = false;
+    List<PortResult> results = new ArrayList<>();
+
+    if (!jsonOutput) {
+      System.out.println("REACH " + host + " [" + address.getHostAddress() + "]");
+      System.out.printf("DNS: Resolved %s -> %s in %.2f ms%n", host, address.getHostAddress(),
+          dnsTimeMs);
     }
 
-    System.out.println();
+    for (var port : ports) {
+      var isSsl = Boolean.TRUE.equals(forceSsl) || (forceSsl == null && port == 443);
 
-    // 3. TCP Probing Loop
-    List<Double> rtts = new ArrayList<>();
-    var stats = new int[2]; // stats[0] = transmitted, stats[1] = received
+      TlsInfo tlsInfo = null;
+      if (isSsl) {
+        tlsInfo = inspectTls(host, port);
+        if (warnDaysThreshold != null && tlsInfo != null
+            && tlsInfo.daysRemaining() < warnDaysThreshold) {
+          certWarningTriggered = true;
+        }
+      }
 
-    final var finalHost = host;
-    final var finalPort = port;
+      HttpInfo httpInfo = null;
+      if (checkHttp) {
+        httpInfo = inspectHttp(host, port, isSsl);
+      }
 
-    var shutdownHook =
-        new Thread(() -> printSummary(finalHost, finalPort, rtts, stats[0], stats[1]));
-    Runtime.getRuntime().addShutdownHook(shutdownHook);
+      if (!jsonOutput) {
+        if (isSsl && tlsInfo != null) {
+          if (tlsInfo.error() == null) {
+            System.out.println("\nTLS: Port " + port + " Certificate OK");
+            System.out.println(" ├─ Subject: " + tlsInfo.subject());
+            System.out.println(" ├─ Issuer:  " + tlsInfo.issuer());
+            System.out.println(" ├─ Valid Until: " + DATE_FORMATTER.format(tlsInfo.notAfter())
+                + " (" + tlsInfo.daysRemaining() + " days remaining)");
+            System.out.println(
+                " └─ Protocol: " + tlsInfo.protocol() + " / Cipher: " + tlsInfo.cipherSuite());
+          } else {
+            System.out
+                .println("\nTLS: Port " + port + " Certificate Failed (" + tlsInfo.error() + ")");
+          }
+        }
 
-    var attempts = continuous ? Integer.MAX_VALUE : count;
+        if (checkHttp && httpInfo != null) {
+          if (httpInfo.error() == null) {
+            var serverStr =
+                httpInfo.serverHeader() != null ? " [Server: " + httpInfo.serverHeader() + "]" : "";
+            System.out.printf("%nHTTP: Port %d -> %d (TTFB: %.2f ms)%s%n", port,
+                httpInfo.statusCode(), httpInfo.ttfbMs(), serverStr);
+          } else {
+            System.out
+                .println("\nHTTP: Port " + port + " Request Failed (" + httpInfo.error() + ")");
+          }
+        }
 
-    try {
+        System.out.println();
+      }
+
+      // TCP Probing Loop for this port
+      List<Double> rtts = new ArrayList<>();
+      var transmitted = 0;
+      var received = 0;
+
+      var attempts = continuous ? Integer.MAX_VALUE : count;
+
       for (var i = 0; i < attempts; i++) {
-        stats[0]++;
+        transmitted++;
         var connectStart = System.nanoTime();
         try (var socket = new Socket()) {
           socket.connect(new InetSocketAddress(address, port), timeout);
           var rttMs = (System.nanoTime() - connectStart) / 1_000_000.0;
           rtts.add(rttMs);
-          stats[1]++;
-          System.out.printf("Connected to %s:%d: tcp_seq=%d time=%.2f ms%n",
-              address.getHostAddress(), port, i + 1, rttMs);
+          received++;
+          if (!jsonOutput) {
+            System.out.printf("Connected to %s:%d: tcp_seq=%d time=%.2f ms%n",
+                address.getHostAddress(), port, i + 1, rttMs);
+          }
         } catch (IOException e) {
-          System.out.printf("Connection to %s:%d: tcp_seq=%d timeout/refused (%s)%n",
-              address.getHostAddress(), port, i + 1, e.getMessage());
+          if (!jsonOutput) {
+            System.out.printf("Connection to %s:%d: tcp_seq=%d timeout/refused (%s)%n",
+                address.getHostAddress(), port, i + 1, e.getMessage());
+          }
         }
 
         if (i < attempts - 1) {
@@ -159,26 +244,78 @@ class Reach implements Callable<Integer> {
           }
         }
       }
-    } finally {
-      try {
-        Runtime.getRuntime().removeShutdownHook(shutdownHook);
-      } catch (IllegalStateException ignored) {
-        // Hook is already running via Ctrl+C / SIGINT
+
+      var lossPercent =
+          transmitted > 0 ? ((transmitted - received) / (double) transmitted) * 100.0 : 0.0;
+      DoubleSummaryStatistics stats =
+          rtts.stream().mapToDouble(Double::doubleValue).summaryStatistics();
+
+      var minRtt = rtts.isEmpty() ? 0.0 : stats.getMin();
+      var avgRtt = rtts.isEmpty() ? 0.0 : stats.getAverage();
+      var maxRtt = rtts.isEmpty() ? 0.0 : stats.getMax();
+
+      if (received == 0) {
+        overallSuccess = false;
+      }
+
+      PortResult result = new PortResult(port, isSsl, tlsInfo, httpInfo, transmitted, received,
+          lossPercent, minRtt, avgRtt, maxRtt);
+      results.add(result);
+
+      if (!jsonOutput) {
+        System.out.printf("%n--- %s:%d reach statistics ---%n", host, port);
+        System.out.printf("%d probes transmitted, %d received, %.1f%% packet loss%n", transmitted,
+            received, lossPercent);
+        if (!rtts.isEmpty()) {
+          System.out.printf("rtt min/avg/max = %.2f/%.2f/%.2f ms%n", minRtt, avgRtt, maxRtt);
+        }
       }
     }
 
-    printSummary(finalHost, finalPort, rtts, stats[0], stats[1]);
-    return stats[1] > 0 ? 0 : 1;
+    if (jsonOutput) {
+      printJsonOutput(host, address.getHostAddress(), dnsTimeMs, results);
+    }
+
+    if (certWarningTriggered) {
+      if (!jsonOutput) {
+        System.err.println("\nWarning: One or more SSL certificates expire within "
+            + warnDaysThreshold + " days!");
+      }
+      return 2;
+    }
+
+    return overallSuccess ? 0 : 1;
   }
 
-  /**
-   * Connects via TLS to inspect peer certificate issuer, expiration date, and negotiated protocol.
-   *
-   * @param host Target host name
-   * @param port Target port number
-   */
-  private void inspectTls(String host, int port) {
-    System.out.print("TLS: Inspecting certificate... ");
+  private List<Integer> parsePorts(String rawPortStr, boolean isSslForced) {
+    if (rawPortStr == null || rawPortStr.isBlank()) {
+      return List.of(isSslForced ? 443 : 80);
+    }
+
+    List<Integer> ports = new ArrayList<>();
+    for (var part : rawPortStr.split(",")) {
+      var trimmed = part.trim();
+      if (trimmed.contains("-")) {
+        var range = trimmed.split("-", 2);
+        try {
+          var start = Integer.parseInt(range[0].trim());
+          var end = Integer.parseInt(range[1].trim());
+          for (var p = Math.min(start, end); p <= Math.max(start, end); p++) {
+            ports.add(p);
+          }
+        } catch (NumberFormatException ignored) {
+        }
+      } else {
+        try {
+          ports.add(Integer.parseInt(trimmed));
+        } catch (NumberFormatException ignored) {
+        }
+      }
+    }
+    return ports;
+  }
+
+  private TlsInfo inspectTls(String host, int port) {
     try {
       TrustManager[] trustAll = new TrustManager[] {new X509TrustManager() {
         public X509Certificate[] getAcceptedIssuers() {
@@ -200,51 +337,111 @@ class Reach implements Callable<Integer> {
 
         var certs = sslSocket.getSession().getPeerCertificates();
         if (certs.length > 0 && certs[0] instanceof X509Certificate cert) {
-          System.out.println("OK");
-          System.out.println(" ├─ Subject: " + cert.getSubjectX500Principal().getName());
-          System.out.println(" ├─ Issuer:  " + cert.getIssuerX500Principal().getName());
-
           var notAfter = cert.getNotAfter().toInstant();
           var daysRemaining = Duration.between(Instant.now(), notAfter).toDays();
-
-          System.out.println(" ├─ Valid Until: " + DATE_FORMATTER.format(notAfter) + " ("
-              + daysRemaining + " days remaining)");
-          System.out.println(" └─ Protocol: " + sslSocket.getSession().getProtocol() + " / Cipher: "
-              + sslSocket.getSession().getCipherSuite());
+          return new TlsInfo(cert.getSubjectX500Principal().getName(),
+              cert.getIssuerX500Principal().getName(), notAfter, daysRemaining,
+              sslSocket.getSession().getProtocol(), sslSocket.getSession().getCipherSuite(), null);
         } else {
-          System.out.println("No X509 Certificate found.");
+          return new TlsInfo(null, null, null, 0, null, null, "No X509 certificate found");
         }
       }
     } catch (Exception e) {
-      System.out.println("Failed (" + e.getMessage() + ")");
+      return new TlsInfo(null, null, null, 0, null, null, e.getMessage());
     }
   }
 
-  /**
-   * Prints summary statistics for transmitted and received TCP probes.
-   *
-   * @param host Target host name
-   * @param port Target port number
-   * @param rtts List of round-trip time measurements in milliseconds
-   * @param transmitted Count of total probes sent
-   * @param received Count of total successful probes
-   */
-  private static void printSummary(String host, int port, List<Double> rtts, int transmitted,
-      int received) {
-    if (transmitted == 0) {
-      return;
-    }
-    System.out.println();
-    System.out.printf("--- %s:%d reach statistics ---%n", host, port);
-    var loss = ((transmitted - received) / (double) transmitted) * 100.0;
-    System.out.printf("%d probes transmitted, %d received, %.1f%% packet loss%n", transmitted,
-        received, loss);
+  private HttpInfo inspectHttp(String host, int port, boolean isSsl) {
+    try (var client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL)
+        .connectTimeout(Duration.ofMillis(timeout)).build()) {
 
-    if (!rtts.isEmpty()) {
-      DoubleSummaryStatistics stats =
-          rtts.stream().mapToDouble(Double::doubleValue).summaryStatistics();
-      System.out.printf("rtt min/avg/max = %.2f/%.2f/%.2f ms%n", stats.getMin(), stats.getAverage(),
-          stats.getMax());
+      var scheme = isSsl ? "https://" : "http://";
+      var portPart = (isSsl && port == 443) || (!isSsl && port == 80) ? "" : ":" + port;
+      var uri = URI.create(scheme + host + portPart + "/");
+
+      var request = HttpRequest.newBuilder(uri).method("HEAD", HttpRequest.BodyPublishers.noBody())
+          .timeout(Duration.ofMillis(timeout)).header("User-Agent", "jbang-reach").build();
+
+      var start = System.nanoTime();
+      var response = client.send(request, HttpResponse.BodyHandlers.discarding());
+      var ttfbMs = (System.nanoTime() - start) / 1_000_000.0;
+
+      var serverHeader = response.headers().firstValue("server").orElse(null);
+      return new HttpInfo(response.statusCode(), ttfbMs, serverHeader, null);
+    } catch (Exception e) {
+      return new HttpInfo(0, 0.0, null, e.getMessage());
     }
+  }
+
+  private void printJsonOutput(String host, String ip, double dnsTimeMs, List<PortResult> results) {
+    var sb = new StringBuilder();
+    sb.append("{\n");
+    sb.append("  \"target\": \"").append(escapeJson(host)).append("\",\n");
+    sb.append("  \"ip\": \"").append(escapeJson(ip)).append("\",\n");
+    sb.append("  \"dns_time_ms\": ").append(String.format("%.2f", dnsTimeMs)).append(",\n");
+    sb.append("  \"ports\": [\n");
+
+    for (var i = 0; i < results.size(); i++) {
+      var res = results.get(i);
+      sb.append("    {\n");
+      sb.append("      \"port\": ").append(res.port()).append(",\n");
+      sb.append("      \"ssl\": ").append(res.isSsl()).append(",\n");
+      sb.append("      \"transmitted\": ").append(res.transmitted()).append(",\n");
+      sb.append("      \"received\": ").append(res.received()).append(",\n");
+      sb.append("      \"loss_percent\": ").append(String.format("%.1f", res.lossPercent()))
+          .append(",\n");
+      sb.append("      \"rtt_min_ms\": ").append(String.format("%.2f", res.minRtt())).append(",\n");
+      sb.append("      \"rtt_avg_ms\": ").append(String.format("%.2f", res.avgRtt())).append(",\n");
+      sb.append("      \"rtt_max_ms\": ").append(String.format("%.2f", res.maxRtt()));
+
+      if (res.tls() != null) {
+        sb.append(",\n      \"tls\": {\n");
+        if (res.tls().error() == null) {
+          sb.append("        \"subject\": \"").append(escapeJson(res.tls().subject()))
+              .append("\",\n");
+          sb.append("        \"issuer\": \"").append(escapeJson(res.tls().issuer()))
+              .append("\",\n");
+          sb.append("        \"valid_until\": \"").append(res.tls().notAfter()).append("\",\n");
+          sb.append("        \"days_remaining\": ").append(res.tls().daysRemaining()).append(",\n");
+          sb.append("        \"protocol\": \"").append(escapeJson(res.tls().protocol()))
+              .append("\",\n");
+          sb.append("        \"cipher\": \"").append(escapeJson(res.tls().cipherSuite()))
+              .append("\"\n");
+        } else {
+          sb.append("        \"error\": \"").append(escapeJson(res.tls().error())).append("\"\n");
+        }
+        sb.append("      }");
+      }
+
+      if (res.http() != null) {
+        sb.append(",\n      \"http\": {\n");
+        if (res.http().error() == null) {
+          sb.append("        \"status\": ").append(res.http().statusCode()).append(",\n");
+          sb.append("        \"ttfb_ms\": ").append(String.format("%.2f", res.http().ttfbMs()))
+              .append(",\n");
+          sb.append("        \"server\": ")
+              .append(res.http().serverHeader() != null
+                  ? "\"" + escapeJson(res.http().serverHeader()) + "\""
+                  : "null")
+              .append("\n");
+        } else {
+          sb.append("        \"error\": \"").append(escapeJson(res.http().error())).append("\"\n");
+        }
+        sb.append("      }");
+      }
+
+      sb.append("\n    }").append(i < results.size() - 1 ? "," : "").append("\n");
+    }
+
+    sb.append("  ]\n");
+    sb.append("}\n");
+    System.out.print(sb.toString());
+  }
+
+  private String escapeJson(String str) {
+    if (str == null)
+      return "";
+    return str.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r",
+        "\\r");
   }
 }

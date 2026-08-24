@@ -340,7 +340,7 @@ verification
 
 ## reach
 
-`reach` is a network diagnostic CLI utility to test TCP reachability, measure handshake latency, inspect TLS/SSL certificates, and track connection stats.
+`reach` is an advanced network diagnostic CLI utility to test TCP reachability, measure handshake latency, inspect TLS/SSL certificates, probe Layer 7 HTTP/HTTPS status, and export structured JSON stats.
 
 ### Usage
 
@@ -350,16 +350,29 @@ To run it via jbang from this catalog repository:
 jbang reach@alaurie github.com:443
 ```
 
-Or inspect TLS certificate details and test connection:
+Or inspect Layer 7 HTTP status code and TTFB (Time-To-First-Byte):
 
 ```bash
-jbang reach@alaurie example.com 443
+jbang reach@alaurie -H example.com 443
 ```
 
-Or continuously probe until stopped via Ctrl+C:
+Or probe multiple ports or ranges:
 
 ```bash
-jbang reach@alaurie -c database.internal 5432
+jbang reach@alaurie example.com 80,443,8080
+jbang reach@alaurie 192.168.1.1 80-85
+```
+
+Or output machine-readable JSON for scripts & monitoring:
+
+```bash
+jbang reach@alaurie -j -H github.com 443
+```
+
+Or warn and exit code 2 if SSL cert expires in less than 30 days:
+
+```bash
+jbang reach@alaurie --warn-days 30 example.com 443
 ```
 
 Or, if you clone the repository locally:
@@ -371,19 +384,28 @@ jbang reach github.com:443
 ### Options
 
 ```
-Usage: reach [-chsV] [-i=<interval>] [-n=<count>] [-t=<timeout>] <target>
-             [<portParam>]
+Usage: reach [-46chHjsV] [-i=<interval>] [-n=<count>] [-t=<timeout>]
+             [-w=<warnDaysThreshold>] <target> [<portSpec>]
 Network diagnostic CLI utility to test TCP reachability and inspect TLS certs.
       <target>              Target host, host:port, or IP address.
-      [<portParam>]         Port number (default: 80 or 443).
+      [<portSpec>]          Port, list (80,443), or range (80-85). Default: 80
+                              or 443.
+  -4, --ipv4                Force IPv4 address resolution.
+  -6, --ipv6                Force IPv6 address resolution.
   -c, --continuous          Continuous probing until stopped via Ctrl+C.
   -h, --help                Show this help message and exit.
+  -H, --http                Probe Layer 7 HTTP/HTTPS status code and
+                              Time-To-First-Byte (TTFB).
   -i, --interval=<interval> Interval between probes in milliseconds (default:
                               1000).
-  -n, --count=<count>       Number of probe attempts (default: 4).
+  -j, --json                Output diagnostic results in JSON format.
+  -n, --count=<count>       Number of probe attempts per port (default: 4).
   -s, --ssl, --tls          Force TLS/SSL certificate inspection.
   -t, --timeout=<timeout>   Connection timeout in milliseconds (default: 2000).
   -V, --version             Print version information and exit.
+  -w, --warn-days=<warnDaysThreshold>
+                            Exit code 2 if SSL certificate expires within
+                              specified days threshold.
 ```
 
 ---
