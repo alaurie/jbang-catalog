@@ -394,11 +394,12 @@ Or query comprehensive DNS records (A, AAAA, MX, NS, CNAME, TXT) and WHOIS domai
 jbang reach@alaurie --dns --whois google.com 443
 ```
 
-Or launch a full-screen interactive TamboUI dashboard:
+Or launch a full-screen interactive TamboUI dashboard (automatically runs all DNS, WHOIS, TLS & HTTP diagnostics as standard):
 
 ```bash
-jbang reach@alaurie --tui -H github.com 443
+jbang reach@alaurie --tui github.com 443
 ```
+
 
 Or warn and exit code 2 if SSL cert expires in less than 30 days:
 
@@ -436,7 +437,8 @@ Network diagnostic CLI utility to test TCP reachability and inspect TLS certs.
   -n, --count=<count>       Number of probe attempts per port (default: 4).
   -s, --ssl, --tls          Force TLS/SSL certificate inspection.
   -t, --timeout=<timeout>   Connection timeout in milliseconds (default: 2000).
-      --tui                 Launch full-screen interactive TamboUI dashboard.
+      --tui                 Launch full-screen interactive TamboUI dashboard
+                              (enables all diagnostics).
   -V, --version             Print version information and exit.
   -w, --warn-days=<warnDaysThreshold>
                             Exit code 2 if SSL certificate expires within

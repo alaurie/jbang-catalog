@@ -24,7 +24,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.security.Key;
 import java.security.cert.X509Certificate;
 import java.security.interfaces.RSAPublicKey;
 import java.time.Duration;
@@ -91,7 +90,8 @@ class Reach implements Callable<Integer> {
       description = "Continuous probing until stopped via Ctrl+C.")
   private boolean continuous;
 
-  @Option(names = {"--tui"}, description = "Launch full-screen interactive TamboUI dashboard.")
+  @Option(names = {"--tui"},
+      description = "Launch full-screen interactive TamboUI dashboard (enables all diagnostics).")
   private boolean tuiMode;
 
   @Option(names = {"--dns"},
@@ -198,7 +198,7 @@ class Reach implements Callable<Integer> {
     DnsInfo dnsInfo = (checkDns || tuiMode) ? inspectDnsRecords(host) : null;
     WhoisInfo whoisInfo = (checkWhois || tuiMode) ? queryWhois(host) : null;
 
-    // Interactive TamboUI Mode
+    // Interactive TamboUI Mode (Runs ALL diagnostics as standard)
     if (tuiMode) {
       runTuiDashboard(host, address, ports, dnsTimeMs, dnsInfo, whoisInfo);
       return 0;
@@ -383,14 +383,14 @@ class Reach implements Callable<Integer> {
     }
   }
 
-  /** Launches full-screen interactive TamboUI TUI dashboard. */
+  /** Launches full-screen interactive TamboUI TUI dashboard with all diagnostic options enabled as standard. */
   private void runTuiDashboard(String host, InetAddress address, List<Integer> ports,
       double dnsTimeMs, DnsInfo dnsInfo, WhoisInfo whoisInfo) throws Exception {
 
     var primaryPort = ports.get(0);
     var isSsl = Boolean.TRUE.equals(forceSsl) || (forceSsl == null && primaryPort == 443);
-    var tlsInfo = isSsl ? inspectTls(host, primaryPort) : null;
-    var httpInfo = checkHttp ? inspectHttp(host, primaryPort, isSsl) : null;
+    var tlsInfo = inspectTls(host, primaryPort);
+    var httpInfo = inspectHttp(host, primaryPort, isSsl);
 
     List<String> probeLogs = new ArrayList<>();
     List<Double> rtts = new ArrayList<>();
@@ -437,7 +437,7 @@ class Reach implements Callable<Integer> {
                 address.getHostAddress(), primaryPort, seq, e.getMessage()));
           }
 
-          if (probeLogs.size() > 12) {
+          if (probeLogs.size() > 14) {
             probeLogs.remove(0);
           }
         }
@@ -459,55 +459,74 @@ class Reach implements Callable<Integer> {
         var bodyChunks = Layout.horizontal()
             .constraints(Constraint.percentage(50), Constraint.percentage(50)).split(chunks.get(1));
 
-        var infoSb = new StringBuilder();
-        infoSb.append("Target: ").append(host).append("\n");
-        infoSb.append("IP: ").append(address.getHostAddress()).append("\n");
-        infoSb.append("Port: ").append(primaryPort).append("\n\n");
+        var leftChunks =
+            Layout.vertical().constraints(Constraint.percentage(50), Constraint.percentage(50))
+                .split(bodyChunks.get(0));
 
+        // Left Top: DNS & WHOIS Info
+        var dnsSb = new StringBuilder();
         if (dnsInfo != null && dnsInfo.error() == null) {
-          infoSb.append("=== DNS Records ===\n");
           if (!dnsInfo.aRecords().isEmpty())
-            infoSb.append("A:     ").append(String.join(", ", dnsInfo.aRecords())).append("\n");
+            dnsSb.append("A:     ").append(String.join(", ", dnsInfo.aRecords())).append("\n");
           if (!dnsInfo.aaaaRecords().isEmpty())
-            infoSb.append("AAAA:  ").append(String.join(", ", dnsInfo.aaaaRecords())).append("\n");
+            dnsSb.append("AAAA:  ").append(String.join(", ", dnsInfo.aaaaRecords())).append("\n");
           if (!dnsInfo.mxRecords().isEmpty())
-            infoSb.append("MX:    ").append(String.join(", ", dnsInfo.mxRecords())).append("\n");
+            dnsSb.append("MX:    ").append(String.join(", ", dnsInfo.mxRecords())).append("\n");
           if (!dnsInfo.nsRecords().isEmpty())
-            infoSb.append("NS:    ").append(String.join(", ", dnsInfo.nsRecords())).append("\n");
-          infoSb.append("\n");
+            dnsSb.append("NS:    ").append(String.join(", ", dnsInfo.nsRecords())).append("\n");
         }
 
         if (whoisInfo != null && whoisInfo.error() == null) {
-          infoSb.append("=== WHOIS Info ===\n");
           if (whoisInfo.registrar() != null)
-            infoSb.append("Registrar: ").append(whoisInfo.registrar()).append("\n");
+            dnsSb.append("Registrar: ").append(whoisInfo.registrar()).append("\n");
           if (whoisInfo.creationDate() != null)
-            infoSb.append("Created:   ").append(whoisInfo.creationDate()).append("\n");
+            dnsSb.append("Created:   ").append(whoisInfo.creationDate()).append("\n");
           if (whoisInfo.expiryDate() != null)
-            infoSb.append("Expires:   ").append(whoisInfo.expiryDate()).append("\n\n");
+            dnsSb.append("Expires:   ").append(whoisInfo.expiryDate()).append("\n");
         }
 
+        var dnsBlock =
+            Block.builder().title(" DNS & WHOIS Info ").style(Style.create().green()).build();
+
+        frame.renderWidget(
+            Paragraph.builder().text(Text.from(dnsSb.toString())).block(dnsBlock).build(),
+            leftChunks.get(0));
+
+        // Left Bottom: TLS & HTTP Security Details
+        var secSb = new StringBuilder();
         if (tlsInfo != null) {
-          infoSb.append("=== TLS Certificate ===\n");
           if (tlsInfo.error() == null) {
-            infoSb.append("Subject: ").append(tlsInfo.subject()).append("\n");
-            infoSb.append("Issuer:  ").append(tlsInfo.issuer()).append("\n");
+            secSb.append("Subject: ").append(tlsInfo.subject()).append("\n");
+            secSb.append("Issuer:  ").append(tlsInfo.issuer()).append("\n");
             if (tlsInfo.pubKeyDetails() != null)
-              infoSb.append("Key:     ").append(tlsInfo.pubKeyDetails()).append("\n");
-            infoSb.append("Expires: ").append(tlsInfo.daysRemaining()).append(" days remaining\n");
-            infoSb.append("Cipher:  ").append(tlsInfo.cipherSuite()).append("\n");
+              secSb.append("Key:     ").append(tlsInfo.pubKeyDetails()).append("\n");
+            secSb.append("Expires: ").append(tlsInfo.daysRemaining()).append(" days remaining\n");
+            secSb.append("Cipher:  ").append(tlsInfo.cipherSuite()).append("\n");
           } else {
-            infoSb.append("Error: ").append(tlsInfo.error()).append("\n");
+            secSb.append("TLS Error: ").append(tlsInfo.error()).append("\n");
           }
         }
 
-        var infoBlock = Block.builder().title(" Target, DNS, WHOIS & TLS Details ")
-            .style(Style.create().green()).build();
+        if (httpInfo != null) {
+          secSb.append("\n");
+          if (httpInfo.error() == null) {
+            secSb.append("HTTP: ").append(httpInfo.statusCode()).append(" (TTFB: ")
+                .append(String.format("%.1f ms", httpInfo.ttfbMs())).append(")\n");
+            if (httpInfo.serverHeader() != null)
+              secSb.append("Server: ").append(httpInfo.serverHeader()).append("\n");
+          } else {
+            secSb.append("HTTP Error: ").append(httpInfo.error()).append("\n");
+          }
+        }
+
+        var secBlock = Block.builder().title(" TLS & HTTP Security Details ")
+            .style(Style.create().cyan()).build();
 
         frame.renderWidget(
-            Paragraph.builder().text(Text.from(infoSb.toString())).block(infoBlock).build(),
-            bodyChunks.get(0));
+            Paragraph.builder().text(Text.from(secSb.toString())).block(secBlock).build(),
+            leftChunks.get(1));
 
+        // Right Column: Live Probes & Stats
         var logSb = new StringBuilder();
         for (var logLine : probeLogs) {
           logSb.append(logLine).append("\n");
@@ -519,7 +538,7 @@ class Reach implements Callable<Integer> {
         DoubleSummaryStatistics rttStats =
             rtts.stream().mapToDouble(Double::doubleValue).summaryStatistics();
 
-        logSb.append("\n--- Stats ---\n");
+        logSb.append("\n--- Network Statistics ---\n");
         logSb.append(String.format("Tx/Rx: %d/%d (%.1f%% loss)\n", transmitted[0], received[0],
             lossPercent));
         if (!rtts.isEmpty()) {
