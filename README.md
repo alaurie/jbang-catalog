@@ -36,6 +36,7 @@ Fetches and installs Terraform.
                             Specific version to install (e.g., 1.9.0). If
                               omitted, latest is fetched.
   -V                        Print version information and exit.
+```
 
 ---
 
@@ -278,7 +279,7 @@ To run it via jbang from this catalog repository:
 jbang hash@alaurie myfile.tar.gz
 ```
 
-Or compute a SHA-512 checksum of string text:
+Or compute an SHA-512 checksum of string text:
 
 ```bash
 jbang hash@alaurie -a SHA-512 -t "my-password-string"
@@ -309,11 +310,57 @@ Compute and verify cryptographic checksums for files or text input.
   -h, --help                Show this help message and exit.
   -t, --text=<textInput>    Compute hash for string text input instead of file.
   -V, --version             Print version information and exit.
+```
+
+---
+
+## fetch
+
+`fetch` is a high-performance multithreaded CLI file downloader with live progress and automatic checksum detection and verification.
+
+### Usage
+
+To run it via jbang from this catalog repository:
+
+```bash
+jbang fetch@alaurie [https://example.com/file.iso](https://example.com/file.iso)
+```
+
+Or specify concurrent connection chunks and custom output path:
+
+```bash
+jbang fetch@alaurie -c 8 -o debian.iso [https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-13.0.0-amd64-netinst.iso](https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-13.0.0-amd64-netinst.iso)
+```
+
+Or skip automatic checksum probing:
+
+```bash
+jbang fetch@alaurie --no-checksum [https://example.com/file.zip](https://example.com/file.zip)
+```
+
+Or, if you clone the repository locally:
+
+```bash
+jbang fetch [https://example.com/file.iso](https://example.com/file.iso)
+```
+
+### Options
+
+```
+Usage: fetch [-hV] [--no-checksum] [-c=<connections>] [-o=<outputPath>] <uri>
+High-performance multi-threaded CLI file downloader with auto-checksum verification.
+      <uri>                  Target URL to download.
+  -c, --connections=<connections>
+                             Concurrent chunk download connections (default: 4).
+  -h, --help                 Show this help message and exit.
+      --no-checksum          Skip automatic checksum probing and verification.
+  -o, --output=<outputPath> Custom target file output path.
+  -V, --version              Print version information and exit.
+```
 
 ---
 
 ## Development
-
 
 To automatically run `jbang-fmt` on staged `.java` files before committing, enable the repository's pre-commit hook:
 
