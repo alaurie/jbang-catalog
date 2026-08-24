@@ -360,7 +360,7 @@ verification
 
 ## reach
 
-`reach` is an advanced network diagnostic CLI utility to test TCP reachability, measure handshake latency, inspect TLS/SSL certificates (including SANs & key bits), query DNS & WHOIS records, probe Layer 7 HTTP/HTTPS status, and render an interactive TamboUI dashboard or export structured JSON stats.
+`reach` is an advanced network diagnostic CLI utility to test TCP reachability, measure handshake latency, inspect TLS/SSL certificates (including SANs & key bits), query DNS & WHOIS records, probe Layer 7 HTTP/HTTPS status, and export structured JSON stats.
 
 ### Usage
 
@@ -394,11 +394,6 @@ Or query comprehensive DNS records (A, AAAA, MX, NS, CNAME, TXT) and WHOIS domai
 jbang reach@alaurie --dns --whois google.com 443
 ```
 
-Or launch a full-screen interactive TamboUI dashboard (automatically runs all DNS, WHOIS, TLS & HTTP diagnostics as standard):
-
-```bash
-jbang reach@alaurie --tui github.com 443
-```
 
 
 Or warn and exit code 2 if SSL cert expires in less than 30 days:
@@ -417,7 +412,7 @@ jbang reach github.com:443
 ### Options
 
 ```
-Usage: reach [-46chHjsV] [--dns] [--tui] [--whois] [-i=<interval>] [-n=<count>]
+Usage: reach [-46chHjsV] [--dns] [--whois] [-i=<interval>] [-n=<count>]
              [-t=<timeout>] [-w=<warnDaysThreshold>] <target> [<portSpec>]
 Network diagnostic CLI utility to test TCP reachability and inspect TLS certs.
       <target>              Target host, host:port, or IP address.
@@ -437,8 +432,6 @@ Network diagnostic CLI utility to test TCP reachability and inspect TLS certs.
   -n, --count=<count>       Number of probe attempts per port (default: 4).
   -s, --ssl, --tls          Force TLS/SSL certificate inspection.
   -t, --timeout=<timeout>   Connection timeout in milliseconds (default: 2000).
-      --tui                 Launch full-screen interactive TamboUI dashboard
-                              (enables all diagnostics).
   -V, --version             Print version information and exit.
   -w, --warn-days=<warnDaysThreshold>
                             Exit code 2 if SSL certificate expires within
@@ -446,6 +439,7 @@ Network diagnostic CLI utility to test TCP reachability and inspect TLS certs.
       --whois               Perform native WHOIS domain lookup (Registrar,
                               Creation & Expiration dates).
 ```
+
 
 
 
