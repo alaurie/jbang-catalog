@@ -313,7 +313,7 @@ jbang fetch@alaurie --no-checksum https://example.com/file.zip
 Or, if you clone the repository locally:
 
 ```bash
-jbang fetch [https://example.com/file.iso](https://example.com/file.iso)
+jbang fetch https://example.com/file.iso
 ```
 
 ### Options
