@@ -323,19 +323,19 @@ Compute and verify cryptographic checksums for files or text input.
 To run it via jbang from this catalog repository:
 
 ```bash
-jbang fetch@alaurie [https://example.com/file.iso](https://example.com/file.iso)
+jbang fetch@alaurie https://example.com/file.iso
 ```
 
 Or specify concurrent connection chunks and custom output path:
 
 ```bash
-jbang fetch@alaurie -c 8 -o debian.iso [https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-13.0.0-amd64-netinst.iso](https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-13.0.0-amd64-netinst.iso)
+jbang fetch@alaurie -c 8 -o debian.iso https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-13.0.0-amd64-netinst.iso
 ```
 
 Or skip automatic checksum probing:
 
 ```bash
-jbang fetch@alaurie --no-checksum [https://example.com/file.zip](https://example.com/file.zip)
+jbang fetch@alaurie --no-checksum https://example.com/file.zip
 ```
 
 Or, if you clone the repository locally:
