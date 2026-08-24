@@ -86,13 +86,17 @@ class Fetch implements Callable<Integer> {
 
     ExpectedHash expectedHash = null;
     if (explicitHash != null && !explicitHash.isBlank()) {
-      String algo = switch (explicitHash.trim().length()) {
+      String rawHash = explicitHash.trim();
+      if (rawHash.contains(":")) {
+        rawHash = rawHash.substring(rawHash.indexOf(':') + 1).trim();
+      }
+      String algo = switch (rawHash.length()) {
         case 32 -> "MD5";
         case 40 -> "SHA-1";
         case 128 -> "SHA-512";
         default -> "SHA-256";
       };
-      expectedHash = new ExpectedHash(algo, explicitHash.trim(), "user-provided");
+      expectedHash = new ExpectedHash(algo, rawHash, "user-provided");
     } else if (!skipChecksum) {
       expectedHash = findExpectedHash(remoteFilename, localFilename);
     }
