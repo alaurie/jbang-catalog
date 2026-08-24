@@ -27,6 +27,10 @@
     "hash": {
       "script-ref": "apps/hash/Hash.java",
       "description": "Compute and verify cryptographic checksums for files or text input."
+    },
+    "fetch": {
+      "script-ref": "apps/fetch/Fetch.java",
+      "description": "Multithreaded download utility with automatic checksum capability."
     }
   }
 }
