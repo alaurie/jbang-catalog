@@ -319,9 +319,16 @@ class Serve implements Callable<Integer> {
           keystorePath.toAbsolutePath().toString(), "-storepass", "changeit", "-noprompt", "-dname",
           "CN=localhost");
 
+      pb.redirectErrorStream(true);
       var process = pb.start();
-      return process.waitFor() == 0;
+      var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+      var exitCode = process.waitFor();
+      if (exitCode != 0) {
+        System.err.println("Keytool execution failed (exit code " + exitCode + "): " + output);
+      }
+      return exitCode == 0;
     } catch (Exception e) {
+      System.err.println("Keytool execution exception: " + e.getMessage());
       return false;
     }
   }
