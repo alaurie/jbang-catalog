@@ -149,10 +149,10 @@ class Jwt implements Callable<Integer> {
 		printClaimTimestamp(payloadNode, "nbf", "Not Before", nowSec);
 		printClaimTimestamp(payloadNode, "exp", "Expiration", nowSec);
 		if (payloadNode.has("iss")) {
-			System.out.println("Issuer (iss):    " + payloadNode.get("iss").asText());
+			System.out.println("Issuer (iss):    " + payloadNode.get("iss").asString());
 		}
 		if (payloadNode.has("sub")) {
-			System.out.println("Subject (sub):   " + payloadNode.get("sub").asText());
+			System.out.println("Subject (sub):   " + payloadNode.get("sub").asString());
 		}
 		if (payloadNode.has("aud")) {
 			System.out.println("Audience (aud):  " + payloadNode.get("aud"));
