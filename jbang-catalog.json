@@ -1,9 +1,5 @@
 {
   "aliases": {
-    "tfup": {
-      "script-ref": "apps/tfup/Tfup.java",
-      "description": "Fetches and installs Terraform."
-    },
     "serve": {
       "script-ref": "apps/serve/Serve.java",
       "description": "Serves the given directory on the specified port."
