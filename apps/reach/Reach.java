@@ -9,7 +9,10 @@
 //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED
 //NATIVE_OPTIONS -O2 --no-fallback
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
@@ -20,7 +23,10 @@ import java.net.UnknownHostException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.security.Key;
 import java.security.cert.X509Certificate;
+import java.security.interfaces.RSAPublicKey;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -28,8 +34,12 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.DoubleSummaryStatistics;
+import java.util.Hashtable;
 import java.util.List;
 import java.util.concurrent.Callable;
+import javax.naming.directory.Attribute;
+import javax.naming.directory.Attributes;
+import javax.naming.directory.InitialDirContext;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
@@ -52,9 +62,10 @@ import picocli.CommandLine.Parameters;
 
 /**
  * Reach is an advanced network diagnostic CLI tool to test TCP connectivity, measure handshake
- * latency, inspect TLS/SSL certificates, probe HTTP/HTTPS status, and render an interactive TUI.
+ * latency, inspect TLS/SSL certificates, probe HTTP/HTTPS status, query DNS & WHOIS, and render an
+ * interactive TUI.
  */
-@Command(name = "reach", mixinStandardHelpOptions = true, version = "reach 1.3",
+@Command(name = "reach", mixinStandardHelpOptions = true, version = "reach 1.4",
     description = "Network diagnostic CLI utility to test TCP reachability and inspect TLS certs.")
 @SuppressWarnings("unused")
 class Reach implements Callable<Integer> {
@@ -83,6 +94,14 @@ class Reach implements Callable<Integer> {
   @Option(names = {"--tui"}, description = "Launch full-screen interactive TamboUI dashboard.")
   private boolean tuiMode;
 
+  @Option(names = {"--dns"},
+      description = "Perform comprehensive DNS records lookup (A, AAAA, MX, NS, CNAME, TXT).")
+  private boolean checkDns;
+
+  @Option(names = {"--whois"},
+      description = "Perform native WHOIS domain lookup (Registrar, Creation & Expiration dates).")
+  private boolean checkWhois;
+
   @Option(names = {"-t", "--timeout"}, defaultValue = "2000",
       description = "Connection timeout in milliseconds (default: 2000).")
   private int timeout = 2000;
@@ -108,12 +127,21 @@ class Reach implements Callable<Integer> {
   private static final DateTimeFormatter DATE_FORMATTER =
       DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z").withZone(ZoneId.systemDefault());
 
-  /** Record carrying TLS inspection results. */
+  /** Record carrying extended TLS inspection results. */
   private record TlsInfo(String subject, String issuer, Instant notAfter, long daysRemaining,
-      String protocol, String cipherSuite, String error) {}
+      String protocol, String cipherSuite, String pubKeyDetails, String sigAlg, String serialNumber,
+      List<String> sans, String error) {}
 
   /** Record carrying HTTP probe results. */
   private record HttpInfo(int statusCode, double ttfbMs, String serverHeader, String error) {}
+
+  /** Record carrying DNS records lookup results. */
+  private record DnsInfo(List<String> aRecords, List<String> aaaaRecords, List<String> mxRecords,
+      List<String> nsRecords, List<String> cnameRecords, List<String> txtRecords, String error) {}
+
+  /** Record carrying WHOIS domain lookup results. */
+  private record WhoisInfo(String registrar, String creationDate, String expiryDate,
+      String updatedDate, String error) {}
 
   /** Record carrying overall single-port probe results. */
   private record PortResult(int port, boolean isSsl, TlsInfo tls, HttpInfo http, int transmitted,
@@ -167,9 +195,12 @@ class Reach implements Callable<Integer> {
     }
     var dnsTimeMs = (System.nanoTime() - dnsStart) / 1_000_000.0;
 
+    DnsInfo dnsInfo = (checkDns || tuiMode) ? inspectDnsRecords(host) : null;
+    WhoisInfo whoisInfo = (checkWhois || tuiMode) ? queryWhois(host) : null;
+
     // Interactive TamboUI Mode
     if (tuiMode) {
-      runTuiDashboard(host, address, ports, dnsTimeMs);
+      runTuiDashboard(host, address, ports, dnsTimeMs, dnsInfo, whoisInfo);
       return 0;
     }
 
@@ -181,6 +212,36 @@ class Reach implements Callable<Integer> {
       System.out.println("REACH " + host + " [" + address.getHostAddress() + "]");
       System.out.printf("DNS: Resolved %s -> %s in %.2f ms%n", host, address.getHostAddress(),
           dnsTimeMs);
+
+      if (checkDns && dnsInfo != null) {
+        System.out.println("\n=== DNS RECORDS ===");
+        if (dnsInfo.error() == null) {
+          printRecordList("A", dnsInfo.aRecords());
+          printRecordList("AAAA", dnsInfo.aaaaRecords());
+          printRecordList("MX", dnsInfo.mxRecords());
+          printRecordList("NS", dnsInfo.nsRecords());
+          printRecordList("CNAME", dnsInfo.cnameRecords());
+          printRecordList("TXT", dnsInfo.txtRecords());
+        } else {
+          System.out.println("DNS Error: " + dnsInfo.error());
+        }
+      }
+
+      if (checkWhois && whoisInfo != null) {
+        System.out.println("\n=== WHOIS DOMAIN INFO ===");
+        if (whoisInfo.error() == null) {
+          if (whoisInfo.registrar() != null)
+            System.out.println("Registrar: " + whoisInfo.registrar());
+          if (whoisInfo.creationDate() != null)
+            System.out.println("Created:   " + whoisInfo.creationDate());
+          if (whoisInfo.expiryDate() != null)
+            System.out.println("Expires:   " + whoisInfo.expiryDate());
+          if (whoisInfo.updatedDate() != null)
+            System.out.println("Updated:   " + whoisInfo.updatedDate());
+        } else {
+          System.out.println("WHOIS Error: " + whoisInfo.error());
+        }
+      }
     }
 
     for (var port : ports) {
@@ -206,6 +267,13 @@ class Reach implements Callable<Integer> {
             System.out.println("\nTLS: Port " + port + " Certificate OK");
             System.out.println(" ├─ Subject: " + tlsInfo.subject());
             System.out.println(" ├─ Issuer:  " + tlsInfo.issuer());
+            if (tlsInfo.pubKeyDetails() != null) {
+              System.out.println(
+                  " ├─ Key:     " + tlsInfo.pubKeyDetails() + " (" + tlsInfo.sigAlg() + ")");
+            }
+            if (tlsInfo.sans() != null && !tlsInfo.sans().isEmpty()) {
+              System.out.println(" ├─ SANs:    " + String.join(", ", tlsInfo.sans()));
+            }
             System.out.println(" ├─ Valid Until: " + DATE_FORMATTER.format(tlsInfo.notAfter())
                 + " (" + tlsInfo.daysRemaining() + " days remaining)");
             System.out.println(
@@ -295,7 +363,7 @@ class Reach implements Callable<Integer> {
     }
 
     if (jsonOutput) {
-      printJsonOutput(host, address.getHostAddress(), dnsTimeMs, results);
+      printJsonOutput(host, address.getHostAddress(), dnsTimeMs, dnsInfo, whoisInfo, results);
     }
 
     if (certWarningTriggered) {
@@ -309,11 +377,15 @@ class Reach implements Callable<Integer> {
     return overallSuccess ? 0 : 1;
   }
 
-  /**
-   * Launches full-screen interactive TamboUI TUI dashboard.
-   */
+  private static void printRecordList(String type, List<String> list) {
+    if (list != null && !list.isEmpty()) {
+      System.out.printf("%-6s %s%n", type + ":", String.join(", ", list));
+    }
+  }
+
+  /** Launches full-screen interactive TamboUI TUI dashboard. */
   private void runTuiDashboard(String host, InetAddress address, List<Integer> ports,
-      double dnsTimeMs) throws Exception {
+      double dnsTimeMs, DnsInfo dnsInfo, WhoisInfo whoisInfo) throws Exception {
 
     var primaryPort = ports.get(0);
     var isSsl = Boolean.TRUE.equals(forceSsl) || (forceSsl == null && primaryPort == 443);
@@ -385,18 +457,43 @@ class Reach implements Callable<Integer> {
             chunks.get(0));
 
         var bodyChunks = Layout.horizontal()
-            .constraints(Constraint.percentage(45), Constraint.percentage(55)).split(chunks.get(1));
+            .constraints(Constraint.percentage(50), Constraint.percentage(50)).split(chunks.get(1));
 
         var infoSb = new StringBuilder();
         infoSb.append("Target: ").append(host).append("\n");
         infoSb.append("IP: ").append(address.getHostAddress()).append("\n");
         infoSb.append("Port: ").append(primaryPort).append("\n\n");
 
+        if (dnsInfo != null && dnsInfo.error() == null) {
+          infoSb.append("=== DNS Records ===\n");
+          if (!dnsInfo.aRecords().isEmpty())
+            infoSb.append("A:     ").append(String.join(", ", dnsInfo.aRecords())).append("\n");
+          if (!dnsInfo.aaaaRecords().isEmpty())
+            infoSb.append("AAAA:  ").append(String.join(", ", dnsInfo.aaaaRecords())).append("\n");
+          if (!dnsInfo.mxRecords().isEmpty())
+            infoSb.append("MX:    ").append(String.join(", ", dnsInfo.mxRecords())).append("\n");
+          if (!dnsInfo.nsRecords().isEmpty())
+            infoSb.append("NS:    ").append(String.join(", ", dnsInfo.nsRecords())).append("\n");
+          infoSb.append("\n");
+        }
+
+        if (whoisInfo != null && whoisInfo.error() == null) {
+          infoSb.append("=== WHOIS Info ===\n");
+          if (whoisInfo.registrar() != null)
+            infoSb.append("Registrar: ").append(whoisInfo.registrar()).append("\n");
+          if (whoisInfo.creationDate() != null)
+            infoSb.append("Created:   ").append(whoisInfo.creationDate()).append("\n");
+          if (whoisInfo.expiryDate() != null)
+            infoSb.append("Expires:   ").append(whoisInfo.expiryDate()).append("\n\n");
+        }
+
         if (tlsInfo != null) {
           infoSb.append("=== TLS Certificate ===\n");
           if (tlsInfo.error() == null) {
             infoSb.append("Subject: ").append(tlsInfo.subject()).append("\n");
             infoSb.append("Issuer:  ").append(tlsInfo.issuer()).append("\n");
+            if (tlsInfo.pubKeyDetails() != null)
+              infoSb.append("Key:     ").append(tlsInfo.pubKeyDetails()).append("\n");
             infoSb.append("Expires: ").append(tlsInfo.daysRemaining()).append(" days remaining\n");
             infoSb.append("Cipher:  ").append(tlsInfo.cipherSuite()).append("\n");
           } else {
@@ -404,18 +501,7 @@ class Reach implements Callable<Integer> {
           }
         }
 
-        if (httpInfo != null) {
-          infoSb.append("\n=== HTTP Probe ===\n");
-          if (httpInfo.error() == null) {
-            infoSb.append("Status: ").append(httpInfo.statusCode()).append("\n");
-            infoSb.append("TTFB:   ").append(String.format("%.2f ms", httpInfo.ttfbMs()))
-                .append("\n");
-          } else {
-            infoSb.append("Error: ").append(httpInfo.error()).append("\n");
-          }
-        }
-
-        var infoBlock = Block.builder().title(" Connection & Security Details ")
+        var infoBlock = Block.builder().title(" Target, DNS, WHOIS & TLS Details ")
             .style(Style.create().green()).build();
 
         frame.renderWidget(
@@ -455,6 +541,100 @@ class Reach implements Callable<Integer> {
             .block(footerBlock).build(), chunks.get(2));
       });
     }
+  }
+
+  private DnsInfo inspectDnsRecords(String host) {
+    try {
+      var env = new Hashtable<String, String>();
+      env.put("java.naming.factory.initial", "com.sun.jndi.dns.DnsContextFactory");
+      var dirContext = new InitialDirContext(env);
+
+      var a = fetchRecordList(dirContext, host, "A");
+      var aaaa = fetchRecordList(dirContext, host, "AAAA");
+      var mx = fetchRecordList(dirContext, host, "MX");
+      var ns = fetchRecordList(dirContext, host, "NS");
+      var cname = fetchRecordList(dirContext, host, "CNAME");
+      var txt = fetchRecordList(dirContext, host, "TXT");
+
+      return new DnsInfo(a, aaaa, mx, ns, cname, txt, null);
+    } catch (Exception e) {
+      return new DnsInfo(List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
+          e.getMessage());
+    }
+  }
+
+  private List<String> fetchRecordList(InitialDirContext dirContext, String host, String type) {
+    List<String> results = new ArrayList<>();
+    try {
+      Attributes attrs = dirContext.getAttributes(host, new String[] {type});
+      Attribute attr = attrs.get(type);
+      if (attr != null) {
+        for (int i = 0; i < attr.size(); i++) {
+          results.add(String.valueOf(attr.get(i)));
+        }
+      }
+    } catch (Exception ignored) {
+    }
+    return results;
+  }
+
+  private WhoisInfo queryWhois(String domain) {
+    try (var socket = new Socket("whois.iana.org", 43)) {
+      socket.setSoTimeout(3000);
+      var out = new PrintWriter(socket.getOutputStream(), true);
+      var in = new BufferedReader(
+          new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+      out.println(domain);
+
+      String line;
+      String referServer = null;
+      while ((line = in.readLine()) != null) {
+        if (line.toLowerCase().startsWith("refer:") || line.toLowerCase().startsWith("whois:")) {
+          var parts = line.split(":", 2);
+          if (parts.length > 1) {
+            referServer = parts[1].trim();
+          }
+        }
+      }
+
+      var targetWhois = (referServer != null && !referServer.isBlank()
+          && !referServer.equalsIgnoreCase("whois.iana.org")) ? referServer : "whois.iana.org";
+
+      try (var subSocket = new Socket(targetWhois, 43)) {
+        subSocket.setSoTimeout(3000);
+        var subOut = new PrintWriter(subSocket.getOutputStream(), true);
+        var subIn = new BufferedReader(
+            new InputStreamReader(subSocket.getInputStream(), StandardCharsets.UTF_8));
+        subOut.println(domain);
+
+        String registrar = null;
+        String creationDate = null;
+        String expiryDate = null;
+        String updatedDate = null;
+
+        while ((line = subIn.readLine()) != null) {
+          var l = line.toLowerCase();
+          if (l.contains("registrar:") && registrar == null) {
+            registrar = extractValue(line);
+          } else if (l.contains("creation date:") && creationDate == null) {
+            creationDate = extractValue(line);
+          } else if (l.contains("expiry date:") && expiryDate == null) {
+            expiryDate = extractValue(line);
+          } else if (l.contains("updated date:") && updatedDate == null) {
+            updatedDate = extractValue(line);
+          }
+        }
+
+        return new WhoisInfo(registrar, creationDate, expiryDate, updatedDate, null);
+      }
+    } catch (Exception e) {
+      return new WhoisInfo(null, null, null, null, e.getMessage());
+    }
+  }
+
+  private String extractValue(String line) {
+    var parts = line.split(":", 2);
+    return parts.length > 1 ? parts[1].trim() : line.trim();
   }
 
   private List<Integer> parsePorts(String rawPortStr, boolean isSslForced) {
@@ -509,15 +689,41 @@ class Reach implements Callable<Integer> {
         if (certs.length > 0 && certs[0] instanceof X509Certificate cert) {
           var notAfter = cert.getNotAfter().toInstant();
           var daysRemaining = Duration.between(Instant.now(), notAfter).toDays();
+
+          var key = cert.getPublicKey();
+          var pubKeyDetails = key.getAlgorithm();
+          if (key instanceof RSAPublicKey rsa) {
+            pubKeyDetails += " " + rsa.getModulus().bitLength() + "-bit";
+          }
+
+          var sigAlg = cert.getSigAlgName();
+          var serial = cert.getSerialNumber().toString(16);
+
+          List<String> sans = new ArrayList<>();
+          try {
+            var altNames = cert.getSubjectAlternativeNames();
+            if (altNames != null) {
+              for (var item : altNames) {
+                if (item.size() >= 2 && item.get(1) instanceof String s) {
+                  sans.add(s);
+                }
+              }
+            }
+          } catch (Exception ignored) {
+          }
+
           return new TlsInfo(cert.getSubjectX500Principal().getName(),
               cert.getIssuerX500Principal().getName(), notAfter, daysRemaining,
-              sslSocket.getSession().getProtocol(), sslSocket.getSession().getCipherSuite(), null);
+              sslSocket.getSession().getProtocol(), sslSocket.getSession().getCipherSuite(),
+              pubKeyDetails, sigAlg, serial, sans, null);
         } else {
-          return new TlsInfo(null, null, null, 0, null, null, "No X509 certificate found");
+          return new TlsInfo(null, null, null, 0, null, null, null, null, null, List.of(),
+              "No X509 certificate found");
         }
       }
     } catch (Exception e) {
-      return new TlsInfo(null, null, null, 0, null, null, e.getMessage());
+      return new TlsInfo(null, null, null, 0, null, null, null, null, null, List.of(),
+          e.getMessage());
     }
   }
 
@@ -543,13 +749,35 @@ class Reach implements Callable<Integer> {
     }
   }
 
-  private void printJsonOutput(String host, String ip, double dnsTimeMs, List<PortResult> results) {
+  private void printJsonOutput(String host, String ip, double dnsTimeMs, DnsInfo dnsInfo,
+      WhoisInfo whoisInfo, List<PortResult> results) {
     var sb = new StringBuilder();
     sb.append("{\n");
     sb.append("  \"target\": \"").append(escapeJson(host)).append("\",\n");
     sb.append("  \"ip\": \"").append(escapeJson(ip)).append("\",\n");
-    sb.append("  \"dns_time_ms\": ").append(String.format("%.2f", dnsTimeMs)).append(",\n");
-    sb.append("  \"ports\": [\n");
+    sb.append("  \"dns_time_ms\": ").append(String.format("%.2f", dnsTimeMs));
+
+    if (dnsInfo != null && dnsInfo.error() == null) {
+      sb.append(",\n  \"dns\": {\n");
+      sb.append("    \"a\": ").append(toJsonArray(dnsInfo.aRecords())).append(",\n");
+      sb.append("    \"aaaa\": ").append(toJsonArray(dnsInfo.aaaaRecords())).append(",\n");
+      sb.append("    \"mx\": ").append(toJsonArray(dnsInfo.mxRecords())).append(",\n");
+      sb.append("    \"ns\": ").append(toJsonArray(dnsInfo.nsRecords())).append(",\n");
+      sb.append("    \"cname\": ").append(toJsonArray(dnsInfo.cnameRecords())).append(",\n");
+      sb.append("    \"txt\": ").append(toJsonArray(dnsInfo.txtRecords())).append("\n");
+      sb.append("  }");
+    }
+
+    if (whoisInfo != null && whoisInfo.error() == null) {
+      sb.append(",\n  \"whois\": {\n");
+      sb.append("    \"registrar\": ").append(jsonStr(whoisInfo.registrar())).append(",\n");
+      sb.append("    \"creation_date\": ").append(jsonStr(whoisInfo.creationDate())).append(",\n");
+      sb.append("    \"expiry_date\": ").append(jsonStr(whoisInfo.expiryDate())).append(",\n");
+      sb.append("    \"updated_date\": ").append(jsonStr(whoisInfo.updatedDate())).append("\n");
+      sb.append("  }");
+    }
+
+    sb.append(",\n  \"ports\": [\n");
 
     for (var i = 0; i < results.size(); i++) {
       var res = results.get(i);
@@ -571,6 +799,10 @@ class Reach implements Callable<Integer> {
               .append("\",\n");
           sb.append("        \"issuer\": \"").append(escapeJson(res.tls().issuer()))
               .append("\",\n");
+          sb.append("        \"key\": ").append(jsonStr(res.tls().pubKeyDetails())).append(",\n");
+          sb.append("        \"sig_alg\": ").append(jsonStr(res.tls().sigAlg())).append(",\n");
+          sb.append("        \"serial\": ").append(jsonStr(res.tls().serialNumber())).append(",\n");
+          sb.append("        \"sans\": ").append(toJsonArray(res.tls().sans())).append(",\n");
           sb.append("        \"valid_until\": \"").append(res.tls().notAfter()).append("\",\n");
           sb.append("        \"days_remaining\": ").append(res.tls().daysRemaining()).append(",\n");
           sb.append("        \"protocol\": \"").append(escapeJson(res.tls().protocol()))
@@ -589,11 +821,7 @@ class Reach implements Callable<Integer> {
           sb.append("        \"status\": ").append(res.http().statusCode()).append(",\n");
           sb.append("        \"ttfb_ms\": ").append(String.format("%.2f", res.http().ttfbMs()))
               .append(",\n");
-          sb.append("        \"server\": ")
-              .append(res.http().serverHeader() != null
-                  ? "\"" + escapeJson(res.http().serverHeader()) + "\""
-                  : "null")
-              .append("\n");
+          sb.append("        \"server\": ").append(jsonStr(res.http().serverHeader())).append("\n");
         } else {
           sb.append("        \"error\": \"").append(escapeJson(res.http().error())).append("\"\n");
         }
@@ -606,6 +834,23 @@ class Reach implements Callable<Integer> {
     sb.append("  ]\n");
     sb.append("}\n");
     System.out.print(sb.toString());
+  }
+
+  private String jsonStr(String val) {
+    return val != null ? "\"" + escapeJson(val) + "\"" : "null";
+  }
+
+  private String toJsonArray(List<String> list) {
+    if (list == null || list.isEmpty())
+      return "[]";
+    var sb = new StringBuilder("[");
+    for (int i = 0; i < list.size(); i++) {
+      sb.append("\"").append(escapeJson(list.get(i))).append("\"");
+      if (i < list.size() - 1)
+        sb.append(", ");
+    }
+    sb.append("]");
+    return sb.toString();
   }
 
   private String escapeJson(String str) {

@@ -360,7 +360,7 @@ verification
 
 ## reach
 
-`reach` is an advanced network diagnostic CLI utility to test TCP reachability, measure handshake latency, inspect TLS/SSL certificates, probe Layer 7 HTTP/HTTPS status, and export structured JSON stats.
+`reach` is an advanced network diagnostic CLI utility to test TCP reachability, measure handshake latency, inspect TLS/SSL certificates (including SANs & key bits), query DNS & WHOIS records, probe Layer 7 HTTP/HTTPS status, and render an interactive TamboUI dashboard or export structured JSON stats.
 
 ### Usage
 
@@ -388,6 +388,11 @@ Or output machine-readable JSON for scripts & monitoring:
 ```bash
 jbang reach@alaurie -j -H github.com 443
 ```
+Or query comprehensive DNS records (A, AAAA, MX, NS, CNAME, TXT) and WHOIS domain info:
+
+```bash
+jbang reach@alaurie --dns --whois google.com 443
+```
 
 Or launch a full-screen interactive TamboUI dashboard:
 
@@ -411,8 +416,8 @@ jbang reach github.com:443
 ### Options
 
 ```
-Usage: reach [-46chHjsV] [--tui] [-i=<interval>] [-n=<count>] [-t=<timeout>]
-             [-w=<warnDaysThreshold>] <target> [<portSpec>]
+Usage: reach [-46chHjsV] [--dns] [--tui] [--whois] [-i=<interval>] [-n=<count>]
+             [-t=<timeout>] [-w=<warnDaysThreshold>] <target> [<portSpec>]
 Network diagnostic CLI utility to test TCP reachability and inspect TLS certs.
       <target>              Target host, host:port, or IP address.
       [<portSpec>]          Port, list (80,443), or range (80-85). Default: 80
@@ -420,6 +425,8 @@ Network diagnostic CLI utility to test TCP reachability and inspect TLS certs.
   -4, --ipv4                Force IPv4 address resolution.
   -6, --ipv6                Force IPv6 address resolution.
   -c, --continuous          Continuous probing until stopped via Ctrl+C.
+      --dns                 Perform comprehensive DNS records lookup (A, AAAA,
+                              MX, NS, CNAME, TXT).
   -h, --help                Show this help message and exit.
   -H, --http                Probe Layer 7 HTTP/HTTPS status code and
                               Time-To-First-Byte (TTFB).
@@ -434,7 +441,10 @@ Network diagnostic CLI utility to test TCP reachability and inspect TLS certs.
   -w, --warn-days=<warnDaysThreshold>
                             Exit code 2 if SSL certificate expires within
                               specified days threshold.
+      --whois               Perform native WHOIS domain lookup (Registrar,
+                              Creation & Expiration dates).
 ```
+
 
 
 ---
