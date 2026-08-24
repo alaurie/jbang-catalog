@@ -10,6 +10,8 @@ import com.sun.net.httpserver.Filter;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpsConfigurator;
+import com.sun.net.httpserver.HttpsServer;
 import com.sun.net.httpserver.SimpleFileServer;
 import com.sun.net.httpserver.SimpleFileServer.OutputLevel;
 import java.io.IOException;
@@ -19,27 +21,31 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.Callable;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
 /**
- * Lightweight HTTP file server utility inspired by {@code python -m http.server}.
+ * Lightweight HTTP/HTTPS file server utility inspired by {@code python -m http.server}.
  *
  * <p>
- * Built using Java's built-in {@link SimpleFileServer} and {@link HttpServer} APIs.
+ * Built using Java's built-in {@link SimpleFileServer}, {@link HttpServer}, and {@link HttpsServer}
+ * APIs. Supports on-the-fly SSL/TLS certificates.
  */
-@Command(name = "serve", mixinStandardHelpOptions = true, version = "serve 1.1",
-    description = "Simple HTTP file server inspired by python -m http.server")
+@Command(name = "serve", mixinStandardHelpOptions = true, version = "serve 1.2",
+    description = "Simple HTTP/HTTPS file server inspired by python -m http.server")
 @SuppressWarnings("unused")
 class Serve implements Callable<Integer> {
 
-  @Option(names = {"-p", "--port"}, description = "Port to listen on (default: 8080)")
+  @Option(names = {"-p", "--port"}, description = "Port to listen on (default: 8080 or 8443)")
   private Integer port;
 
   @Option(names = {"-d", "--directory"},
@@ -55,6 +61,10 @@ class Serve implements Callable<Integer> {
   @Option(names = {"-a", "--download"},
       description = "Force browser to download files instead of displaying inline")
   private boolean download;
+
+  @Option(names = {"-s", "--ssl", "--tls"},
+      description = "Enable HTTPS with an automatically generated on-the-fly self-signed certificate")
+  private boolean ssl;
 
   @Option(names = {"--spa"},
       description = "Single Page Application mode: fallback 404 requests to index.html")
@@ -122,6 +132,8 @@ class Serve implements Callable<Integer> {
     var outputLevel = verbose ? OutputLevel.VERBOSE : OutputLevel.INFO;
 
     HttpServer server;
+    Path tempKeystore = null;
+
     try {
       HttpHandler fileHandler = SimpleFileServer.createFileHandler(absDir);
 
@@ -151,7 +163,31 @@ class Serve implements Callable<Integer> {
 
       var logFilter = SimpleFileServer.createOutputFilter(System.out, outputLevel);
 
-      server = HttpServer.create(addr, 0);
+      if (ssl) {
+        tempKeystore = Files.createTempFile("serve_keystore_", ".p12");
+        if (!generateSelfSignedKeystore(tempKeystore)) {
+          System.err.println("Error: Failed to generate on-the-fly SSL certificate using keytool.");
+          return 1;
+        }
+
+        var ks = KeyStore.getInstance("PKCS12");
+        try (var is = Files.newInputStream(tempKeystore)) {
+          ks.load(is, "changeit".toCharArray());
+        }
+
+        var kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+        kmf.init(ks, "changeit".toCharArray());
+
+        var sslContext = SSLContext.getInstance("TLS");
+        sslContext.init(kmf.getKeyManagers(), null, null);
+
+        var httpsServer = HttpsServer.create(addr, 0);
+        httpsServer.setHttpsConfigurator(new HttpsConfigurator(sslContext));
+        server = httpsServer;
+      } else {
+        server = HttpServer.create(addr, 0);
+      }
+
       var context = server.createContext("/", finalHandler);
       context.getFilters().add(logFilter);
 
@@ -199,10 +235,19 @@ class Serve implements Callable<Integer> {
       return 1;
     }
 
+    final var finalTempKeystore = tempKeystore;
+    var protocol = ssl ? "HTTPS" : "HTTP";
+    var scheme = ssl ? "https" : "http";
     var displayHost = "0.0.0.0".equals(bind) || "::".equals(bind) ? "localhost" : bind;
-    System.out.printf("Serving HTTP on %s port %d (http://%s:%d/) ...%n", bind, port, displayHost,
-        port);
+
+    System.out.printf("Serving %s on %s port %d (%s://%s:%d/) ...%n", protocol, bind, port, scheme,
+        displayHost, port);
     System.out.printf("Document root: %s%n", absDir);
+
+    if (ssl) {
+      System.out
+          .println("Security: On-the-fly self-signed TLS/SSL certificate enabled (CN=localhost)");
+    }
     if (download) {
       System.out.println("Mode: Force download enabled (Content-Disposition: attachment)");
     }
@@ -216,6 +261,12 @@ class Serve implements Callable<Integer> {
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
       System.out.println("\nStopping server...");
       server.stop(0);
+      if (finalTempKeystore != null) {
+        try {
+          Files.deleteIfExists(finalTempKeystore);
+        } catch (IOException ignored) {
+        }
+      }
     }));
 
     try {
@@ -242,8 +293,36 @@ class Serve implements Callable<Integer> {
     return 0;
   }
 
+  /**
+   * Generates a temporary PKCS12 self-signed certificate keystore using JDK keytool.
+   *
+   * @param keystorePath Output keystore file path.
+   * @return {@code true} if keytool execution succeeded, {@code false} otherwise.
+   */
+  private boolean generateSelfSignedKeystore(Path keystorePath) {
+    try {
+      var javaHome = System.getProperty("java.home", "");
+      var keytoolBin = Path.of(javaHome, "bin", "keytool").toString();
+      if (!Files.exists(Path.of(keytoolBin)) && !Files.exists(Path.of(keytoolBin + ".exe"))) {
+        keytoolBin = "keytool";
+      }
+
+      var pb = new ProcessBuilder(keytoolBin, "-genkeypair", "-alias", "selfsigned", "-keyalg",
+          "RSA", "-keysize", "2048", "-validity", "365", "-keystore",
+          keystorePath.toAbsolutePath().toString(), "-storepass", "changeit", "-noprompt", "-dname",
+          "CN=localhost");
+
+      var process = pb.start();
+      return process.waitFor() == 0;
+    } catch (Exception e) {
+      return false;
+    }
+  }
+
   /** Resolves positional arguments to determine directory and port options. */
   private void resolveArguments() {
+    var defaultPort = ssl ? 8443 : 8080;
+
     if (directory == null && port == null) {
       if (positionalArgs.size() == 1) {
         String arg = positionalArgs.get(0);
@@ -252,7 +331,7 @@ class Serve implements Callable<Integer> {
           directory = Path.of(".");
         } else {
           directory = Path.of(arg);
-          port = 8080;
+          port = defaultPort;
         }
       } else if (positionalArgs.size() >= 2) {
         String arg1 = positionalArgs.get(0);
@@ -269,16 +348,16 @@ class Serve implements Callable<Integer> {
           directory = Path.of(".");
         } else {
           directory = Path.of(arg1);
-          port = 8080;
+          port = defaultPort;
         }
       } else {
         directory = Path.of(".");
-        port = 8080;
+        port = defaultPort;
       }
     } else if (directory == null) {
       directory = Path.of(".");
     } else if (port == null) {
-      port = 8080;
+      port = defaultPort;
     }
   }
 }

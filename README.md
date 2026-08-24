@@ -8,13 +8,19 @@ This repository contains a [jbang](https://jbang.dev/) catalog of useful scripts
 
 ## serve
 
-`serve` is a simple HTTP file server inspired by `python -m http.server`.
+`serve` is a simple HTTP/HTTPS file server inspired by `python -m http.server` with built-in SSL/TLS, SPA routing, and Basic Auth support.
 
 ### Usage
 To run it via jbang from this catalog repository:
 
 ```bash
 jbang serve@alaurie
+```
+
+Or serve securely over HTTPS with an auto-generated self-signed certificate:
+
+```bash
+jbang serve@alaurie --ssl
 ```
 
 Or with optional port and/or directory positional arguments:
@@ -33,9 +39,9 @@ jbang serve
 ### Options
 
 ```
-Usage: serve [-ahvV] [--spa] [--auth=<authCredentials>] [-b=<bind>]
+Usage: serve [-ahsvV] [--spa] [--auth=<authCredentials>] [-b=<bind>]
              [-d=<directory>] [-p=<port>] [[dirOrPort]...]
-Simple HTTP file server inspired by python -m http.server
+Simple HTTP/HTTPS file server inspired by python -m http.server
       [[dirOrPort]...]   Optional directory path and/or port number
   -a, --download         Force browser to download files instead of displaying
                            inline
@@ -46,7 +52,9 @@ Simple HTTP file server inspired by python -m http.server
   -d, --directory=<directory>
                          Directory to serve (default: current directory)
   -h, --help             Show this help message and exit.
-  -p, --port=<port>      Port to listen on (default: 8080)
+  -p, --port=<port>      Port to listen on (default: 8080 or 8443)
+  -s, --ssl, --tls       Enable HTTPS with an automatically generated
+                           on-the-fly self-signed certificate
       --spa              Single Page Application mode: fallback 404 requests to
                            index.html
   -v, --verbose          Enable verbose request logging
