@@ -4,6 +4,7 @@
 //DEPS me.tongfei:progressbar:0.10.1
 //JAVAC_OPTIONS -proc:full
 //NATIVE_OPTIONS -O2 --no-fallback
+//JAVA_OPTIONS --enable-native-access=ALL-UNNAMED
 
 import me.tongfei.progressbar.ProgressBar;
 import me.tongfei.progressbar.ProgressBarBuilder;
