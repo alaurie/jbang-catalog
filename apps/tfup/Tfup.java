@@ -155,16 +155,16 @@ class Tfup implements Callable<Integer> {
 	 * @throws InterruptedException On request interruption.
 	 */
 	private static String getLatestVersion() throws IOException, InterruptedException {
-        HttpResponse<String> response;
-        try (var client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build()) {
-            var request = HttpRequest.newBuilder()
-                    .uri(URI.create(GITHUB_API))
-                    .header("User-Agent", "jbang-tfup-script")
-                    .build();
+		HttpResponse<String> response;
+		try (var client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build()) {
+			var request = HttpRequest.newBuilder()
+				.uri(URI.create(GITHUB_API))
+				.header("User-Agent", "jbang-tfup-script")
+				.build();
 
-            response = client.send(request, HttpResponse.BodyHandlers.ofString());
-        }
-        if (response.statusCode() == 200) {
+			response = client.send(request, HttpResponse.BodyHandlers.ofString());
+		}
+		if (response.statusCode() == 200) {
 			var node = MAPPER.readTree(response.body());
 			var tag = node.get("tag_name").asString();
 			return tag.startsWith("v") ? tag.substring(1) : tag;

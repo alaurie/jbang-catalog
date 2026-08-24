@@ -331,12 +331,18 @@ Or specify concurrent connection chunks and custom output path:
 ```bash
 jbang fetch@alaurie -c 8 -o debian.iso https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-13.0.0-amd64-netinst.iso
 ```
+Or explicitly verify against a specific hash (skips download if file already exists locally and matches):
+
+```bash
+jbang fetch@alaurie -o debian.iso --expected-hash 4ffa57f26c713cde084b728a64b1c79b74465e6b8e043175e3b6c364377613c8 https://example.com/file.zip
+```
 
 Or skip automatic checksum probing:
 
 ```bash
 jbang fetch@alaurie --no-checksum https://example.com/file.zip
 ```
+
 
 Or, if you clone the repository locally:
 
@@ -347,15 +353,21 @@ jbang fetch [https://example.com/file.iso](https://example.com/file.iso)
 ### Options
 
 ```
-Usage: fetch [-hV] [--no-checksum] [-c=<connections>] [-o=<outputPath>] <uri>
-High-performance multi-threaded CLI file downloader with auto-checksum verification.
-      <uri>                  Target URL to download.
+Usage: fetch [-hV] [--no-checksum] [-c=<connections>]
+             [--expected-hash=<explicitHash>] [-o=<outputPath>] <uri>
+High-performance multi-threaded CLI file downloader with auto-checksum
+verification
+      <uri>           Target URL to download
   -c, --connections=<connections>
-                             Concurrent chunk download connections (default: 4).
-  -h, --help                 Show this help message and exit.
-      --no-checksum          Skip automatic checksum probing and verification.
-  -o, --output=<outputPath> Custom target file output path.
-  -V, --version              Print version information and exit.
+                      Concurrent chunk download connections
+      --expected-hash=<explicitHash>
+                      Explicitly verify against this hash (auto-detects
+                        algorithm by length). Bypasses server probe.
+  -h, --help          Show this help message and exit.
+      --no-checksum   Skip automatic checksum probing and verification
+  -o, --output=<outputPath>
+                      Target file output path
+  -V, --version       Print version information and exit.
 ```
 
 ---
