@@ -24,8 +24,11 @@ Instructions, conventions, and engineering standards for AI coding agents operat
   ///usr/bin/env jbang "$0" "$@" ; exit $?
   //JAVA 25+
   //DEPS info.picocli:picocli:4.7.7
+  //DEPS info.picocli:picocli-codegen:4.7.7
+  //JAVAC_OPTIONS -proc:full
+  //NATIVE_OPTIONS -O2 --no-fallback
   ```
-- **Native Image Options (Optional)**: If native compilation directives are needed, specify via `//NATIVE_OPTIONS`.
+- **Native Image Support**: When compiling with GraalVM Native Image (`jbang --native`), Picocli requires reflection metadata for command classes and mixins (e.g. `AutoHelpMixin`). Include `//DEPS info.picocli:picocli-codegen:4.7.7` and `//JAVAC_OPTIONS -proc:full` so the annotation processor generates the required `reflect-config.json` at compile-time (required in Java 23+ where annotation processing is disabled by default).
 
 ### Code Style & Formatting
 - **Style Guide**: **Google Java Style Guide**.
