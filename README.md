@@ -389,11 +389,18 @@ Or output machine-readable JSON for scripts & monitoring:
 jbang reach@alaurie -j -H github.com 443
 ```
 
+Or launch a full-screen interactive TamboUI dashboard:
+
+```bash
+jbang reach@alaurie --tui -H github.com 443
+```
+
 Or warn and exit code 2 if SSL cert expires in less than 30 days:
 
 ```bash
 jbang reach@alaurie --warn-days 30 example.com 443
 ```
+
 
 Or, if you clone the repository locally:
 
@@ -404,7 +411,7 @@ jbang reach github.com:443
 ### Options
 
 ```
-Usage: reach [-46chHjsV] [-i=<interval>] [-n=<count>] [-t=<timeout>]
+Usage: reach [-46chHjsV] [--tui] [-i=<interval>] [-n=<count>] [-t=<timeout>]
              [-w=<warnDaysThreshold>] <target> [<portSpec>]
 Network diagnostic CLI utility to test TCP reachability and inspect TLS certs.
       <target>              Target host, host:port, or IP address.
@@ -422,11 +429,13 @@ Network diagnostic CLI utility to test TCP reachability and inspect TLS certs.
   -n, --count=<count>       Number of probe attempts per port (default: 4).
   -s, --ssl, --tls          Force TLS/SSL certificate inspection.
   -t, --timeout=<timeout>   Connection timeout in milliseconds (default: 2000).
+      --tui                 Launch full-screen interactive TamboUI dashboard.
   -V, --version             Print version information and exit.
   -w, --warn-days=<warnDaysThreshold>
                             Exit code 2 if SSL certificate expires within
                               specified days threshold.
 ```
+
 
 ---
 

@@ -2,6 +2,9 @@
 //JAVA 25+
 //DEPS info.picocli:picocli:4.7.7
 //DEPS info.picocli:picocli-codegen:4.7.7
+//DEPS dev.tamboui:tamboui-tui:0.4.0
+//DEPS dev.tamboui:tamboui-jline3-backend:0.4.0
+//DEPS dev.tamboui:tamboui-widgets:0.4.0
 //JAVAC_OPTIONS -proc:full
 //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED
 //NATIVE_OPTIONS -O2 --no-fallback
@@ -32,6 +35,16 @@ import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
+
+import dev.tamboui.layout.Constraint;
+import dev.tamboui.layout.Layout;
+import dev.tamboui.style.Style;
+import dev.tamboui.text.Text;
+import dev.tamboui.tui.TuiConfig;
+import dev.tamboui.tui.TuiRunner;
+import dev.tamboui.tui.event.KeyEvent;
+import dev.tamboui.widgets.block.Block;
+import dev.tamboui.widgets.paragraph.Paragraph;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -39,9 +52,9 @@ import picocli.CommandLine.Parameters;
 
 /**
  * Reach is an advanced network diagnostic CLI tool to test TCP connectivity, measure handshake
- * latency, inspect TLS/SSL certificates, probe HTTP/HTTPS status, and export JSON stats.
+ * latency, inspect TLS/SSL certificates, probe HTTP/HTTPS status, and render an interactive TUI.
  */
-@Command(name = "reach", mixinStandardHelpOptions = true, version = "reach 1.1",
+@Command(name = "reach", mixinStandardHelpOptions = true, version = "reach 1.3",
     description = "Network diagnostic CLI utility to test TCP reachability and inspect TLS certs.")
 @SuppressWarnings("unused")
 class Reach implements Callable<Integer> {
@@ -66,6 +79,9 @@ class Reach implements Callable<Integer> {
   @Option(names = {"-c", "--continuous"},
       description = "Continuous probing until stopped via Ctrl+C.")
   private boolean continuous;
+
+  @Option(names = {"--tui"}, description = "Launch full-screen interactive TamboUI dashboard.")
+  private boolean tuiMode;
 
   @Option(names = {"-t", "--timeout"}, defaultValue = "2000",
       description = "Connection timeout in milliseconds (default: 2000).")
@@ -150,6 +166,12 @@ class Reach implements Callable<Integer> {
       return 1;
     }
     var dnsTimeMs = (System.nanoTime() - dnsStart) / 1_000_000.0;
+
+    // Interactive TamboUI Mode
+    if (tuiMode) {
+      runTuiDashboard(host, address, ports, dnsTimeMs);
+      return 0;
+    }
 
     var overallSuccess = true;
     var certWarningTriggered = false;
@@ -285,6 +307,154 @@ class Reach implements Callable<Integer> {
     }
 
     return overallSuccess ? 0 : 1;
+  }
+
+  /**
+   * Launches full-screen interactive TamboUI TUI dashboard.
+   */
+  private void runTuiDashboard(String host, InetAddress address, List<Integer> ports,
+      double dnsTimeMs) throws Exception {
+
+    var primaryPort = ports.get(0);
+    var isSsl = Boolean.TRUE.equals(forceSsl) || (forceSsl == null && primaryPort == 443);
+    var tlsInfo = isSsl ? inspectTls(host, primaryPort) : null;
+    var httpInfo = checkHttp ? inspectHttp(host, primaryPort, isSsl) : null;
+
+    List<String> probeLogs = new ArrayList<>();
+    List<Double> rtts = new ArrayList<>();
+    final var transmitted = new int[] {0};
+    final var received = new int[] {0};
+    final var isPaused = new boolean[] {false};
+
+    var config = TuiConfig.builder().tickRate(Duration.ofMillis(500)).build();
+
+    try (var tui = TuiRunner.create(config)) {
+      tui.run((event, runner) -> {
+        if (event instanceof KeyEvent k) {
+          if (k.isQuit() || k.isChar('q')) {
+            runner.quit();
+            return true;
+          }
+          if (k.isChar(' ')) {
+            isPaused[0] = !isPaused[0];
+            return true;
+          }
+          if (k.isChar('r')) {
+            probeLogs.clear();
+            rtts.clear();
+            transmitted[0] = 0;
+            received[0] = 0;
+            return true;
+          }
+        }
+        return false;
+      }, frame -> {
+        if (!isPaused[0]) {
+          transmitted[0]++;
+          var seq = transmitted[0];
+          var start = System.nanoTime();
+          try (var socket = new Socket()) {
+            socket.connect(new InetSocketAddress(address, primaryPort), timeout);
+            var rttMs = (System.nanoTime() - start) / 1_000_000.0;
+            rtts.add(rttMs);
+            received[0]++;
+            probeLogs.add(String.format("Connected to %s:%d: tcp_seq=%d time=%.2f ms",
+                address.getHostAddress(), primaryPort, seq, rttMs));
+          } catch (IOException e) {
+            probeLogs.add(String.format("Connection to %s:%d: tcp_seq=%d timeout/refused (%s)",
+                address.getHostAddress(), primaryPort, seq, e.getMessage()));
+          }
+
+          if (probeLogs.size() > 12) {
+            probeLogs.remove(0);
+          }
+        }
+
+        var chunks = Layout.vertical()
+            .constraints(Constraint.length(3), Constraint.fill(1), Constraint.length(3))
+            .split(frame.area());
+
+        var headerText = String.format(" REACH: %s [%s:%d]  |  DNS: %.2f ms  |  Status: %s", host,
+            address.getHostAddress(), primaryPort, dnsTimeMs, isPaused[0] ? "PAUSED" : "ACTIVE");
+
+        var headerBlock =
+            Block.builder().title(" Network Prober ").style(Style.create().cyan().bold()).build();
+
+        frame.renderWidget(
+            Paragraph.builder().text(Text.from(headerText)).block(headerBlock).build(),
+            chunks.get(0));
+
+        var bodyChunks = Layout.horizontal()
+            .constraints(Constraint.percentage(45), Constraint.percentage(55)).split(chunks.get(1));
+
+        var infoSb = new StringBuilder();
+        infoSb.append("Target: ").append(host).append("\n");
+        infoSb.append("IP: ").append(address.getHostAddress()).append("\n");
+        infoSb.append("Port: ").append(primaryPort).append("\n\n");
+
+        if (tlsInfo != null) {
+          infoSb.append("=== TLS Certificate ===\n");
+          if (tlsInfo.error() == null) {
+            infoSb.append("Subject: ").append(tlsInfo.subject()).append("\n");
+            infoSb.append("Issuer:  ").append(tlsInfo.issuer()).append("\n");
+            infoSb.append("Expires: ").append(tlsInfo.daysRemaining()).append(" days remaining\n");
+            infoSb.append("Cipher:  ").append(tlsInfo.cipherSuite()).append("\n");
+          } else {
+            infoSb.append("Error: ").append(tlsInfo.error()).append("\n");
+          }
+        }
+
+        if (httpInfo != null) {
+          infoSb.append("\n=== HTTP Probe ===\n");
+          if (httpInfo.error() == null) {
+            infoSb.append("Status: ").append(httpInfo.statusCode()).append("\n");
+            infoSb.append("TTFB:   ").append(String.format("%.2f ms", httpInfo.ttfbMs()))
+                .append("\n");
+          } else {
+            infoSb.append("Error: ").append(httpInfo.error()).append("\n");
+          }
+        }
+
+        var infoBlock = Block.builder().title(" Connection & Security Details ")
+            .style(Style.create().green()).build();
+
+        frame.renderWidget(
+            Paragraph.builder().text(Text.from(infoSb.toString())).block(infoBlock).build(),
+            bodyChunks.get(0));
+
+        var logSb = new StringBuilder();
+        for (var logLine : probeLogs) {
+          logSb.append(logLine).append("\n");
+        }
+
+        var lossPercent =
+            transmitted[0] > 0 ? ((transmitted[0] - received[0]) / (double) transmitted[0]) * 100.0
+                : 0.0;
+        DoubleSummaryStatistics rttStats =
+            rtts.stream().mapToDouble(Double::doubleValue).summaryStatistics();
+
+        logSb.append("\n--- Stats ---\n");
+        logSb.append(String.format("Tx/Rx: %d/%d (%.1f%% loss)\n", transmitted[0], received[0],
+            lossPercent));
+        if (!rtts.isEmpty()) {
+          logSb.append(String.format("RTT min/avg/max: %.1f/%.1f/%.1f ms\n", rttStats.getMin(),
+              rttStats.getAverage(), rttStats.getMax()));
+        }
+
+        var logBlock =
+            Block.builder().title(" Live TCP Probes ").style(Style.create().yellow()).build();
+
+        frame.renderWidget(
+            Paragraph.builder().text(Text.from(logSb.toString())).block(logBlock).build(),
+            bodyChunks.get(1));
+
+        var footerBlock = Block.builder().style(Style.create().magenta()).build();
+
+        frame.renderWidget(Paragraph.builder()
+            .text(Text.from(" Controls: [q] Quit  |  [Space] Pause/Resume  |  [r] Reset Stats"))
+            .block(footerBlock).build(), chunks.get(2));
+      });
+    }
   }
 
   private List<Integer> parsePorts(String rawPortStr, boolean isSslForced) {
