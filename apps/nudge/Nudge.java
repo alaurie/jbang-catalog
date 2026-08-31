@@ -22,13 +22,10 @@ import java.util.List;
 import java.util.Random;
 import java.util.concurrent.Callable;
 
-/**
- * Utility to keep your desktop presence active (preventing status from changing to "Away").
- *
- * <p>
- * Periodically checks for user idle status by inspecting pointer coordinates. When idle, it
- * simulates subtle mouse movements (out-and-back or circular), Shift key presses, or scrolling.
- */
+/// Utility to keep your desktop presence active (preventing status from changing to "Away").
+///
+/// Periodically checks for user idle status by inspecting pointer coordinates. When idle, it
+/// simulates subtle mouse movements (out-and-back or circular), Shift key presses, or scrolling.
 @Command(name = "nudge", mixinStandardHelpOptions = true, version = "nudge 1.2",
     description = "Simulates user activity (mouse movement, key press, scrolling) when idle to keep your"
         + " presence status active.")

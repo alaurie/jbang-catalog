@@ -37,7 +37,8 @@ Instructions, conventions, and engineering standards for AI coding agents operat
 - **Line Length**: **100 characters** maximum.
 - **Imports**: Group static imports first, followed by alphabetical standard Java packages and third-party packages. No wildcard star imports (`import java.util.*`).
 - **Javadoc Documentation**:
-  - Class-level Javadoc (`/** ... */`) describing the utility's purpose, background, and platform/OS notes.
+  - **Markdown Javadoc (`///`)**: Prefer Markdown-formatted doc comments (`/// ...`, JEP 467 / Java 23+) over legacy HTML-based `/** ... */` block tags (`<p>`, `<code>`, `<ul>`).
+  - Class-level Javadoc describing the utility's purpose, background, and platform/OS notes.
   - Method-level Javadoc for helper methods describing behavior, parameters (`@param`), return values (`@return`), and exceptions (`@throws`).
 - **Automated Formatting Hook**: Pre-commit hook at `.githooks/pre-commit` enforces `jbang-fmt --style=google` on all staged Java files. Enable via:
   ```bash
@@ -45,13 +46,21 @@ Instructions, conventions, and engineering standards for AI coding agents operat
   ```
 ### Modern Java Idioms
 - **Type Inference (`var`)**: Use `var` for local variables whenever the right-hand type assignment or initialization is clear.
+- **Unnamed Variables (`_`)**: Use `_` for unneeded exception catches, lambda parameters, or unused variables (JEP 456, Java 22+):
+  ```java
+  try { ... } catch (Exception _) { /* silent fallback */ }
+  ```
+- **Virtual Threads**: Prefer `Executors.newVirtualThreadPerTaskExecutor()` or `Thread.ofVirtual().start(...)` for I/O-bound concurrency over fixed thread pools.
+- **Sequenced Collections**: Use `.getFirst()`, `.getLast()`, and `.reversed()` on lists, deques, and sets (JEP 431, Java 21+).
+- **Hex Formatting**: Use standard `java.util.HexFormat` for digest/hash hex encoding instead of manual byte loops or external libraries.
 - **HTTP Communications**: Use `java.net.http.HttpClient`, `HttpRequest`, and `HttpResponse` (async or sync) instead of legacy `HttpURLConnection`.
-- **File System Operations**: Use `java.nio.file.Path`, `Files`, `Paths`, and `BufferedReader`/`BufferedWriter` with UTF-8 encoding.
-- **Language Constructs**: Utilize Java 25 features where appropriate:
-  - **Records** for immutable data carriers and DTOs.
+- **File System Operations**: Use `Path.of(...)` (prefer over legacy `Paths.get`), `Files.readString()`, `Files.writeString()`, and UTF-8 encoding by default.
+- **Language Constructs**:
+  - **Records & Record Patterns** for immutable data carriers and inline pattern matching deconstruction.
   - **Pattern Matching** for `instanceof` and `switch` statements.
   - **Text Blocks** (`""" ... """`) for multiline strings, templates, or help text.
-  - **Streams & Functional Pipelines**: Use `.stream()`, `.map()`, `.filter()`, `.toList()`, and `.collect()` for collection processing.
+  - **Formatted Strings**: Use `"""...""".formatted(...)` or `"Hello, %s".formatted(name)`.
+  - **Streams & Functional Pipelines**: Use `.stream()`, `.map()`, `.filter()`, `.toList()` (prefer `.toList()` over `.collect(Collectors.toList())`).
   - **Clamping**: Use `Math.clamp(value, min, max)` (Java 21+) instead of `Math.max(min, Math.min(value, max))`.
   - **Lambdas**: Prefer expression lambdas (`() -> expr`) over statement lambdas (`() -> { expr; }`) for single-statement bodies.
 
@@ -118,10 +127,10 @@ Instructions, conventions, and engineering standards for AI coding agents operat
 All utilities **MUST** be fully functional across Windows, macOS, and Linux by default.
 
 ### Pathing & Environment
-- Never hardcode `/` or `\` path separators in strings. Always use `Path.of()`, `Paths.get()`, or `File.separator`.
+- Never hardcode `/` or `\` path separators in strings. Always use `Path.of()` or `File.separator`.
 - Resolve home directories portably via `System.getProperty("user.home")`.
 - Account for OS binary extensions (e.g., appending `.exe` on Windows vs extensionless binaries on Linux/macOS).
-
+- **Directory Target Resolution**: When an option accepts an output file path (`-o`, `--output`) and the user passes an existing directory path (or a path ending in `/` or `\`), resolve the target file name inside that directory and ensure parent directories are created via `Files.createDirectories()`.
 ### GUI, AWT & Desktop Environments
 - For utilities interacting with screen/keyboard/mouse (`java.awt.Robot`, `java.awt.MouseInfo`):
   - Check `GraphicsEnvironment.isHeadless()` early to display clear error messages if executed in headless environments.

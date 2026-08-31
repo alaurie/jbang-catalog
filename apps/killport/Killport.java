@@ -19,13 +19,10 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
-/**
- * Cross-platform CLI utility to find and terminate processes listening on specified network ports.
- *
- * <p>
- * Supports dry-run inspection, interactive prompts, custom signals, force killing, and multi-port
- * batch termination across Windows, macOS, and Linux.
- */
+/// Cross-platform CLI utility to find and terminate processes listening on specified network ports.
+///
+/// Supports dry-run inspection, interactive prompts, custom signals, force killing, and multi-port
+/// batch termination across Windows, macOS, and Linux.
 @Command(name = "killport", mixinStandardHelpOptions = true, version = "killport 1.1",
     description = "Find and terminate processes listening on specified network ports.")
 @SuppressWarnings("unused")
@@ -166,7 +163,7 @@ class Killport implements Callable<Integer> {
               if (localAddr.endsWith(":" + port)) {
                 try {
                   pids.add(Long.parseLong(parts[parts.length - 1]));
-                } catch (NumberFormatException ignored) {
+                } catch (NumberFormatException _) {
                 }
               }
             }
@@ -174,7 +171,7 @@ class Killport implements Callable<Integer> {
         }
       }
       process.waitFor();
-    } catch (Exception ignored) {
+    } catch (Exception _) {
     }
   }
 
@@ -193,7 +190,7 @@ class Killport implements Callable<Integer> {
         while ((line = reader.readLine()) != null) {
           try {
             pids.add(Long.parseLong(line.trim()));
-          } catch (NumberFormatException ignored) {
+          } catch (NumberFormatException _) {
           }
         }
       }
@@ -201,7 +198,7 @@ class Killport implements Callable<Integer> {
       if (!pids.isEmpty() || exitCode == 0) {
         return;
       }
-    } catch (Exception ignored) {
+    } catch (Exception _) {
     }
 
     try {
@@ -219,14 +216,14 @@ class Killport implements Callable<Integer> {
               var pidStr = line.substring(idx + 4, endIdx);
               try {
                 pids.add(Long.parseLong(pidStr));
-              } catch (NumberFormatException ignored) {
+              } catch (NumberFormatException _) {
               }
             }
           }
         }
       }
       process.waitFor();
-    } catch (Exception ignored) {
+    } catch (Exception _) {
     }
   }
 
@@ -257,7 +254,7 @@ class Killport implements Callable<Integer> {
         p = new ProcessBuilder("kill", flag, String.valueOf(pid)).start();
       }
       return p.waitFor() == 0;
-    } catch (Exception e) {
+    } catch (Exception _) {
       return false;
     }
   }

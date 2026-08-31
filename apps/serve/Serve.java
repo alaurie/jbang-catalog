@@ -28,12 +28,9 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
-/**
- * Lightweight HTTP file server utility inspired by {@code python -m http.server}.
- *
- * <p>
- * Built using Java's built-in {@link SimpleFileServer} and {@link HttpServer} APIs.
- */
+/// Lightweight HTTP file server utility inspired by `python -m http.server`.
+///
+/// Built using Java's built-in `SimpleFileServer` and `HttpServer` APIs.
 @Command(name = "serve", mixinStandardHelpOptions = true, version = "serve 1.2",
     description = "Simple HTTP file server inspired by python -m http.server")
 @SuppressWarnings("unused")

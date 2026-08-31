@@ -24,13 +24,12 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
-/**
- * CLI utility to calculate and verify cryptographic checksums (MD5, SHA-1, SHA-256, SHA-512, etc.).
- *
- * <p>
- * Supports checking files, recursive directory manifests, string inputs, benchmark mode, stdin, and
- * verification files.
- */
+/// CLI utility to calculate and verify cryptographic checksums (MD5, SHA-1, SHA-256, SHA-512,
+/// etc.).
+///
+/// Supports checking files, recursive directory manifests, string inputs, benchmark mode, stdin,
+/// and
+/// verification files.
 @Command(name = "hash", mixinStandardHelpOptions = true, version = "hash 1.1",
     description = "Compute and verify cryptographic checksums for files or text input.")
 @SuppressWarnings("unused")

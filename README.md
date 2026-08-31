@@ -440,8 +440,57 @@ Network diagnostic CLI utility to test TCP reachability and inspect TLS certs.
                               Creation & Expiration dates).
 ```
 
+---
 
+## fetch
 
+`fetch` is a high-performance multi-threaded CLI file downloader with automatic checksum probing and verification.
+
+### Usage
+
+To run it via jbang from this catalog repository:
+
+```bash
+jbang fetch@alaurie https://example.com/file.iso
+```
+
+Or download into a specific target directory or file path:
+
+```bash
+jbang fetch@alaurie https://mirror.aarnet.edu.au/pub/almalinux/10.2/isos/x86_64/AlmaLinux-10-latest-x86_64-boot.iso -o ~/Downloads/
+```
+
+Or download with custom concurrent connections or explicit checksum verification:
+
+```bash
+jbang fetch@alaurie https://example.com/file.tar.gz -c 8 --expected-hash sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+```
+
+Or, if you clone the repository locally:
+
+```bash
+jbang fetch https://example.com/file.iso
+```
+
+### Options
+
+```
+Usage: fetch [-hV] [--no-checksum] [-c=<connections>]
+             [--expected-hash=<explicitHash>] [-o=<outputPath>] <uri>
+High-performance multi-threaded CLI file downloader with auto-checksum
+verification
+      <uri>           Target URL to download
+  -c, --connections=<connections>
+                      Concurrent chunk download connections
+      --expected-hash=<explicitHash>
+                      Explicitly verify against this hash (auto-detects
+                        algorithm by length). Bypasses server probe.
+  -h, --help          Show this help message and exit.
+      --no-checksum   Skip automatic checksum probing and verification
+  -o, --output=<outputPath>
+                      Target file output path
+  -V, --version       Print version information and exit.
+```
 
 ---
 

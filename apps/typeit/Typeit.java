@@ -16,13 +16,10 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
-/**
- * Simulates typing clipboard text (or a custom text string) into the active desktop window.
- *
- * <p>
- * Designed for remote sessions, VDIs (Citrix, VMware Horizon, RDP), and virtual machines where
- * copy-paste is blocked by security policy, but keyboard input events are accepted.
- */
+/// Simulates typing clipboard text (or a custom text string) into the active desktop window.
+///
+/// Designed for remote sessions, VDIs (Citrix, VMware Horizon, RDP), and virtual machines where
+/// copy-paste is blocked by security policy, but keyboard input events are accepted.
 @Command(name = "typeit", mixinStandardHelpOptions = true, version = "typeit 1.1",
     description = "Simulates typing clipboard text (or specified string) into the active window after a"
         + " countdown delay.")

@@ -29,14 +29,12 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.SerializationFeature;
 import tools.jackson.databind.json.JsonMapper;
 
-/**
- * CLI utility to inspect and decode JSON Web Tokens (JWT) safely off-line.
- *
- * <p>
- * Splits JWT parts (header, payload, signature), base64url decodes header and payload, pretty
- * prints JSON structures, checks expiration/timestamp claims, verifies HMAC signatures, and exports
- * claims to shell environment variables.
- */
+/// CLI utility to inspect and decode JSON Web Tokens (JWT) safely off-line.
+///
+/// Splits JWT parts (header, payload, signature), base64url decodes header and payload, pretty
+/// prints JSON structures, checks expiration/timestamp claims, verifies HMAC signatures, and
+/// exports
+/// claims to shell environment variables.
 @Command(name = "jwt", mixinStandardHelpOptions = true, version = "jwt 1.1",
     description = "Inspect and decode JSON Web Tokens (JWT) without sending tokens to third parties.")
 @SuppressWarnings("unused")

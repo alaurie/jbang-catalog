@@ -23,7 +23,6 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.time.Duration;
@@ -35,8 +34,12 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+/// High-performance multi-threaded CLI file downloader with auto-checksum verification.
+///
+/// Supports concurrent chunked range requests and automatic remote manifest probing.
 @Command(name = "fetch", mixinStandardHelpOptions = true, version = "fetch 0.1",
     description = "High-performance multi-threaded CLI file downloader with auto-checksum verification")
+@SuppressWarnings("unused")
 class Fetch implements Callable<Integer> {
 
   @Parameters(index = "0", description = "Target URL to download")
@@ -70,20 +73,23 @@ class Fetch implements Callable<Integer> {
 
   @Override
   public Integer call() throws Exception {
+    String pathStr = uri.getPath();
+    String defaultFileName =
+        (pathStr == null || pathStr.isBlank() || pathStr.endsWith("/")) ? "downloaded_file"
+            : Path.of(pathStr).getFileName().toString();
+
     if (outputPath == null) {
-      String pathStr = uri.getPath();
-      String fileName =
-          (pathStr == null || pathStr.isBlank() || pathStr.endsWith("/")) ? "downloaded_file"
-              : Paths.get(pathStr).getFileName().toString();
-      outputPath = Paths.get(fileName);
+      outputPath = Path.of(defaultFileName);
+    } else if (Files.isDirectory(outputPath) || outputPath.toString().endsWith("/")
+        || outputPath.toString().endsWith("\\")) {
+      outputPath = outputPath.resolve(defaultFileName);
+    }
+    if (outputPath.getParent() != null) {
+      Files.createDirectories(outputPath.getParent());
     }
 
     String localFilename = outputPath.getFileName().toString();
-    String pathStr = uri.getPath();
-    String remoteFilename =
-        (pathStr == null || pathStr.isBlank() || pathStr.endsWith("/")) ? localFilename
-            : Paths.get(pathStr).getFileName().toString();
-
+    String remoteFilename = defaultFileName;
     ExpectedHash expectedHash = null;
     if (explicitHash != null && !explicitHash.isBlank()) {
       String rawHash = explicitHash.trim();
@@ -101,7 +107,7 @@ class Fetch implements Callable<Integer> {
       expectedHash = findExpectedHash(remoteFilename, localFilename);
     }
 
-    if (expectedHash != null && Files.exists(outputPath)) {
+    if (expectedHash != null && Files.isRegularFile(outputPath)) {
       System.out.printf("Found manifest: %s (Algorithm: %s)%n", expectedHash.candidate(),
           expectedHash.algorithm());
       System.out.print("Local file exists. Verifying checksum... ");
@@ -177,7 +183,7 @@ class Fetch implements Callable<Integer> {
             return new ExpectedHash(algorithm, expectedHash, candidate);
           }
         }
-      } catch (Exception ignored) {
+      } catch (Exception _) {
         // Continue scanning candidates if request or parsing fails
       }
     }
