@@ -233,7 +233,7 @@ class Slowfetch implements Callable<Integer> {
     infoLines.add("%sJava Runtime:%s Java %s (%s)".formatted(bold, reset, javaVersion, javaVendor));
 
     infoLines.add("");
-    infoLines.add(renderColorPalette());
+    infoLines.addAll(renderColorPaletteLines());
 
     printSideBySide(selectLogo(osName), infoLines);
     return 0;
@@ -336,16 +336,16 @@ class Slowfetch implements Callable<Integer> {
     return null;
   }
 
-  private String renderColorPalette() {
-    var sb = new StringBuilder();
+  private List<String> renderColorPaletteLines() {
+    var line1 = new StringBuilder();
     for (int i = 40; i <= 47; i++) {
-      sb.append("\u001B[").append(i).append("m   \u001B[0m");
+      line1.append("\u001B[").append(i).append("m   \u001B[0m");
     }
-    sb.append("\n");
+    var line2 = new StringBuilder();
     for (int i = 100; i <= 107; i++) {
-      sb.append("\u001B[").append(i).append("m   \u001B[0m");
+      line2.append("\u001B[").append(i).append("m   \u001B[0m");
     }
-    return sb.toString();
+    return List.of(line1.toString(), line2.toString());
   }
 
   private Logo selectLogo(String osFamily) {
@@ -384,16 +384,19 @@ class Slowfetch implements Callable<Integer> {
 
     var maxLines = Math.max(logoLines.size(), infoLines.size());
     var logoWidth = logo.width();
+    var emptyLogoPad = " ".repeat(logoWidth);
 
     for (int i = 0; i < maxLines; i++) {
-      var logoPart = (i < logoLines.size()) ? logoLines.get(i) : "";
       var textPart = (i < infoLines.size()) ? infoLines.get(i) : "";
-
-      var paddedLogo = String.format("%-" + logoWidth + "s", logoPart);
-      System.out.println(logoColor + paddedLogo + reset + "  " + textPart);
+      if (i < logoLines.size()) {
+        var logoPart = logoLines.get(i);
+        var paddedLogo = String.format("%-" + logoWidth + "s", logoPart);
+        System.out.println(logoColor + paddedLogo + reset + "  " + textPart);
+      } else {
+        System.out.println(emptyLogoPad + "  " + textPart);
+      }
     }
   }
-  //endregion
 
   //region Logo Records & Art
   private record Logo(String name, String colorCode, int width, List<String> lines) {}
