@@ -29,6 +29,9 @@ Instructions, conventions, and engineering standards for AI coding agents operat
 //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED
 //NATIVE_OPTIONS -O2 --no-fallback
 ```
+- **Native Image Support (`jbang --native`)**:
+  - **Picocli Reflection Metadata**: Include `//DEPS info.picocli:picocli-codegen:4.7.7` and `//JAVAC_OPTIONS -proc:full` on every CLI script so the annotation processor generates `reflect-config.json` at compile-time for GraalVM ahead-of-time (AOT) compilation.
+  - **Pure-Java vs Native C-Bindings (JNA/FFM)**: Pure-Java utilities (e.g. `hash`, `jwt`, `killport`, `reach`, `serve`, `fetch`) compile cleanly with `jbang --native`. Tools that depend on dynamic C/JNI bindings (such as `OSHI` / `JNA` in `slowfetch`) require external C dynamic link libraries (`libjnidispatch`) and are intended to run on the standard JVM (`jbang script.java`).
 
 ### Code Style & Formatting
 - **Style Guide**: **Google Java Style Guide**.
