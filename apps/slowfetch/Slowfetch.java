@@ -207,6 +207,11 @@ class Slowfetch implements Callable<Integer> {
     if (primaryIp != null) {
       infoLines.add("%sLocal IP:%s %s".formatted(bold, reset, primaryIp));
     }
+    var containers = detectContainers();
+    if (containers != null) {
+      infoLines.add("%sContainers:%s %s".formatted(bold, reset, containers));
+    }
+
 
     if (showTop) {
       var topCpu = os.getProcesses(null, OperatingSystem.ProcessSorting.CPU_DESC, 3);
@@ -353,6 +358,7 @@ class Slowfetch implements Callable<Integer> {
       return oshiVersion;
     }
 
+
     var os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
     if (os.contains("linux")) {
       var vendor = gpu.getVendor().toLowerCase(Locale.ROOT);
@@ -414,6 +420,36 @@ class Slowfetch implements Callable<Integer> {
       }
     }
     return null;
+  }
+
+  private String detectContainers() {
+    var found = new ArrayList<String>();
+
+    // 1. Check Docker
+    try {
+      var p = new ProcessBuilder("docker", "info", "--format",
+          "{{.ContainersRunning}} running, {{.Containers}} total")
+          .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+      var out = new String(p.getInputStream().readAllBytes()).trim();
+      if (p.waitFor() == 0 && !out.isBlank()) {
+        found.add("Docker (%s)".formatted(out));
+      }
+    } catch (Exception _) {
+    }
+
+    // 2. Check Podman
+    try {
+      var p = new ProcessBuilder("podman", "info", "--format",
+          "{{.Host.Containers.Running}} running, {{.Host.Containers.Total}} total")
+          .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+      var out = new String(p.getInputStream().readAllBytes()).trim();
+      if (p.waitFor() == 0 && !out.isBlank()) {
+        found.add("Podman (%s)".formatted(out));
+      }
+    } catch (Exception _) {
+    }
+
+    return found.isEmpty() ? null : String.join(", ", found);
   }
 
 
