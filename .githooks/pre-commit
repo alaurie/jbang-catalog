@@ -10,7 +10,7 @@ fi
 
 if [ -n "$JBANG_FMT" ]; then
     STAGED_JAVA_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.java$')
-    if [ -n $STAGED_JAVA_FILES ]; then
+    if [ -n "$STAGED_JAVA_FILES" ]; then
         echo "Running jbang-fmt (--style=google) on staged Java files..."
         $JBANG_FMT --style=google $STAGED_JAVA_FILES
         git add $STAGED_JAVA_FILES

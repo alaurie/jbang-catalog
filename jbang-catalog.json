@@ -31,7 +31,10 @@
     "reach": {
       "script-ref": "apps/reach/Reach.java",
       "description": "Network diagnostic CLI utility to test TCP reachability and inspect TLS certs."
+    },
+    "slowfetch": {
+      "script-ref": "apps/slowfetch/Slowfetch.java",
+      "description": "Terminal system information fetcher powered by OSHI."
     }
   }
 }
-

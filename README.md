@@ -494,6 +494,52 @@ verification
 
 ---
 
+## slowfetch
+
+`slowfetch` is a thorough, beautiful system information tool written in modern Java, inspired by fastfetch and neofetch. Powered by OSHI (Operating System and Hardware Information), it displays system metrics, hardware specs, memory/swap, disk usage, IP info, and ASCII logos cross-platform across Linux, macOS, and Windows.
+
+### Usage
+
+To run it via jbang from this catalog repository:
+
+```bash
+jbang slowfetch@alaurie
+```
+
+Or display all mounted physical disks:
+
+```bash
+jbang slowfetch@alaurie --disks
+```
+
+Or force a specific OS logo (e.g. `java`, `debian`, `ubuntu`, `arch`, `fedora`, `macos`, `windows`, `linux`):
+
+```bash
+jbang slowfetch@alaurie --logo=java
+```
+
+Or, if you clone the repository locally:
+
+```bash
+jbang slowfetch
+```
+
+### Options
+
+```
+Usage: slowfetch [-hV] [--disks] [--no-logo] [--logo=<forceLogo>]
+A thorough, beautiful system information tool written in modern Java.
+      --disks              Show all mounted physical disks instead of just root.
+  -h, --help               Show this help message and exit.
+      --logo=<forceLogo>   Force a specific logo: debian, ubuntu, arch, fedora,
+                             macos, windows, linux, java.
+      --no-logo            Hide OS ASCII art logo.
+  -V, --version            Print version information and exit.
+```
+
+---
+
+
 ## Development
 
 To automatically run `jbang-fmt` on staged `.java` files before committing, enable the repository's pre-commit hook:
