@@ -511,6 +511,11 @@ Or display all mounted physical disks:
 ```bash
 jbang slowfetch@alaurie --disks
 ```
+Or inspect top consuming processes:
+
+```bash
+jbang slowfetch@alaurie --top
+```
 
 Or force a specific OS logo (e.g. `java`, `debian`, `ubuntu`, `arch`, `fedora`, `macos`, `windows`, `linux`):
 
@@ -527,16 +532,19 @@ jbang slowfetch
 ### Options
 
 ```
-Usage: slowfetch [-hV] [--disks] [--no-logo] [--logo=<forceLogo>]
+Usage: slowfetch [-hV] [--disks] [--no-bars] [--no-logo] [--top]
+                 [--logo=<forceLogo>]
 A thorough, beautiful system information tool written in modern Java.
       --disks              Show all mounted physical disks instead of just root.
   -h, --help               Show this help message and exit.
       --logo=<forceLogo>   Force a specific logo: debian, ubuntu, arch, fedora,
                              macos, windows, linux, java.
+      --no-bars            Disable visual progress bar gauges for
+                             memory/disk/battery.
       --no-logo            Hide OS ASCII art logo.
+      --top                Show top 3 processes by CPU and Memory consumption.
   -V, --version            Print version information and exit.
 ```
-
 ---
 
 

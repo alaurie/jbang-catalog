@@ -9,12 +9,9 @@
 //NATIVE_OPTIONS -O2 --no-fallback
 
 import java.net.InetAddress;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Callable;
@@ -25,8 +22,11 @@ import oshi.hardware.GlobalMemory;
 import oshi.hardware.GraphicsCard;
 import oshi.hardware.HardwareAbstractionLayer;
 import oshi.hardware.NetworkIF;
+import oshi.hardware.PowerSource;
+import oshi.hardware.Sensors;
 import oshi.software.os.FileSystem;
 import oshi.software.os.OSFileStore;
+import oshi.software.os.OSProcess;
 import oshi.software.os.OperatingSystem;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -34,10 +34,9 @@ import picocli.CommandLine.Option;
 
 /// slowfetch is a high-detail terminal system information fetcher written in Java.
 ///
-/// A humorous, pure-Java take on fastfetch/neofetch powered by OSHI (Operating System &
-/// Hardware Information), rendering clean ASCII logos, hardware stats, memory, disk,
-/// network, and system metrics across Linux, macOS, and Windows.
-@Command(name = "slowfetch", mixinStandardHelpOptions = true, version = "slowfetch 1.0",
+/// A powerful, pure-Java take on fastfetch/neofetch powered by OSHI, featuring hardware sensors,
+/// battery diagnostics, load averages, visual ASCII progress gauges, and top resource consumers.
+@Command(name = "slowfetch", mixinStandardHelpOptions = true, version = "slowfetch 1.2",
     description = "A thorough, beautiful system information tool written in modern Java.")
 @SuppressWarnings("unused")
 class Slowfetch implements Callable<Integer> {
@@ -53,6 +52,13 @@ class Slowfetch implements Callable<Integer> {
   @Option(names = {"--disks"},
       description = "Show all mounted physical disks instead of just root.")
   private boolean showAllDisks;
+
+  @Option(names = {"--top"}, description = "Show top 3 processes by CPU and Memory consumption.")
+  private boolean showTop;
+
+  @Option(names = {"--no-bars"},
+      description = "Disable visual progress bar gauges for memory/disk/battery.")
+  private boolean noBars;
   //endregion
 
   //region Main & Lifecycle
@@ -121,6 +127,26 @@ class Slowfetch implements Callable<Integer> {
     infoLines
         .add("%sCPU:%s %s (%dC/%dT)".formatted(bold, reset, cpuName, physicalCores, logicalCores));
 
+    var sensors = hal.getSensors();
+    var cpuTemp = sensors.getCpuTemperature();
+    var fanSpeeds = sensors.getFanSpeeds();
+    var sensorParts = new ArrayList<String>();
+    if (cpuTemp > 0) {
+      sensorParts.add("%.1f°C".formatted(cpuTemp));
+    }
+    if (fanSpeeds != null && fanSpeeds.length > 0 && fanSpeeds[0] > 0) {
+      sensorParts.add("%d RPM".formatted(fanSpeeds[0]));
+    }
+    if (!sensorParts.isEmpty()) {
+      infoLines.add("%sSensors:%s %s".formatted(bold, reset, String.join(" | ", sensorParts)));
+    }
+
+    var loadAverages = cpu.getSystemLoadAverage(3);
+    if (loadAverages != null && loadAverages.length >= 3 && loadAverages[0] >= 0) {
+      infoLines.add("%sLoad Avg:%s %.2f, %.2f, %.2f".formatted(bold, reset, loadAverages[0],
+          loadAverages[1], loadAverages[2]));
+    }
+
     for (var gpu : hal.getGraphicsCards()) {
       var gpuName = gpu.getName();
       if (!gpuName.isBlank()) {
@@ -138,15 +164,17 @@ class Slowfetch implements Callable<Integer> {
     var availMem = mem.getAvailable();
     var usedMem = totalMem - availMem;
     var memPct = (int) Math.round(((double) usedMem / totalMem) * 100.0);
-    infoLines.add("%sMemory:%s %s / %s (%d%%)".formatted(bold, reset, formatBytes(usedMem),
-        formatBytes(totalMem), memPct));
+    var memBar = noBars ? "" : renderGauge(memPct) + " ";
+    infoLines.add("%sMemory:%s %s%s / %s (%d%%)".formatted(bold, reset, memBar,
+        formatBytes(usedMem), formatBytes(totalMem), memPct));
 
     var swapTotal = mem.getVirtualMemory().getSwapTotal();
     if (swapTotal > 0) {
       var swapUsed = mem.getVirtualMemory().getSwapUsed();
       var swapPct = (int) Math.round(((double) swapUsed / swapTotal) * 100.0);
-      infoLines.add("%sSwap:%s %s / %s (%d%%)".formatted(bold, reset, formatBytes(swapUsed),
-          formatBytes(swapTotal), swapPct));
+      var swapBar = noBars ? "" : renderGauge(swapPct) + " ";
+      infoLines.add("%sSwap:%s %s%s / %s (%d%%)".formatted(bold, reset, swapBar,
+          formatBytes(swapUsed), formatBytes(swapTotal), swapPct));
     }
 
     var fs = os.getFileSystem();
@@ -160,14 +188,44 @@ class Slowfetch implements Callable<Integer> {
       if (totalDisk > 0) {
         var usedDisk = totalDisk - store.getUsableSpace();
         var diskPct = (int) Math.round(((double) usedDisk / totalDisk) * 100.0);
-        infoLines.add("%sDisk (%s):%s %s / %s (%d%%) - %s".formatted(bold, mount, reset,
+        var diskBar = noBars ? "" : renderGauge(diskPct) + " ";
+        infoLines.add("%sDisk (%s):%s %s%s / %s (%d%%) - %s".formatted(bold, mount, reset, diskBar,
             formatBytes(usedDisk), formatBytes(totalDisk), diskPct, store.getType()));
+      }
+    }
+
+    for (var ps : hal.getPowerSources()) {
+      var cap = (int) Math.round(ps.getRemainingCapacityPercent() * 100);
+      if (cap >= 0) {
+        var status =
+            ps.isCharging() ? "Charging" : (ps.isPowerOnLine() ? "AC Connected" : "Discharging");
+        var pBar = noBars ? "" : renderGauge(cap) + " ";
+        infoLines.add("%sBattery:%s %s%d%% [%s]".formatted(bold, reset, pBar, cap, status));
       }
     }
 
     var primaryIp = resolvePrimaryIp(hal);
     if (primaryIp != null) {
       infoLines.add("%sLocal IP:%s %s".formatted(bold, reset, primaryIp));
+    }
+
+    if (showTop) {
+      var topCpu = os.getProcesses(null, OperatingSystem.ProcessSorting.CPU_DESC, 3);
+      if (!topCpu.isEmpty()) {
+        var cpuParts = topCpu.stream()
+            .map(p -> "%s (%.1f%%)".formatted(p.getName(),
+                (100d * (p.getKernelTime() + p.getUserTime()) / Math.max(1, p.getUpTime()))))
+            .toList();
+        infoLines.add("%sTop CPU:%s %s".formatted(bold, reset, String.join(", ", cpuParts)));
+      }
+
+      var topMem = os.getProcesses(null, OperatingSystem.ProcessSorting.RSS_DESC, 3);
+      if (!topMem.isEmpty()) {
+        var memParts = topMem.stream()
+            .map(p -> "%s (%s)".formatted(p.getName(), formatBytes(p.getResidentSetSize())))
+            .toList();
+        infoLines.add("%sTop Mem:%s %s".formatted(bold, reset, String.join(", ", memParts)));
+      }
     }
 
     var javaVersion = System.getProperty("java.version", "unknown");
@@ -224,6 +282,25 @@ class Slowfetch implements Callable<Integer> {
     if (raw == null)
       return "Unknown CPU";
     return raw.replaceAll("\\s+", " ").replace(" CPU", "").trim();
+  }
+
+  private String renderGauge(int percent) {
+    var totalBlocks = 10;
+    var clamped = Math.clamp(percent, 0, 100);
+    var filled = (int) Math.round((clamped / 100.0) * totalBlocks);
+    var empty = totalBlocks - filled;
+
+    var color = "\u001B[32m"; // green
+    if (clamped >= 85) {
+      color = "\u001B[31m"; // red
+    } else if (clamped >= 65) {
+      color = "\u001B[33m"; // yellow
+    }
+    var dim = "\u001B[2m";
+    var reset = "\u001B[0m";
+
+    return "%s[%s%s%s%s%s]%s".formatted(dim, reset + color, "■".repeat(filled), dim,
+        "·".repeat(empty), dim, reset);
   }
 
   private String detectDesktopEnvironment() {
