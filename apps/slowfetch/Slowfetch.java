@@ -382,18 +382,21 @@ class Slowfetch implements Callable<Integer> {
     var logoColor = logo.colorCode();
     var reset = "\u001B[0m";
 
-    var maxLines = Math.max(logoLines.size(), infoLines.size());
-    var logoWidth = logo.width();
+    var actualLogoWidth = logoLines.stream().mapToInt(String::length).max().orElse(logo.width());
+    var logoWidth = Math.max(actualLogoWidth, logo.width()) + 2;
+    var gap = "    "; // 4 spaces clean margin
     var emptyLogoPad = " ".repeat(logoWidth);
+
+    var maxLines = Math.max(logoLines.size(), infoLines.size());
 
     for (int i = 0; i < maxLines; i++) {
       var textPart = (i < infoLines.size()) ? infoLines.get(i) : "";
       if (i < logoLines.size()) {
         var logoPart = logoLines.get(i);
         var paddedLogo = String.format("%-" + logoWidth + "s", logoPart);
-        System.out.println(logoColor + paddedLogo + reset + "  " + textPart);
+        System.out.println(logoColor + paddedLogo + reset + gap + textPart);
       } else {
-        System.out.println(emptyLogoPad + "  " + textPart);
+        System.out.println(emptyLogoPad + gap + textPart);
       }
     }
   }
