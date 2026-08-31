@@ -20,15 +20,15 @@ Instructions, conventions, and engineering standards for AI coding agents operat
 ### Java Version & Directives
 - **Target JDK**: **Java 25+** (`//JAVA 25+` directive on line 2 of every script).
 - **Shebang Header**:
-  ```java
-  ///usr/bin/env jbang "$0" "$@" ; exit $?
-  //JAVA 25+
-  //DEPS info.picocli:picocli:4.7.7
-  //DEPS info.picocli:picocli-codegen:4.7.7
-  //JAVAC_OPTIONS -proc:full
-  //NATIVE_OPTIONS -O2 --no-fallback
-  ```
-- **Native Image Support**: When compiling with GraalVM Native Image (`jbang --native`), Picocli requires reflection metadata for command classes and mixins (e.g. `AutoHelpMixin`). Include `//DEPS info.picocli:picocli-codegen:4.7.7` and `//JAVAC_OPTIONS -proc:full` so the annotation processor generates the required `reflect-config.json` at compile-time (required in Java 23+ where annotation processing is disabled by default).
+```java
+///usr/bin/env jbang "$0" "$@" ; exit $?
+//JAVA 25+
+//DEPS info.picocli:picocli:4.7.7
+//DEPS info.picocli:picocli-codegen:4.7.7
+//JAVAC_OPTIONS -proc:full
+//JAVA_OPTIONS --enable-native-access=ALL-UNNAMED
+//NATIVE_OPTIONS -O2 --no-fallback
+```
 
 ### Code Style & Formatting
 - **Style Guide**: **Google Java Style Guide**.

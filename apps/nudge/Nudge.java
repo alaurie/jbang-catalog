@@ -3,6 +3,7 @@
 //DEPS info.picocli:picocli:4.7.7
 //DEPS info.picocli:picocli-codegen:4.7.7
 //JAVAC_OPTIONS -proc:full
+//JAVA_OPTIONS --enable-native-access=ALL-UNNAMED
 //NATIVE_OPTIONS -O2 --no-fallback
 
 import picocli.CommandLine;
