@@ -9,6 +9,7 @@
 //NATIVE_OPTIONS -O2 --no-fallback
 
 import java.net.InetAddress;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -151,10 +152,14 @@ class Slowfetch implements Callable<Integer> {
       var gpuName = gpu.getName();
       if (!gpuName.isBlank()) {
         var vramMb = gpu.getVRam() / (1024 * 1024);
+        var driverVer = detectGpuDriver(gpu);
+        var driverSuffix =
+            (driverVer != null && !driverVer.isBlank()) ? " [%s]".formatted(driverVer) : "";
         if (vramMb > 0) {
-          infoLines.add("%sGPU:%s %s (%d MB)".formatted(bold, reset, gpuName, vramMb));
+          infoLines
+              .add("%sGPU:%s %s (%d MB)%s".formatted(bold, reset, gpuName, vramMb, driverSuffix));
         } else {
-          infoLines.add("%sGPU:%s %s".formatted(bold, reset, gpuName));
+          infoLines.add("%sGPU:%s %s%s".formatted(bold, reset, gpuName, driverSuffix));
         }
       }
     }
@@ -347,6 +352,76 @@ class Slowfetch implements Callable<Integer> {
     }
     return List.of(line1.toString(), line2.toString());
   }
+
+  private String detectGpuDriver(GraphicsCard gpu) {
+    var oshiVersion = gpu.getVersionInfo();
+    if (oshiVersion != null && !oshiVersion.isBlank() && !oshiVersion.equalsIgnoreCase("unknown")) {
+      return oshiVersion;
+    }
+
+    var os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+    if (os.contains("linux")) {
+      var vendor = gpu.getVendor().toLowerCase(Locale.ROOT);
+      var name = gpu.getName().toLowerCase(Locale.ROOT);
+
+      if (vendor.contains("nvidia") || name.contains("nvidia") || name.contains("geforce")) {
+        var nvidiaVer = Path.of("/sys/module/nvidia/version");
+        if (Files.exists(nvidiaVer)) {
+          try {
+            var v = Files.readString(nvidiaVer).trim();
+            if (!v.isBlank())
+              return "NVIDIA " + v;
+          } catch (Exception _) {
+          }
+        }
+      }
+
+      if (vendor.contains("amd") || vendor.contains("advanced micro") || name.contains("radeon")) {
+        var amdVer = Path.of("/sys/module/amdgpu/version");
+        if (Files.exists(amdVer)) {
+          try {
+            var v = Files.readString(amdVer).trim();
+            if (!v.isBlank())
+              return "amdgpu " + v;
+          } catch (Exception _) {
+          }
+        }
+      }
+
+      if (vendor.contains("intel") || name.contains("intel") || name.contains("arc")) {
+        for (var path : List.of(Path.of("/sys/module/i915/version"),
+            Path.of("/sys/module/xe/version"))) {
+          if (Files.exists(path)) {
+            try {
+              var v = Files.readString(path).trim();
+              if (!v.isBlank())
+                return path.getParent().getFileName() + " " + v;
+            } catch (Exception _) {
+            }
+          }
+        }
+      }
+
+      // Mesa driver fallback check via glxinfo
+      try {
+        var p = new ProcessBuilder("glxinfo", "-B").redirectError(ProcessBuilder.Redirect.DISCARD)
+            .start();
+        var out = new String(p.getInputStream().readAllBytes());
+        p.waitFor();
+        for (var line : out.lines().toList()) {
+          if (line.contains("OpenGL version string:")) {
+            var ver = line.substring(line.indexOf(":") + 1).trim();
+            if (ver.toLowerCase(Locale.ROOT).contains("mesa")) {
+              return ver;
+            }
+          }
+        }
+      } catch (Exception _) {
+      }
+    }
+    return null;
+  }
+
 
   private Logo selectLogo(String osFamily) {
     var target = (forceLogo != null) ? forceLogo.toLowerCase(Locale.ROOT)
