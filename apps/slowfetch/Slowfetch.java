@@ -487,8 +487,7 @@ class Slowfetch implements Callable<Integer> {
     var logoColor = logo.colorCode();
     var reset = "\u001B[0m";
 
-    var actualLogoWidth = logoLines.stream().mapToInt(String::length).max().orElse(logo.width());
-    var logoWidth = Math.max(actualLogoWidth, logo.width()) + 2;
+    var logoWidth = logo.width() + 2;
     var gap = "    "; // 4 spaces clean margin
     var emptyLogoPad = " ".repeat(logoWidth);
 
@@ -505,55 +504,109 @@ class Slowfetch implements Callable<Integer> {
       }
     }
   }
+  //endregion
 
   //region Logo Records & Art
-  private record Logo(String name, String colorCode, int width, List<String> lines) {}
+  private record Logo(String name, String colorCode, List<String> lines, int width) {
+    Logo(String name, String colorCode, String rawArt) {
+      this(
+          name,
+          colorCode,
+          rawArt.stripTrailing().lines().toList(),
+          rawArt.stripTrailing().lines().mapToInt(String::length).max().orElse(0));
+    }
+  }
 
-  private static final Logo LOGO_DEBIAN = new Logo("Debian", "\u001B[31m\u001B[1m", 24,
-      List.of("       _,met$$$$$gg.    ", "    ,g$$$$$$$$$$$$$$$P. ",
-          "  ,g$$P\"\"       \"\"\"Y$$\".", " ,$$P'              `$$$.",
-          "',$$P       ,ggs.     `$$b", "`d$$'     ,\"   .    $$$", " $$P      d     ,    $$P",
-          " $$:      $   -    ,d$$'", " $$;      Y._   _,d'    ", " Y$$.    `.`\"Y$$$$P\"'   ",
-          " `$$b      \"-.__        ", "  `Y$$b                 ", "   `Y$$.                ",
-          "     `$$b.              ", "       `Y$$b.           ", "         `\"Y$b._        ",
-          "             `\"\"\"\"      "));
+  private static final Logo LOGO_DEBIAN = new Logo("Debian", "\u001B[31m\u001B[1m", """
+             _,met$$$$$gg.
+          ,g$$$$$$$$$$$$$$$P.
+        ,g$$P""       ""\"Y$$".
+       ,$$P'              `$$$.
+      ',$$P       ,ggs.     `$$b
+      `d$$'     ,"   .    $$$
+       $$P      d     ,    $$P
+       $$:      $   -    ,d$$'
+       $$;      Y._   _,d'
+       Y$$.    `.`"Y$$$$P"'
+       `$$b      "-.__
+        `Y$$b
+         `Y$$.
+           `$$b.
+             `Y$$b.
+               `"Y$b._
+                   `\"\"\"\"
+      """);
 
-  private static final Logo LOGO_UBUNTU = new Logo("Ubuntu", "\u001B[31m", 22,
-      List.of("         _         ", "     ---(_)        ", " _/  ---  \\        ",
-          "(_) |   |          ", "  \\  --- _/        ", "     ---(_)        ",
-          "                   "));
+  private static final Logo LOGO_UBUNTU = new Logo("Ubuntu", "\u001B[31m\u001B[1m", """
+               _
+           ---(_)
+       _/  ---  \\
+      (_) |   |
+        \\  --- _/
+           ---(_)
+      """);
 
-  private static final Logo LOGO_ARCH = new Logo("Arch", "\u001B[36m\u001B[1m", 24,
-      List.of("          /\\            ", "         /  \\           ",
-          "        /\\   \\          ", "       /      \\         ", "      /   ,,   \\        ",
-          "     /   |  |  -\\       ", "    /_-''    ''-_\\      "));
+  private static final Logo LOGO_ARCH = new Logo("Arch", "\u001B[36m\u001B[1m", """
+                /\\
+               /  \\
+              /\\   \\
+             /      \\
+            /   ,,   \\
+           /   |  |  -\\
+          /_-''    ''-_\\
+      """);
 
-  private static final Logo LOGO_FEDORA = new Logo("Fedora", "\u001B[34m\u001B[1m", 22,
-      List.of("        ,'''''.       ", "       |   n   |      ", "     ,-'---+---'-.    ",
-          "    /  (       )  \\   ", "   |   /       \\   |  ", "    \\             /   ",
-          "     '-._______.-'    "));
+  private static final Logo LOGO_FEDORA = new Logo("Fedora", "\u001B[34m\u001B[1m", """
+              ,'''''.
+             |   n   |
+           ,-'---+---'-.
+          /  (       )  \\
+         |   /       \\   |
+          \\             /
+           '-._______.-'
+      """);
 
-  private static final Logo LOGO_MACOS = new Logo("macOS", "\u001B[32m\u001B[1m", 20,
-      List.of("        .:'         ", "    __ :'__         ", " .'`  `-'  ``.      ",
-          ":          .-'      ", ":         :         ", " :         `-;      ",
-          "  `.__.-.__.'       "));
+  private static final Logo LOGO_MACOS = new Logo("macOS", "\u001B[32m\u001B[1m", """
+              .:'
+          __ :'__
+       .'`  `-'  ``.
+      :          .-'
+      :         :
+       :         `-;
+        `.__.-.__.'
+      """);
 
-  private static final Logo LOGO_WINDOWS = new Logo("Windows", "\u001B[36m\u001B[1m", 24,
-      List.of("  ################  ################", "  ################  ################",
-          "  ################  ################", "  ################  ################",
-          "                                    ", "  ################  ################",
-          "  ################  ################", "  ################  ################",
-          "  ################  ################"));
+  private static final Logo LOGO_WINDOWS = new Logo("Windows", "\u001B[36m\u001B[1m", """
+        ################  ################
+        ################  ################
+        ################  ################
+        ################  ################
 
-  private static final Logo LOGO_LINUX = new Logo("Linux", "\u001B[33m\u001B[1m", 22,
-      List.of("       .---.          ", "      /     \\         ", "      \\.@-@./         ",
-          "      /`\\_/`\\         ", "     //  _  \\\\        ", "    | \\     )|_       ",
-          "   /`\\_`>  <_/ \\      ", "   \\__/'---'\\__/      "));
+        ################  ################
+        ################  ################
+        ################  ################
+        ################  ################
+      """);
 
-  private static final Logo LOGO_JAVA = new Logo("Java", "\u001B[31m\u001B[1m", 24,
-      List.of("         `                  ", "        ` `                 ",
-          "       ` ` `                ", "     .------.  _            ",
-          "    /        \\(_)           ", "   |          |             ",
-          "    \\        /              ", "     `------'               "));
-  //endregion
+  private static final Logo LOGO_LINUX = new Logo("Linux", "\u001B[33m\u001B[1m", """
+             .---.
+            /     \\
+            \\.@-@./
+            /`\\_/`\\
+           //  _  \\\\
+          | \\     )|_
+         /`\\_`>  <_/ \\
+         \\__/'---'\\__/
+      """);
+
+  private static final Logo LOGO_JAVA = new Logo("Java", "\u001B[31m\u001B[1m", """
+               `
+              ` `
+             ` ` `
+           .------.  _
+          /        \\(_)
+         |          |
+          \\        /
+           `------'
+      """);
 }
