@@ -151,16 +151,10 @@ class Slowfetch implements Callable<Integer> {
     for (var gpu : hal.getGraphicsCards()) {
       var gpuName = gpu.getName();
       if (!gpuName.isBlank()) {
-        var vramMb = gpu.getVRam() / (1024 * 1024);
         var driverVer = detectGpuDriver(gpu);
         var driverSuffix =
             (driverVer != null && !driverVer.isBlank()) ? " [%s]".formatted(driverVer) : "";
-        if (vramMb > 0) {
-          infoLines
-              .add("%sGPU:%s %s (%d MB)%s".formatted(bold, reset, gpuName, vramMb, driverSuffix));
-        } else {
-          infoLines.add("%sGPU:%s %s%s".formatted(bold, reset, gpuName, driverSuffix));
-        }
+        infoLines.add("%sGPU:%s %s%s".formatted(bold, reset, gpuName, driverSuffix));
       }
     }
 
