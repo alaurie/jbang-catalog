@@ -131,6 +131,31 @@ class Slowfetch implements Callable<Integer> {
       infoLines.add("%sDE/WM:%s %s".formatted(bold, reset, de));
     }
 
+    var wmTheme = detectWmTheme();
+    if (wmTheme != null) {
+      infoLines.add("%sWM Theme:%s %s".formatted(bold, reset, wmTheme));
+    }
+
+    var theme = detectGtkTheme();
+    if (theme != null) {
+      infoLines.add("%sTheme:%s %s".formatted(bold, reset, theme));
+    }
+
+    var icons = detectIcons();
+    if (icons != null) {
+      infoLines.add("%sIcons:%s %s".formatted(bold, reset, icons));
+    }
+
+    var font = detectFont();
+    if (font != null) {
+      infoLines.add("%sFont:%s %s".formatted(bold, reset, font));
+    }
+
+    var cursor = detectCursor();
+    if (cursor != null) {
+      infoLines.add("%sCursor:%s %s".formatted(bold, reset, cursor));
+    }
+
     var terminal = detectTerminal();
     if (terminal != null) {
       infoLines.add("%sTerminal:%s %s".formatted(bold, reset, terminal));
@@ -456,8 +481,81 @@ class Slowfetch implements Callable<Integer> {
     return list;
   }
 
+  private String detectGtkTheme() {
+    var theme = gsettingsGet("org.gnome.desktop.interface", "gtk-theme");
+    if (theme != null)
+      return theme;
+    var xfce = xfconfQuery("xsettings", "/Net/ThemeName");
+    if (xfce != null)
+      return xfce;
+    return null;
+  }
+
+  private String detectIcons() {
+    var icons = gsettingsGet("org.gnome.desktop.interface", "icon-theme");
+    if (icons != null)
+      return icons;
+    var xfce = xfconfQuery("xsettings", "/Net/IconThemeName");
+    if (xfce != null)
+      return xfce;
+    return null;
+  }
+
+  private String detectFont() {
+    var font = gsettingsGet("org.gnome.desktop.interface", "font-name");
+    if (font != null)
+      return font;
+    var xfce = xfconfQuery("xsettings", "/Gtk/FontName");
+    if (xfce != null)
+      return xfce;
+    return null;
+  }
+
+  private String detectCursor() {
+    var cursor = gsettingsGet("org.gnome.desktop.interface", "cursor-theme");
+    var size = gsettingsGet("org.gnome.desktop.interface", "cursor-size");
+    if (cursor != null) {
+      return (size != null && !size.isBlank()) ? "%s (%spx)".formatted(cursor, size) : cursor;
+    }
+    return null;
+  }
+
+  private String detectWmTheme() {
+    var wmTheme = gsettingsGet("org.gnome.desktop.wm.preferences", "theme");
+    if (wmTheme != null && !wmTheme.isBlank())
+      return wmTheme;
+    return null;
+  }
+
+  private String gsettingsGet(String schema, String key) {
+    try {
+      var p = new ProcessBuilder("gsettings", "get", schema, key)
+          .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+      var out = new String(p.getInputStream().readAllBytes()).trim();
+      if (p.waitFor() == 0 && !out.isBlank() && !out.contains("No such schema")) {
+        return out.replace("'", "").replace("\"", "").trim();
+      }
+    } catch (Exception _) {
+    }
+    return null;
+  }
+
+  private String xfconfQuery(String channel, String property) {
+    try {
+      var p = new ProcessBuilder("xfconf-query", "-c", channel, "-p", property)
+          .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+      var out = new String(p.getInputStream().readAllBytes()).trim();
+      if (p.waitFor() == 0 && !out.isBlank()) {
+        return out;
+      }
+    } catch (Exception _) {
+    }
+    return null;
+  }
+
   private String detectTerminal() {
     var termProg = System.getenv("TERM_PROGRAM");
+
     var termProgVer = System.getenv("TERM_PROGRAM_VERSION");
     if (termProg != null && !termProg.isBlank()) {
       return (termProgVer != null && !termProgVer.isBlank())
