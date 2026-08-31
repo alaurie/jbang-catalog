@@ -110,10 +110,20 @@ class Slowfetch implements Callable<Integer> {
     var uptimeSec = os.getSystemUptime();
     infoLines.add("%sUptime:%s %s".formatted(bold, reset, formatUptime(uptimeSec)));
 
+    var packages = detectPackages();
+    if (packages != null) {
+      infoLines.add("%sPackages:%s %s".formatted(bold, reset, packages));
+    }
+
     var shell = System.getenv("SHELL");
     if (shell != null && !shell.isBlank()) {
       var shellName = Path.of(shell).getFileName().toString();
       infoLines.add("%sShell:%s %s".formatted(bold, reset, shellName));
+    }
+
+    var displays = detectDisplays();
+    for (var display : displays) {
+      infoLines.add("%sDisplay:%s %s".formatted(bold, reset, display));
     }
 
     var de = detectDesktopEnvironment();
@@ -121,6 +131,10 @@ class Slowfetch implements Callable<Integer> {
       infoLines.add("%sDE/WM:%s %s".formatted(bold, reset, de));
     }
 
+    var terminal = detectTerminal();
+    if (terminal != null) {
+      infoLines.add("%sTerminal:%s %s".formatted(bold, reset, terminal));
+    }
     var cpu = hal.getProcessor();
     var cpuName = cleanCpuName(cpu.getProcessorIdentifier().getName());
     var physicalCores = cpu.getPhysicalProcessorCount();
@@ -212,6 +226,11 @@ class Slowfetch implements Callable<Integer> {
       infoLines.add("%sContainers:%s %s".formatted(bold, reset, containers));
     }
 
+
+    var locale = System.getenv("LANG");
+    if (locale != null && !locale.isBlank()) {
+      infoLines.add("%sLocale:%s %s".formatted(bold, reset, locale));
+    }
 
     if (showTop) {
       var topCpu = os.getProcesses(null, OperatingSystem.ProcessSorting.CPU_DESC, 3);
@@ -350,6 +369,106 @@ class Slowfetch implements Callable<Integer> {
       line2.append("\u001B[").append(i).append("m   \u001B[0m");
     }
     return List.of(line1.toString(), line2.toString());
+  }
+
+
+  private String detectPackages() {
+    var parts = new ArrayList<String>();
+
+    // Debian / Ubuntu (dpkg)
+    var dpkgStatus = Path.of("/var/lib/dpkg/status");
+    if (Files.isRegularFile(dpkgStatus)) {
+      try (var lines = Files.lines(dpkgStatus)) {
+        long count = lines.filter(l -> l.startsWith("Package: ")).count();
+        if (count > 0)
+          parts.add("%d (dpkg)".formatted(count));
+      } catch (Exception _) {
+      }
+    }
+
+    // Red Hat / Fedora (rpm)
+    var rpmDb = Path.of("/var/lib/rpm/rpmdb.sqlite");
+    if (!Files.exists(rpmDb))
+      rpmDb = Path.of("/var/lib/rpm/Packages");
+    if (Files.exists(rpmDb)) {
+      try {
+        var p =
+            new ProcessBuilder("rpm", "-qa").redirectError(ProcessBuilder.Redirect.DISCARD).start();
+        var count = new String(p.getInputStream().readAllBytes()).lines().count();
+        if (p.waitFor() == 0 && count > 0)
+          parts.add("%d (rpm)".formatted(count));
+      } catch (Exception _) {
+      }
+    }
+
+    // Arch Linux (pacman)
+    var pacmanDb = Path.of("/var/lib/pacman/local");
+    if (Files.isDirectory(pacmanDb)) {
+      try (var stream = Files.list(pacmanDb)) {
+        long count = stream.filter(Files::isDirectory).count();
+        if (count > 0)
+          parts.add("%d (pacman)".formatted(count));
+      } catch (Exception _) {
+      }
+    }
+
+    // Flatpak
+    var flatpakDir = Path.of("/var/lib/flatpak/app");
+    if (Files.isDirectory(flatpakDir)) {
+      try (var stream = Files.list(flatpakDir)) {
+        long count = stream.filter(Files::isDirectory).count();
+        if (count > 0)
+          parts.add("%d (flatpak)".formatted(count));
+      } catch (Exception _) {
+      }
+    }
+
+    // Homebrew (macOS / Linux)
+    var brewCellar = Path.of("/opt/homebrew/Cellar");
+    if (!Files.isDirectory(brewCellar))
+      brewCellar = Path.of("/usr/local/Cellar");
+    if (Files.isDirectory(brewCellar)) {
+      try (var stream = Files.list(brewCellar)) {
+        long count = stream.filter(Files::isDirectory).count();
+        if (count > 0)
+          parts.add("%d (brew)".formatted(count));
+      } catch (Exception _) {
+      }
+    }
+
+    return parts.isEmpty() ? null : String.join(", ", parts);
+  }
+
+  private List<String> detectDisplays() {
+    var list = new ArrayList<String>();
+    try {
+      if (!java.awt.GraphicsEnvironment.isHeadless()) {
+        var ge = java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment();
+        var devices = ge.getScreenDevices();
+        for (var gd : devices) {
+          var dm = gd.getDisplayMode();
+          var rate = dm.getRefreshRate() > 0 ? " @ %d Hz".formatted(dm.getRefreshRate()) : "";
+          list.add("%dx%d%s".formatted(dm.getWidth(), dm.getHeight(), rate));
+        }
+      }
+    } catch (Exception _) {
+    }
+    return list;
+  }
+
+  private String detectTerminal() {
+    var termProg = System.getenv("TERM_PROGRAM");
+    var termProgVer = System.getenv("TERM_PROGRAM_VERSION");
+    if (termProg != null && !termProg.isBlank()) {
+      return (termProgVer != null && !termProgVer.isBlank())
+          ? "%s %s".formatted(termProg, termProgVer)
+          : termProg;
+    }
+    var term = System.getenv("TERM");
+    if (term != null && !term.isBlank() && !term.equals("dumb")) {
+      return term;
+    }
+    return null;
   }
 
   private String detectGpuDriver(GraphicsCard gpu) {
