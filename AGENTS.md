@@ -114,6 +114,23 @@ Instructions, conventions, and engineering standards for AI coding agents operat
   }
   ```
 
+### Logging & Terminal Output
+- **No Heavy Logging Frameworks**: Never pull in heavyweight logging frameworks (`log4j`, `logback`, `commons-logging`). CLI utilities should start instantly and avoid config file clutter.
+- **Unix I/O Conventions**:
+  - Write primary results, machine-readable payloads, and success messages to `System.out`.
+  - Write errors, warnings, and diagnostic information to `System.err`.
+- **Verbose / Debug Mode**: When diagnostic or debug tracing is needed, provide a `-v` / `--verbose` flag and log conditionally to `System.err`:
+  ```java
+  @Option(names = {"-v", "--verbose"}, description = "Enable verbose debug output.")
+  private boolean verbose;
+
+  private void debug(String message) {
+    if (verbose) {
+      System.err.printf("[debug] %s%n", message);
+    }
+  }
+  ```
+
 ### Stdin & Interactive Execution
 - **No-Argument Stdin Handling**: Utilities that process files or stdin (e.g. `hash`, `jwt`) must never block indefinitely on `System.in` when executed interactively without arguments.
 - **Terminal Detection**: Use `System.console() != null` to detect interactive terminal execution:
