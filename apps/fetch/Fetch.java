@@ -2,20 +2,11 @@
 //JAVA 25+
 //DEPS info.picocli:picocli:4.7.7
 //DEPS info.picocli:picocli-codegen:4.7.7
-//DEPS me.tongfei:progressbar:0.10.1
 //JAVAC_OPTIONS -proc:full
 //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED
 //NATIVE_OPTIONS -O2 --no-fallback
 
 package fetch;
-
-import me.tongfei.progressbar.ProgressBar;
-import me.tongfei.progressbar.ProgressBarBuilder;
-import me.tongfei.progressbar.ProgressBarStyle;
-import picocli.CommandLine;
-import picocli.CommandLine.Command;
-import picocli.CommandLine.Option;
-import picocli.CommandLine.Parameters;
 
 import java.io.InputStream;
 import java.net.URI;
@@ -36,6 +27,11 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.LongAdder;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.Parameters;
 
 /// High-performance multi-threaded CLI file downloader with auto-checksum verification.
 ///
@@ -315,9 +311,91 @@ class Fetch implements Callable<Integer> {
   }
 
   private ProgressBar createProgressBar(long total) {
-    return new ProgressBarBuilder().setTaskName(outputPath.getFileName().toString())
-        .setInitialMax(total).setStyle(ProgressBarStyle.COLORFUL_UNICODE_BLOCK)
-        .setUnit("MB", 1_048_576) // 1024 * 1024 bytes per unit
-        .showSpeed().setUpdateIntervalMillis(200).build();
+    return new ProgressBar(outputPath.getFileName().toString(), total);
+  }
+
+  /** Pure-Java lightweight progress bar with transfer rate and ETA calculations. */
+  static class ProgressBar implements AutoCloseable {
+    private static final String HIDE_CURSOR = "\u001B[?25l";
+    private static final String SHOW_CURSOR = "\u001B[?25h";
+    private static final String CLEAR_LINE = "\r\u001B[2K";
+
+    private final String taskName;
+    private final long totalBytes;
+    private final LongAdder downloaded = new LongAdder();
+    private final long startTime = System.nanoTime();
+    private final Thread shutdownHook;
+    private volatile long lastRenderTime = 0;
+    private volatile boolean closed = false;
+
+    ProgressBar(String taskName, long totalBytes) {
+      this.taskName = taskName;
+      this.totalBytes = totalBytes;
+      this.shutdownHook = new Thread(() -> System.out.print(SHOW_CURSOR));
+      try {
+        Runtime.getRuntime().addShutdownHook(shutdownHook);
+      } catch (IllegalStateException _) {
+        // VM already shutting down
+      }
+      System.out.print(HIDE_CURSOR);
+      System.out.flush();
+    }
+
+    void stepBy(long bytes) {
+      if (closed) {
+        return;
+      }
+      downloaded.add(bytes);
+      long now = System.nanoTime();
+      if (now - lastRenderTime > 100_000_000L) { // 100ms throttle
+        render();
+        lastRenderTime = now;
+      }
+    }
+
+    private synchronized void render() {
+      if (closed) {
+        return;
+      }
+      long current = downloaded.sum();
+      double elapsedSec = (System.nanoTime() - startTime) / 1_000_000_000.0;
+      double speedMBps = elapsedSec > 0 ? (current / 1_048_576.0) / elapsedSec : 0.0;
+      String displayName = taskName.length() > 20 ? taskName.substring(0, 17) + "..." : taskName;
+
+      if (totalBytes > 0) {
+        double percent = Math.min(100.0, (current * 100.0) / totalBytes);
+        int barWidth = 30;
+        int completed = (int) Math.round((percent / 100.0) * barWidth);
+        completed = Math.clamp(completed, 0, barWidth);
+        String bar = "█".repeat(completed) + "░".repeat(barWidth - completed);
+        long remainingBytes = Math.max(0, totalBytes - current);
+        long etaSec = speedMBps > 0 ? (long) ((remainingBytes / 1_048_576.0) / speedMBps) : 0;
+
+        System.out.printf("%s%-20s [%s] %5.1f%% (%6.2f / %6.2f MB) %6.2f MB/s eta %02d:%02d",
+            CLEAR_LINE, displayName, bar, percent, current / 1_048_576.0, totalBytes / 1_048_576.0,
+            speedMBps, etaSec / 60, etaSec % 60);
+      } else {
+        long elapsed = (long) elapsedSec;
+        System.out.printf("%s%-20s %6.2f MB downloaded (%6.2f MB/s) [%02d:%02d]", CLEAR_LINE,
+            displayName, current / 1_048_576.0, speedMBps, elapsed / 60, elapsed % 60);
+      }
+      System.out.flush();
+    }
+
+    @Override
+    public synchronized void close() {
+      if (closed) {
+        return;
+      }
+      render();
+      closed = true;
+      try {
+        Runtime.getRuntime().removeShutdownHook(shutdownHook);
+      } catch (IllegalStateException _) {
+        // VM already shutting down
+      }
+      System.out.println(SHOW_CURSOR);
+      System.out.flush();
+    }
   }
 }
