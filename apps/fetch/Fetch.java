@@ -318,14 +318,14 @@ class Fetch implements Callable<Integer> {
   static class ProgressBar implements AutoCloseable {
     private static final String HIDE_CURSOR = "\u001B[?25l";
     private static final String SHOW_CURSOR = "\u001B[?25h";
-    private static final String CLEAR_LINE = "\r\u001B[2K";
+    private static final String ERASE_TO_EOL = "\u001B[K";
 
     private final String taskName;
     private final long totalBytes;
     private final LongAdder downloaded = new LongAdder();
     private final long startTime = System.nanoTime();
     private final Thread shutdownHook;
-    private volatile long lastRenderTime = 0;
+    private final Thread renderThread;
     private volatile boolean closed = false;
 
     ProgressBar(String taskName, long totalBytes) {
@@ -339,29 +339,31 @@ class Fetch implements Callable<Integer> {
       }
       System.out.print(HIDE_CURSOR);
       System.out.flush();
+      this.renderThread = Thread.ofVirtual().name("progress-render").start(this::renderLoop);
     }
 
     void stepBy(long bytes) {
-      if (closed) {
-        return;
-      }
       downloaded.add(bytes);
-      long now = System.nanoTime();
-      if (now - lastRenderTime > 100_000_000L) { // 100ms throttle
+    }
+
+    private void renderLoop() {
+      while (!closed) {
         render();
-        lastRenderTime = now;
+        try {
+          Thread.sleep(75); // ~13 FPS smooth update rate
+        } catch (InterruptedException _) {
+          break;
+        }
       }
     }
 
-    private synchronized void render() {
-      if (closed) {
-        return;
-      }
+    private void render() {
       long current = downloaded.sum();
       double elapsedSec = (System.nanoTime() - startTime) / 1_000_000_000.0;
       double speedMBps = elapsedSec > 0 ? (current / 1_048_576.0) / elapsedSec : 0.0;
       String displayName = taskName.length() > 20 ? taskName.substring(0, 17) + "..." : taskName;
 
+      String output;
       if (totalBytes > 0) {
         double percent = Math.min(100.0, (current * 100.0) / totalBytes);
         int barWidth = 30;
@@ -371,24 +373,32 @@ class Fetch implements Callable<Integer> {
         long remainingBytes = Math.max(0, totalBytes - current);
         long etaSec = speedMBps > 0 ? (long) ((remainingBytes / 1_048_576.0) / speedMBps) : 0;
 
-        System.out.printf("%s%-20s [%s] %5.1f%% (%6.2f / %6.2f MB) %6.2f MB/s eta %02d:%02d",
-            CLEAR_LINE, displayName, bar, percent, current / 1_048_576.0, totalBytes / 1_048_576.0,
-            speedMBps, etaSec / 60, etaSec % 60);
+        output = String.format("\r%-20s [%s] %5.1f%% (%6.2f / %6.2f MB) %6.2f MB/s eta %02d:%02d%s",
+            displayName, bar, percent, current / 1_048_576.0, totalBytes / 1_048_576.0, speedMBps,
+            etaSec / 60, etaSec % 60, ERASE_TO_EOL);
       } else {
         long elapsed = (long) elapsedSec;
-        System.out.printf("%s%-20s %6.2f MB downloaded (%6.2f MB/s) [%02d:%02d]", CLEAR_LINE,
-            displayName, current / 1_048_576.0, speedMBps, elapsed / 60, elapsed % 60);
+        output =
+            String.format("\r%-20s %6.2f MB downloaded (%6.2f MB/s) [%02d:%02d]%s", displayName,
+                current / 1_048_576.0, speedMBps, elapsed / 60, elapsed % 60, ERASE_TO_EOL);
       }
+      System.out.print(output);
       System.out.flush();
     }
 
     @Override
-    public synchronized void close() {
+    public void close() {
       if (closed) {
         return;
       }
-      render();
       closed = true;
+      renderThread.interrupt();
+      try {
+        renderThread.join(200);
+      } catch (InterruptedException _) {
+        // continue shutdown
+      }
+      render(); // final 100% frame
       try {
         Runtime.getRuntime().removeShutdownHook(shutdownHook);
       } catch (IllegalStateException _) {
