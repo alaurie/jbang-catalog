@@ -19,7 +19,6 @@ Instructions, conventions, and engineering standards for AI coding agents operat
 
 ### Java Version & Directives
 - **Target JDK**: **Java 25+** (`//JAVA 25+` directive on line 2 of every script).
-- **Shebang Header**:
 ```java
 ///usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 25+
@@ -28,6 +27,8 @@ Instructions, conventions, and engineering standards for AI coding agents operat
 //JAVAC_OPTIONS -proc:full
 //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED
 //NATIVE_OPTIONS -O2 --no-fallback
+
+package <app-name>;
 ```
 - **Native Image Support (`jbang --native`)**:
   - **Picocli Reflection Metadata**: Include `//DEPS info.picocli:picocli-codegen:4.7.7` and `//JAVAC_OPTIONS -proc:full` on every CLI script so the annotation processor generates `reflect-config.json` at compile-time for GraalVM ahead-of-time (AOT) compilation.

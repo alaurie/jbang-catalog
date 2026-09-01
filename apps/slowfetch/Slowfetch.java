@@ -8,6 +8,8 @@
 //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED
 //NATIVE_OPTIONS -O2 --no-fallback
 
+package slowfetch;
+
 import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;

@@ -6,6 +6,9 @@
 //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED
 //NATIVE_OPTIONS -O2 --no-fallback
 
+
+package reach;
+
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -108,23 +111,23 @@ class Reach implements Callable<Integer> {
       DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z").withZone(ZoneId.systemDefault());
 
   /** Record carrying extended TLS inspection results. */
-  private record TlsInfo(String subject, String issuer, Instant notAfter, long daysRemaining,
+  record TlsInfo(String subject, String issuer, Instant notAfter, long daysRemaining,
       String protocol, String cipherSuite, String pubKeyDetails, String sigAlg, String serialNumber,
       List<String> sans, String error) {}
 
   /** Record carrying HTTP probe results. */
-  private record HttpInfo(int statusCode, double ttfbMs, String serverHeader, String error) {}
+  record HttpInfo(int statusCode, double ttfbMs, String serverHeader, String error) {}
 
   /** Record carrying DNS records lookup results. */
-  private record DnsInfo(List<String> aRecords, List<String> aaaaRecords, List<String> mxRecords,
+  record DnsInfo(List<String> aRecords, List<String> aaaaRecords, List<String> mxRecords,
       List<String> nsRecords, List<String> cnameRecords, List<String> txtRecords, String error) {}
 
   /** Record carrying WHOIS domain lookup results. */
-  private record WhoisInfo(String registrar, String creationDate, String expiryDate,
-      String updatedDate, String error) {}
+  record WhoisInfo(String registrar, String creationDate, String expiryDate, String updatedDate,
+      String error) {}
 
   /** Record carrying overall single-port probe results. */
-  private record PortResult(int port, boolean isSsl, TlsInfo tls, HttpInfo http, int transmitted,
+  record PortResult(int port, boolean isSsl, TlsInfo tls, HttpInfo http, int transmitted,
       int received, double lossPercent, double minRtt, double avgRtt, double maxRtt) {}
 
   void main(String... args) {

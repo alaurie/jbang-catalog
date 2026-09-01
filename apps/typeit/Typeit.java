@@ -6,6 +6,9 @@
 //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED
 //NATIVE_OPTIONS -O2 --no-fallback
 
+
+package typeit;
+
 import java.awt.GraphicsEnvironment;
 import java.awt.Robot;
 import java.awt.Toolkit;
