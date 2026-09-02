@@ -91,20 +91,19 @@ keep your presence status active.
       --between=<START> <STOP> <START> <STOP>
                             Only perform nudges between HH:mm and HH:mm working
                               hours window.
-  -c, --circular            Move mouse in a circle pattern. Default move
+  -c, --circular            Move mouse in a circle pattern. Default: move
                               out-and-back.
   -h, --help                Show this help message and exit.
   -m, --mode=<mode>         Action mode: mouse, keyboard, both, scroll.
                               Default: mouse.
-  -p, --pixels=<pixels>     Set how many pixels the mouse should move. Default
+  -p, --pixels=<pixels>     Set how many pixels the mouse should move. Default:
                               5.
   -r, --random=<START> <STOP> <START> <STOP>
                             Execute actions using a random interval between
                               START and STOP seconds. Overrides --seconds.
   -s, --seconds=<seconds>   Define in seconds how long to wait between idle
-                              checks. Default 300.
+                              checks. Default: 300.
   -V, --version             Print version information and exit.
-```
 
 ---
 

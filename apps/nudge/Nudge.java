@@ -6,12 +6,7 @@
 //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED
 //NATIVE_OPTIONS -O2 --no-fallback
 
-
 package nudge;
-
-import picocli.CommandLine;
-import picocli.CommandLine.Command;
-import picocli.CommandLine.Option;
 
 import java.awt.Dimension;
 import java.awt.GraphicsEnvironment;
@@ -20,50 +15,87 @@ import java.awt.Point;
 import java.awt.Robot;
 import java.awt.Toolkit;
 import java.awt.event.KeyEvent;
+import java.lang.foreign.Arena;
+import java.lang.foreign.FunctionDescriptor;
+import java.lang.foreign.Linker;
+import java.lang.foreign.ValueLayout;
+import java.lang.invoke.MethodHandle;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.Callable;
+import java.util.regex.Pattern;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
 
 /// Utility to keep your desktop presence active (preventing status from changing to "Away").
 ///
-/// Periodically checks for user idle status by inspecting pointer coordinates. When idle, it
-/// simulates subtle mouse movements (out-and-back or circular), Shift key presses, or scrolling.
-@Command(name = "nudge", mixinStandardHelpOptions = true, version = "nudge 1.2",
-    description = "Simulates user activity (mouse movement, key press, scrolling) when idle to keep your"
-        + " presence status active.")
+/// Periodically checks for user idle status. When idle, it simulates subtle mouse movements
+/// (out-and-back or circular), Shift key presses, or scrolling.
+///
+/// Supports Linux Wayland natively via direct kernel virtual input (`/dev/uinput` via FFM),
+/// CLI tools (`ydotool`, `wtype`, `dotool`), D-Bus idle inhibition, and standard `java.awt.Robot`
+/// on X11, macOS, and Windows.
+@Command(
+    name = "nudge",
+    mixinStandardHelpOptions = true,
+    version = "nudge 1.3",
+    description =
+        "Simulates user activity (mouse movement, key press, scrolling) when idle to keep your"
+            + " presence status active.")
 @SuppressWarnings("unused")
 class Nudge implements Callable<Integer> {
 
   private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss");
   private final Random random = new Random();
-  @Option(names = {"-s", "--seconds"},
-      description = "Define in seconds how long to wait between idle checks. Default 300.")
+
+  @Option(
+      names = {"-s", "--seconds"},
+      description = "Define in seconds how long to wait between idle checks. Default: 300.")
   private int seconds = 300;
-  @Option(names = {"-b", "--buffer"},
-      description = "Initial buffer delay in seconds before the first check. Default: same as check"
-          + " interval.")
+
+  @Option(
+      names = {"-b", "--buffer"},
+      description =
+          "Initial buffer delay in seconds before the first check. Default: same as check"
+              + " interval.")
   private Integer buffer;
-  @Option(names = {"-p", "--pixels"},
-      description = "Set how many pixels the mouse should move. Default 5.")
+
+  @Option(
+      names = {"-p", "--pixels"},
+      description = "Set how many pixels the mouse should move. Default: 5.")
   private int pixels = 5;
-  @Option(names = {"-c", "--circular"},
-      description = "Move mouse in a circle pattern. Default move out-and-back.")
+
+  @Option(
+      names = {"-c", "--circular"},
+      description = "Move mouse in a circle pattern. Default: move out-and-back.")
   private boolean circular;
-  @Option(names = {"-m", "--mode"},
+
+  @Option(
+      names = {"-m", "--mode"},
       description = "Action mode: mouse, keyboard, both, scroll. Default: mouse.")
   private Mode mode = Mode.mouse;
-  @Option(names = {"-r", "--random"}, arity = "2", paramLabel = "<START> <STOP>",
-      description = "Execute actions using a random interval between START and STOP seconds. Overrides"
-          + " --seconds.")
+
+  @Option(
+      names = {"-r", "--random"},
+      arity = "2",
+      paramLabel = "<START> <STOP>",
+      description =
+          "Execute actions using a random interval between START and STOP seconds. Overrides"
+              + " --seconds.")
   private List<Integer> randomRange;
-  @Option(names = {"--between"}, arity = "2", paramLabel = "<START> <STOP>",
+
+  @Option(
+      names = {"--between"},
+      arity = "2",
+      paramLabel = "<START> <STOP>",
       description = "Only perform nudges between HH:mm and HH:mm working hours window.")
   private List<String> betweenHours;
-  private Robot robot;
+
+  private InputBackend backend;
   private int mouseDirection = 0;
-  private Dimension screenSize;
 
   /**
    * Main entry point for the JBang script execution.
@@ -76,44 +108,33 @@ class Nudge implements Callable<Integer> {
   }
 
   /**
-   * Initializes AWT Robot, starts the initial buffer delay, and enters the idle detection loop.
+   * Initializes the appropriate input backend, starts the initial delay buffer, and enters the idle
+   * detection loop.
    *
    * @return Status code 0 for success, 1 for errors.
    */
   @Override
   public Integer call() {
-    if (GraphicsEnvironment.isHeadless()) {
-      System.err
-          .println("Error: Headless environment detected. java.awt.Robot requires a desktop GUI"
-              + " environment.");
-      return 1;
-    }
-
-    checkEnvironmentWarnings();
-
     int randStart = 0;
     int randStop = 0;
     if (randomRange != null && !randomRange.isEmpty()) {
       if (randomRange.size() != 2) {
-        System.err
-            .println("Error: --random requires exactly two integer arguments (e.g. -r 3 10).");
+        System.err.println(
+            "Error: --random requires exactly two integer arguments (e.g. -r 3 10).");
         return 1;
       }
-      randStart = randomRange.get(0);
-      randStop = randomRange.get(1);
+      randStart = randomRange.getFirst();
+      randStop = randomRange.getLast();
       if (randStart > randStop) {
-        System.err
-            .println("Error: Random initial number needs to be lower than random limit number.");
+        System.err.println(
+            "Error: Random initial number needs to be lower than random limit number.");
         return 1;
       }
     }
 
-    try {
-      robot = new Robot();
-      robot.setAutoDelay(40);
-      screenSize = Toolkit.getDefaultToolkit().getScreenSize();
-    } catch (Exception e) {
-      System.err.printf("Error initializing Robot: %s%n", e.getMessage());
+    backend = initializeBackend();
+    if (backend == null) {
+      System.err.println("Error: Could not initialize any input or presence backend.");
       return 1;
     }
 
@@ -122,6 +143,7 @@ class Nudge implements Callable<Integer> {
     boolean isScrollEnabled = mode == Mode.scroll;
 
     System.out.println("--------");
+    log("Backend: " + backend.name());
     if (isKeyboardEnabled) {
       log("Keyboard is enabled (Shift key)");
     }
@@ -129,58 +151,84 @@ class Nudge implements Callable<Integer> {
       log("Mouse wheel scroll is enabled");
     }
     if (isMouseEnabled) {
-      log(String.format("Mouse is enabled, moving %d pixels%s", pixels,
-          circular ? " (circularly)" : " (out-and-back)"));
+      log(
+          "Mouse is enabled, moving %d pixels%s"
+              .formatted(pixels, circular ? " (circularly)" : " (out-and-back)"));
     }
 
-    int initialDelay = buffer != null ? buffer
-        : (randomRange != null ? random.nextInt(randStop - randStart + 1) + randStart : seconds);
+    int initialDelay =
+        buffer != null
+            ? buffer
+            : (randomRange != null
+                ? random.nextInt(randStop - randStart + 1) + randStart
+                : seconds);
 
     if (randomRange != null) {
-      log(String.format("Random timing is enabled between %d and %d seconds.", randStart,
-          randStop));
+      log("Random timing is enabled between %d and %d seconds.".formatted(randStart, randStop));
     } else {
-      log(String.format("Running every %d seconds", seconds));
+      log("Running every %d seconds".formatted(seconds));
     }
-    log(String.format("Initial start buffer: waiting %d seconds before first check...",
-        initialDelay));
+    log("Initial start buffer: waiting %d seconds before first check...".formatted(initialDelay));
     System.out.println("--------");
 
-    Point lastPosition = getMousePosition();
+    Point lastPosition = backend.getPointerPosition();
 
-    Runtime.getRuntime().addShutdownHook(new Thread(() -> System.out.println("\nBye bye ;-)\n")));
+    Runtime.getRuntime()
+        .addShutdownHook(
+            new Thread(
+                () -> {
+                  if (backend != null) {
+                    try {
+                      backend.close();
+                    } catch (Exception _) {
+                      // Cleanup
+                    }
+                  }
+                  System.out.println("\nBye bye ;-)\n");
+                }));
 
     try {
       Thread.sleep(initialDelay * 1000L);
-    } catch (InterruptedException e) {
+    } catch (InterruptedException _) {
       Thread.currentThread().interrupt();
       return 0;
     }
 
     while (!Thread.currentThread().isInterrupted()) {
-      Point currentPosition = getMousePosition();
-      boolean isUserAway = currentPosition != null && currentPosition.equals(lastPosition);
+      Point currentPosition = backend.getPointerPosition();
+      boolean isUserAway;
+
+      if (currentPosition != null && lastPosition != null) {
+        isUserAway = currentPosition.equals(lastPosition);
+      } else {
+        // Pointer tracking unavailable on native Wayland; execute scheduled nudge
+        isUserAway = true;
+      }
 
       var isOutsideHours = false;
       if (betweenHours != null && betweenHours.size() == 2) {
         try {
           var now = LocalTime.now();
-          var start = LocalTime.parse(betweenHours.get(0));
-          var stop = LocalTime.parse(betweenHours.get(1));
+          var start = LocalTime.parse(betweenHours.getFirst());
+          var stop = LocalTime.parse(betweenHours.getLast());
           if (now.isBefore(start) || now.isAfter(stop)) {
             isOutsideHours = true;
           }
-        } catch (Exception e) {
+        } catch (Exception _) {
           System.err.println(
               "Warning: Invalid --between time format. Expected HH:mm (e.g. 09:00 17:00).");
         }
       }
 
       if (isOutsideHours) {
-        log("Outside active hours window (" + betweenHours.get(0) + " - " + betweenHours.get(1)
-            + "). Skipping nudge.");
+        log(
+            "Outside active hours window ("
+                + betweenHours.getFirst()
+                + " - "
+                + betweenHours.getLast()
+                + "). Skipping nudge.");
       } else if (isUserAway) {
-        log("Idle detection");
+        log(currentPosition != null ? "Idle detection" : "Idle check (scheduled interval)");
         if (isMouseEnabled) {
           currentPosition = moveMouse(currentPosition);
         }
@@ -196,20 +244,15 @@ class Nudge implements Callable<Integer> {
 
       lastPosition = currentPosition != null ? currentPosition : lastPosition;
 
-      int delaySeconds;
-      if (randomRange != null) {
-        delaySeconds = random.nextInt(randStop - randStart + 1) + randStart;
-        log(String.format("Delay: %d seconds", delaySeconds));
-      } else {
-        delaySeconds = seconds;
-      }
-
+      int delaySeconds =
+          randomRange != null ? random.nextInt(randStop - randStart + 1) + randStart : seconds;
+      log("Delay: %d seconds".formatted(delaySeconds));
       System.out.println("--------");
 
       try {
         //noinspection BusyWait
         Thread.sleep(delaySeconds * 1000L);
-      } catch (InterruptedException e) {
+      } catch (InterruptedException _) {
         Thread.currentThread().interrupt();
         break;
       }
@@ -219,122 +262,131 @@ class Nudge implements Callable<Integer> {
   }
 
   /**
-   * Checks for OS-specific environment warnings (macOS Accessibility, Linux Wayland).
+   * Selects and initializes the most capable presence/input backend for the current platform.
+   *
+   * @return Active {@link InputBackend} instance.
    */
-  private void checkEnvironmentWarnings() {
+  private InputBackend initializeBackend() {
     var os = System.getProperty("os.name", "").toLowerCase();
     if (os.contains("mac")) {
-      log("Note: On macOS, ensure Terminal/Java has Accessibility permissions (System Settings ->"
-          + " Privacy & Security -> Accessibility).");
+      log(
+          "Note: On macOS, ensure Terminal/Java has Accessibility permissions (System Settings ->"
+              + " Privacy & Security -> Accessibility).");
     }
-    var sessionType = System.getenv("XDG_SESSION_TYPE");
-    var waylandDisplay = System.getenv("WAYLAND_DISPLAY");
-    if ("wayland".equalsIgnoreCase(sessionType)
-        || (waylandDisplay != null && !waylandDisplay.isEmpty())) {
-      log("Warning: Wayland display server detected. Wayland compositors may block simulated"
-          + " mouse/keyboard events.");
-      log("If mouse movement fails, switch to an X11 session or use --mode keyboard.");
+
+    var isWayland = isWaylandSession();
+    if (isWayland) {
+      // 1. Try direct Linux kernel virtual input (/dev/uinput via FFM)
+      try {
+        var uinput = UinputBackend.create();
+        if (uinput != null) {
+          return uinput;
+        }
+      } catch (Exception _) {
+        // uinput creation failed, attempt CLI tools or fallback
+      }
+
+      // 2. Try CLI simulation tools (ydotool, wtype, dotool)
+      var cliBackend = CliToolBackend.detect();
+      if (cliBackend != null) {
+        return cliBackend;
+      }
+
+      // 3. Fallback: D-Bus Inhibit + AWT Robot if DISPLAY is set
+      log("Notice: Wayland session detected without /dev/uinput or CLI simulation tools.");
+      log("To enable direct kernel input simulation (for Teams/Slack):");
+      log("  1. Add user to input group: sudo usermod -aG input $USER");
+      log("  2. Or install ydotool: sudo apt install ydotool");
+      log("Activating D-Bus ScreenSaver Inhibit to keep desktop session active.");
+
+      return FallbackWaylandBackend.create();
+    }
+
+    if (GraphicsEnvironment.isHeadless()) {
+      System.err.println(
+          "Error: Headless environment detected. Desktop GUI environment is required.");
+      return null;
+    }
+
+    try {
+      return new AwtRobotBackend();
+    } catch (Exception e) {
+      System.err.printf("Error initializing AWT Robot: %s%n", e.getMessage());
+      return null;
     }
   }
 
   /**
-   * Retrieves the current mouse pointer screen coordinates.
+   * Determines if the current environment is running a Wayland display server.
    *
-   * @return {@link Point} location of cursor, or {@code null} if pointer info unavailable.
+   * @return {@code true} if Wayland is detected.
    */
-  private Point getMousePosition() {
-    var info = MouseInfo.getPointerInfo();
-    return info != null ? info.getLocation() : null;
+  private static boolean isWaylandSession() {
+    var sessionType = System.getenv("XDG_SESSION_TYPE");
+    var waylandDisplay = System.getenv("WAYLAND_DISPLAY");
+    return "wayland".equalsIgnoreCase(sessionType)
+        || (waylandDisplay != null && !waylandDisplay.isBlank());
+  }
+
+  /**
+   * Checks whether a system CLI executable is available in PATH.
+   *
+   * @param command Command name.
+   * @return {@code true} if command is found.
+   */
+  private static boolean hasCommand(String command) {
+    try {
+      var process =
+          new ProcessBuilder("which", command)
+              .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+              .redirectError(ProcessBuilder.Redirect.DISCARD)
+              .start();
+      return process.waitFor() == 0;
+    } catch (Exception _) {
+      return false;
+    }
   }
 
   /**
    * Moves mouse cursor according to configured mode (out-and-back or circular).
    *
-   * @param current The starting cursor position.
-   * @return The updated cursor position after movement.
+   * @param current The starting cursor position if known.
+   * @return The updated cursor position after movement, or {@code null}.
    */
   private Point moveMouse(Point current) {
-    if (current == null)
-      return null;
-
     int step = Math.max(1, pixels);
-
     int deltaX;
     int deltaY;
+
     if (circular) {
       deltaX = (mouseDirection == 0 || mouseDirection == 3) ? step : -step;
       deltaY = (mouseDirection == 0 || mouseDirection == 1) ? step : -step;
       mouseDirection = (mouseDirection + 1) % 4;
-
-      var target = clampToScreen(current.x + deltaX, current.y + deltaY);
-      robot.mouseMove(target.x, target.y);
+      backend.moveMouse(deltaX, deltaY);
+      log("Moved mouse relative (%+d, %+d)".formatted(deltaX, deltaY));
     } else {
-      deltaX = (current.x + step < screenSize.width) ? step : -step;
-      deltaY = (current.y + step < screenSize.height) ? step : -step;
-
-      Point out = clampToScreen(current.x + deltaX, current.y + deltaY);
-      robot.mouseMove(out.x, out.y);
-      robot.delay(80);
-
-      robot.mouseMove(current.x, current.y);
-    }
-    robot.delay(50);
-
-    Point actual = getMousePosition();
-    if (actual != null && actual.equals(current) && circular) {
-      var fallback = clampToScreen(current.x + 10, current.y + 10);
-      robot.mouseMove(fallback.x, fallback.y);
-      robot.delay(50);
-      actual = getMousePosition();
+      backend.moveMouse(step, step);
+      try {
+        Thread.sleep(80);
+      } catch (InterruptedException _) {
+        Thread.currentThread().interrupt();
+      }
+      backend.moveMouse(-step, -step);
+      log("Moved mouse relative (%+d, %+d) and back".formatted(step, step));
     }
 
-    if (actual != null && actual.equals(current) && !circular) {
-      log(String.format("Moved mouse out (%d, %d) and back to (%d, %d)", current.x + step,
-          current.y + step, current.x, current.y));
-    } else if (actual != null) {
-      log(String.format("Moved mouse from (%d, %d) to (%d, %d)", current.x, current.y, actual.x,
-          actual.y));
-    } else {
-      log("Moved mouse");
-    }
-
-    if (actual != null && actual.equals(current) && circular) {
-      log("Warning: Mouse position did not change. Check system permissions (e.g. macOS Accessibility).");
-    }
-
-    return actual;
+    return backend.getPointerPosition();
   }
 
-  /**
-   * Clamps given coordinates within screen boundaries.
-   *
-   * @param x X coordinate.
-   * @param y Y coordinate.
-   * @return Clamped {@link Point} on screen.
-   */
-  private Point clampToScreen(int x, int y) {
-    int cx = Math.clamp(x, 0, screenSize.width - 1);
-    int cy = Math.clamp(y, 0, screenSize.height - 1);
-    return new Point(cx, cy);
-  }
-
-  /**
-   * Simulates a mouse wheel scroll.
-   */
+  /** Simulates a mouse wheel scroll. */
   private void scrollMouse() {
-    robot.mouseWheel(2);
-    robot.delay(50);
+    backend.scrollMouse(2);
     log("Mouse wheel scrolled");
   }
 
-  /**
-   * Simulates pressing and releasing the Shift key.
-   */
+  /** Simulates pressing and releasing the Shift key. */
   private void pressShiftKey() {
-    robot.keyPress(KeyEvent.VK_SHIFT);
-    robot.delay(40);
-    robot.keyRelease(KeyEvent.VK_SHIFT);
-    robot.delay(50);
+    backend.pressShiftKey();
     log("Shift key pressed");
   }
 
@@ -347,10 +399,489 @@ class Nudge implements Callable<Integer> {
     System.out.printf("%s %s%n", LocalTime.now().format(TIME_FORMATTER), message);
   }
 
-  /**
-   * Available action modes executed upon idle detection.
-   */
+  /// Available action modes executed upon idle detection.
   public enum Mode {
-    mouse, keyboard, both, scroll
+    mouse,
+    keyboard,
+    both,
+    scroll
+  }
+
+  /// Abstraction for input simulation and desktop presence.
+  private interface InputBackend extends AutoCloseable {
+    void moveMouse(int dx, int dy);
+
+    void scrollMouse(int clicks);
+
+    void pressShiftKey();
+
+    Point getPointerPosition();
+
+    String name();
+
+    @Override
+    default void close() {}
+  }
+
+  /// Native Linux kernel virtual input backend via /dev/uinput using Foreign Function & Memory.
+  private static final class UinputBackend implements InputBackend {
+    private static final int UI_SET_EVBIT = 0x40045564;
+    private static final int UI_SET_KEYBIT = 0x40045565;
+    private static final int UI_SET_RELBIT = 0x40045566;
+    private static final int UI_DEV_SETUP = 0x405c5503;
+    private static final int UI_DEV_CREATE = 0x5501;
+    private static final int UI_DEV_DESTROY = 0x5502;
+
+    private static final short EV_SYN = 0x00;
+    private static final short EV_KEY = 0x01;
+    private static final short EV_REL = 0x02;
+
+    private static final short REL_X = 0x00;
+    private static final short REL_Y = 0x01;
+    private static final short REL_WHEEL = 0x08;
+    private static final short KEY_LEFTSHIFT = 42;
+
+    private final int fd;
+    private final MethodHandle ioctl;
+    private final MethodHandle write;
+    private final MethodHandle close;
+
+    private UinputBackend(int fd, MethodHandle ioctl, MethodHandle write, MethodHandle close) {
+      this.fd = fd;
+      this.ioctl = ioctl;
+      this.write = write;
+      this.close = close;
+    }
+
+    public static UinputBackend create() {
+      try {
+        var linker = Linker.nativeLinker();
+        var lookup = linker.defaultLookup();
+
+        var openHandle =
+            linker.downcallHandle(
+                lookup.find("open").orElseThrow(),
+                FunctionDescriptor.of(
+                    ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        var ioctlHandle =
+            linker.downcallHandle(
+                lookup.find("ioctl").orElseThrow(),
+                FunctionDescriptor.of(
+                    ValueLayout.JAVA_INT,
+                    ValueLayout.JAVA_INT,
+                    ValueLayout.JAVA_LONG,
+                    ValueLayout.JAVA_LONG));
+        var writeHandle =
+            linker.downcallHandle(
+                lookup.find("write").orElseThrow(),
+                FunctionDescriptor.of(
+                    ValueLayout.JAVA_LONG,
+                    ValueLayout.JAVA_INT,
+                    ValueLayout.ADDRESS,
+                    ValueLayout.JAVA_LONG));
+        var closeHandle =
+            linker.downcallHandle(
+                lookup.find("close").orElseThrow(),
+                FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
+
+        int fd;
+        try (var arena = Arena.ofConfined()) {
+          var path = arena.allocateFrom("/dev/uinput");
+          // O_WRONLY | O_NONBLOCK = 01 | 04000 = 2049
+          fd = (int) openHandle.invokeExact(path, 2049);
+          if (fd < 0) {
+            return null;
+          }
+
+          ioctlHandle.invoke(fd, (long) UI_SET_EVBIT, (long) EV_REL);
+          ioctlHandle.invoke(fd, (long) UI_SET_RELBIT, (long) REL_X);
+          ioctlHandle.invoke(fd, (long) UI_SET_RELBIT, (long) REL_Y);
+          ioctlHandle.invoke(fd, (long) UI_SET_RELBIT, (long) REL_WHEEL);
+          ioctlHandle.invoke(fd, (long) UI_SET_EVBIT, (long) EV_KEY);
+          ioctlHandle.invoke(fd, (long) UI_SET_KEYBIT, (long) KEY_LEFTSHIFT);
+
+          var setupBuf = arena.allocate(92);
+          setupBuf.set(ValueLayout.JAVA_SHORT, 0, (short) 0x03); // BUS_USB
+          setupBuf.set(ValueLayout.JAVA_SHORT, 2, (short) 0x01); // vendor
+          setupBuf.set(ValueLayout.JAVA_SHORT, 4, (short) 0x01); // product
+          setupBuf.set(ValueLayout.JAVA_SHORT, 6, (short) 0x01); // version
+          setupBuf.setString(8, "Nudge Virtual Input");
+
+          ioctlHandle.invoke(fd, (long) UI_DEV_SETUP, setupBuf.address());
+          ioctlHandle.invoke(fd, (long) UI_DEV_CREATE, 0L);
+        }
+
+        return new UinputBackend(fd, ioctlHandle, writeHandle, closeHandle);
+      } catch (Throwable _) {
+        return null;
+      }
+    }
+
+    @Override
+    public void moveMouse(int dx, int dy) {
+      emit(EV_REL, REL_X, dx);
+      emit(EV_REL, REL_Y, dy);
+      emit(EV_SYN, (short) 0, 0);
+    }
+
+    @Override
+    public void scrollMouse(int clicks) {
+      emit(EV_REL, REL_WHEEL, clicks);
+      emit(EV_SYN, (short) 0, 0);
+    }
+
+    @Override
+    public void pressShiftKey() {
+      emit(EV_KEY, KEY_LEFTSHIFT, 1);
+      emit(EV_SYN, (short) 0, 0);
+      try {
+        Thread.sleep(40);
+      } catch (InterruptedException _) {
+        Thread.currentThread().interrupt();
+      }
+      emit(EV_KEY, KEY_LEFTSHIFT, 0);
+      emit(EV_SYN, (short) 0, 0);
+    }
+
+    private void emit(short type, short code, int value) {
+      try (var arena = Arena.ofConfined()) {
+        var event = arena.allocate(24);
+        event.set(ValueLayout.JAVA_SHORT, 16, type);
+        event.set(ValueLayout.JAVA_SHORT, 18, code);
+        event.set(ValueLayout.JAVA_INT, 20, value);
+        write.invoke(fd, event, 24L);
+      } catch (Throwable _) {
+        // Ignore write failures
+      }
+    }
+
+    @Override
+    public Point getPointerPosition() {
+      var info = MouseInfo.getPointerInfo();
+      return info != null ? info.getLocation() : null;
+    }
+
+    @Override
+    public String name() {
+      return "Linux Kernel Virtual Device (/dev/uinput via FFM)";
+    }
+
+    @Override
+    public void close() {
+      try {
+        ioctl.invoke(fd, (long) UI_DEV_DESTROY, 0L);
+        close.invoke(fd);
+      } catch (Throwable _) {
+        // Cleanup
+      }
+    }
+  }
+
+  /// External Wayland CLI tool simulation backend (ydotool, wtype, dotool).
+  private static final class CliToolBackend implements InputBackend {
+    private final String tool;
+
+    private CliToolBackend(String tool) {
+      this.tool = tool;
+    }
+
+    public static CliToolBackend detect() {
+      if (hasCommand("ydotool")) {
+        return new CliToolBackend("ydotool");
+      }
+      if (hasCommand("wtype")) {
+        return new CliToolBackend("wtype");
+      }
+      if (hasCommand("dotool")) {
+        return new CliToolBackend("dotool");
+      }
+      return null;
+    }
+
+    @Override
+    public void moveMouse(int dx, int dy) {
+      switch (tool) {
+        case "ydotool" -> run("ydotool", "mousemove", "--", String.valueOf(dx), String.valueOf(dy));
+        case "dotool" -> runPipe("echo 'mrel %d %d' | dotool".formatted(dx, dy));
+        default -> {}
+      }
+    }
+
+    @Override
+    public void scrollMouse(int clicks) {
+      switch (tool) {
+        case "ydotool" -> run("ydotool", "mousemove", "--wheel", String.valueOf(clicks));
+        case "dotool" -> runPipe("echo 'wheel %d' | dotool".formatted(clicks));
+        default -> {}
+      }
+    }
+
+    @Override
+    public void pressShiftKey() {
+      switch (tool) {
+        case "ydotool" -> run("ydotool", "key", "42:1", "42:0");
+        case "wtype" -> run("wtype", "-k", "Shift_L");
+        case "dotool" -> runPipe("echo 'key shift' | dotool");
+        default -> {}
+      }
+    }
+
+    private void run(String... args) {
+      try {
+        new ProcessBuilder(args)
+            .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+            .redirectError(ProcessBuilder.Redirect.DISCARD)
+            .start()
+            .waitFor();
+      } catch (Exception _) {
+        // Ignored
+      }
+    }
+
+    private void runPipe(String shellCmd) {
+      try {
+        new ProcessBuilder("sh", "-c", shellCmd)
+            .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+            .redirectError(ProcessBuilder.Redirect.DISCARD)
+            .start()
+            .waitFor();
+      } catch (Exception _) {
+        // Ignored
+      }
+    }
+
+    @Override
+    public Point getPointerPosition() {
+      var info = MouseInfo.getPointerInfo();
+      return info != null ? info.getLocation() : null;
+    }
+
+    @Override
+    public String name() {
+      return "Wayland CLI Simulation Tool (%s)".formatted(tool);
+    }
+  }
+
+  /// Fallback Wayland backend using D-Bus ScreenSaver Inhibit alongside AWT Robot.
+  private static final class FallbackWaylandBackend implements InputBackend {
+    private final String cookie;
+    private final Process systemdProcess;
+    private final Robot robot;
+
+    private FallbackWaylandBackend(String cookie, Process systemdProcess, Robot robot) {
+      this.cookie = cookie;
+      this.systemdProcess = systemdProcess;
+      this.robot = robot;
+    }
+
+    public static FallbackWaylandBackend create() {
+      String cookie = null;
+      Process proc = null;
+
+      // 1. Try busctl
+      try {
+        var pb =
+            new ProcessBuilder(
+                "busctl",
+                "--user",
+                "call",
+                "org.freedesktop.ScreenSaver",
+                "/org/freedesktop/ScreenSaver",
+                "org.freedesktop.ScreenSaver",
+                "Inhibit",
+                "ss",
+                "nudge",
+                "keep presence active");
+        var p = pb.start();
+        var out = new String(p.getInputStream().readAllBytes()).trim();
+        if (p.waitFor() == 0 && out.startsWith("u ")) {
+          cookie = out.substring(2).trim();
+        }
+      } catch (Exception _) {
+        // Try gdbus
+      }
+
+      // 2. Try gdbus
+      if (cookie == null) {
+        try {
+          var pb =
+              new ProcessBuilder(
+                  "gdbus",
+                  "call",
+                  "--session",
+                  "--dest",
+                  "org.freedesktop.ScreenSaver",
+                  "--object-path",
+                  "/org/freedesktop/ScreenSaver",
+                  "--method",
+                  "org.freedesktop.ScreenSaver.Inhibit",
+                  "nudge",
+                  "keep presence active");
+          var p = pb.start();
+          var out = new String(p.getInputStream().readAllBytes()).trim();
+          if (p.waitFor() == 0 && out.contains("uint32 ")) {
+            var matcher = Pattern.compile("\\d+").matcher(out);
+            if (matcher.find()) {
+              cookie = matcher.group();
+            }
+          }
+        } catch (Exception _) {
+          // Try systemd-inhibit
+        }
+      }
+
+      // 3. Try systemd-inhibit
+      if (cookie == null) {
+        try {
+          proc =
+              new ProcessBuilder(
+                      "systemd-inhibit",
+                      "--what=idle:sleep",
+                      "--who=nudge",
+                      "--why=Keep presence active",
+                      "--mode=block",
+                      "sleep",
+                      "infinity")
+                  .start();
+        } catch (Exception _) {
+          // Fallback only
+        }
+      }
+
+      Robot r = null;
+      if (!GraphicsEnvironment.isHeadless()) {
+        try {
+          r = new Robot();
+          r.setAutoDelay(40);
+        } catch (Exception _) {
+          // Headless or Robot init failed
+        }
+      }
+
+      return new FallbackWaylandBackend(cookie, proc, r);
+    }
+
+    @Override
+    public void moveMouse(int dx, int dy) {
+      if (robot != null) {
+        var current = getPointerPosition();
+        if (current != null) {
+          robot.mouseMove(current.x + dx, current.y + dy);
+        }
+      }
+    }
+
+    @Override
+    public void scrollMouse(int clicks) {
+      if (robot != null) {
+        robot.mouseWheel(clicks);
+      }
+    }
+
+    @Override
+    public void pressShiftKey() {
+      if (robot != null) {
+        robot.keyPress(KeyEvent.VK_SHIFT);
+        robot.delay(40);
+        robot.keyRelease(KeyEvent.VK_SHIFT);
+      }
+    }
+
+    @Override
+    public Point getPointerPosition() {
+      var info = MouseInfo.getPointerInfo();
+      return info != null ? info.getLocation() : null;
+    }
+
+    @Override
+    public String name() {
+      return "Wayland D-Bus ScreenSaver Inhibit" + (robot != null ? " + XWayland Robot" : "");
+    }
+
+    @Override
+    public void close() {
+      if (cookie != null) {
+        try {
+          new ProcessBuilder(
+                  "busctl",
+                  "--user",
+                  "call",
+                  "org.freedesktop.ScreenSaver",
+                  "/org/freedesktop/ScreenSaver",
+                  "org.freedesktop.ScreenSaver",
+                  "UnInhibit",
+                  "u",
+                  cookie)
+              .start()
+              .waitFor();
+        } catch (Exception _) {
+          try {
+            new ProcessBuilder(
+                    "gdbus",
+                    "call",
+                    "--session",
+                    "--dest",
+                    "org.freedesktop.ScreenSaver",
+                    "--object-path",
+                    "/org/freedesktop/ScreenSaver",
+                    "--method",
+                    "org.freedesktop.ScreenSaver.UnInhibit",
+                    cookie)
+                .start()
+                .waitFor();
+          } catch (Exception _) {
+            // Cleanup error ignored
+          }
+        }
+      }
+      if (systemdProcess != null && systemdProcess.isAlive()) {
+        systemdProcess.destroy();
+      }
+    }
+  }
+
+  /// Standard AWT Robot backend for X11, macOS, and Windows.
+  private static final class AwtRobotBackend implements InputBackend {
+    private final Robot robot;
+    private final Dimension screenSize;
+
+    public AwtRobotBackend() throws Exception {
+      this.robot = new Robot();
+      this.robot.setAutoDelay(40);
+      this.screenSize = Toolkit.getDefaultToolkit().getScreenSize();
+    }
+
+    @Override
+    public void moveMouse(int dx, int dy) {
+      var current = getPointerPosition();
+      if (current != null) {
+        int cx = Math.clamp(current.x + dx, 0, screenSize.width - 1);
+        int cy = Math.clamp(current.y + dy, 0, screenSize.height - 1);
+        robot.mouseMove(cx, cy);
+      }
+    }
+
+    @Override
+    public void scrollMouse(int clicks) {
+      robot.mouseWheel(clicks);
+    }
+
+    @Override
+    public void pressShiftKey() {
+      robot.keyPress(KeyEvent.VK_SHIFT);
+      robot.delay(40);
+      robot.keyRelease(KeyEvent.VK_SHIFT);
+    }
+
+    @Override
+    public Point getPointerPosition() {
+      var info = MouseInfo.getPointerInfo();
+      return info != null ? info.getLocation() : null;
+    }
+
+    @Override
+    public String name() {
+      return "AWT Robot (X11/macOS/Windows)";
+    }
   }
 }
