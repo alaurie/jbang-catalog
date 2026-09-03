@@ -108,8 +108,10 @@ class JellyfinBackup implements Callable<Integer> {
     public Integer call() throws Exception {
       boolean isRoot = isRunningAsRoot();
       if (!isRoot) {
-        System.out.println(
-            "Notice: Running without root privileges. If access is denied, re-run with sudo.");
+        System.err.println(
+            "Error: 'jellyfin-backup backup' requires root privileges to read /var/lib/jellyfin and stop services.");
+        System.err.println("Please run: sudo ~/.jbang/bin/jellyfin-backup backup [options]");
+        return 1;
       }
 
       if (!Files.isDirectory(configDir) && !Files.isDirectory(dataDir)) {
@@ -140,7 +142,10 @@ class JellyfinBackup implements Callable<Integer> {
         if (stopSystemdService("jellyfin")) {
           System.out.println("OK");
         } else {
-          System.out.println("FAILED (Proceeding with live snapshot)");
+          System.err.println("FAILED");
+          System.err.println(
+              "Error: Could not stop jellyfin service. Aborting to prevent inconsistent database state.");
+          return 1;
         }
       }
 
@@ -380,9 +385,9 @@ class JellyfinBackup implements Callable<Integer> {
       boolean isRoot = isRunningAsRoot();
       if (!isRoot) {
         System.err.println(
-            "Warning: Restoring to /etc/jellyfin and /var/lib/jellyfin typically requires root privileges.");
-        System.err.println(
-            "If permission is denied, please run: sudo jbang jellyfin-backup restore <file>");
+            "Error: 'jellyfin-backup restore' requires root privileges to write /var/lib/jellyfin and /etc/jellyfin.");
+        System.err.println("Please run: sudo ~/.jbang/bin/jellyfin-backup restore <archive-file>");
+        return 1;
       }
 
       System.out.println("===============================================================");
@@ -425,7 +430,9 @@ class JellyfinBackup implements Callable<Integer> {
         if (stopSystemdService("jellyfin")) {
           System.out.println("OK");
         } else {
-          System.out.println("FAILED");
+          System.err.println("FAILED");
+          System.err.println("Error: Could not stop jellyfin service before restore. Aborting.");
+          return 1;
         }
       }
 
