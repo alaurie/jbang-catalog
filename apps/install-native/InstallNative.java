@@ -2,6 +2,7 @@
 //JAVA 25+
 //DEPS info.picocli:picocli:4.7.7
 //DEPS info.picocli:picocli-codegen:4.7.7
+//DEPS tools.jackson.core:jackson-databind:3.2.1
 //JAVAC_OPTIONS -proc:full
 //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms4m -Xmx32m -XX:TieredStopAtLevel=1 -XX:CompressedClassSpaceSize=32m -XX:ReservedCodeCacheSize=16m -XX:-UsePerfData
 //NATIVE_OPTIONS -O2 --no-fallback
@@ -11,25 +12,35 @@ package installnative;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStreamReader;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 /// Cross-platform utility to compile and export catalog applications as standalone GraalVM native
 /// binaries.
 ///
-/// Exports native ELF / Mach-O / PE machine executables directly to `~/.jbang/bin` or a specified
-/// directory, bypassing shell script wrapper overhead for instant sub-10ms CLI startup.
-@Command(name = "install-native", mixinStandardHelpOptions = true, version = "install-native 1.0",
+/// Dynamically inspects catalog manifests and source script directives (`//NATIVE_OPTIONS`,
+/// dependencies)
+/// to determine native compatibility and exports binaries directly into `~/.jbang/bin` or a
+/// specified directory.
+@Command(name = "install-native", mixinStandardHelpOptions = true, version = "install-native 1.1",
     description = "Compile and export catalog tools as standalone zero-overhead native executables.")
 @SuppressWarnings("unused")
 class InstallNative implements Callable<Integer> {
@@ -37,31 +48,14 @@ class InstallNative implements Callable<Integer> {
   private static final boolean IS_WINDOWS =
       System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("win");
 
-  /// Registry of catalog apps and their native image suitability.
-  private static final Map<String, AppMetadata> APPS = new LinkedHashMap<>();
+  private static final String REMOTE_CATALOG_URL =
+      "https://raw.githubusercontent.com/alaurie/jbang-catalog/main/jbang-catalog.json";
 
-  record AppMetadata(String alias, String scriptRef, String description, boolean nativeSupported) {}
+  private static final Set<String> JNI_DEPENDENCY_PATTERNS =
+      Set.of("oshi-core", "jna", "sqlite-jdbc", "libjnidispatch");
 
-  static {
-    APPS.put("fetch", new AppMetadata("fetch", "apps/fetch/Fetch.java",
-        "Multithreaded download utility with automatic checksum capability", true));
-    APPS.put("hash", new AppMetadata("hash", "apps/hash/Hash.java",
-        "Compute and verify cryptographic checksums for files or text input", true));
-    APPS.put("jwt", new AppMetadata("jwt", "apps/jwt/Jwt.java",
-        "Inspect and decode JSON Web Tokens (JWT) safely off-line", true));
-    APPS.put("killport", new AppMetadata("killport", "apps/killport/Killport.java",
-        "Find and terminate processes listening on specified network ports", true));
-    APPS.put("nudge", new AppMetadata("nudge", "apps/nudge/Nudge.java",
-        "Simulates user activity to keep presence status active", true));
-    APPS.put("reach", new AppMetadata("reach", "apps/reach/Reach.java",
-        "Network diagnostic utility to test TCP reachability and inspect TLS certs", true));
-    APPS.put("serve", new AppMetadata("serve", "apps/serve/Serve.java",
-        "Serves the given directory on the specified port", true));
-    APPS.put("typeit", new AppMetadata("typeit", "apps/typeit/Typeit.java",
-        "Simulates typing clipboard text into active window after countdown", true));
-    APPS.put("slowfetch", new AppMetadata("slowfetch", "apps/slowfetch/Slowfetch.java",
-        "Terminal system information fetcher powered by OSHI (Requires JVM for JNA)", false));
-  }
+  record AppMetadata(String alias, String scriptRef, String description, boolean nativeSupported,
+      String supportReason) {}
 
   @Parameters(arity = "0..*", paramLabel = "<apps>",
       description = "Specific application aliases to export (e.g. fetch hash jwt). Defaults to all native-supported apps.")
@@ -72,7 +66,7 @@ class InstallNative implements Callable<Integer> {
   private Path targetDir;
 
   @Option(names = {"-l", "--list"},
-      description = "List all available catalog applications and native compatibility.")
+      description = "List all available catalog applications and dynamic native compatibility.")
   private boolean listOnly;
 
   @Option(names = {"-f", "--force"},
@@ -83,10 +77,18 @@ class InstallNative implements Callable<Integer> {
       description = "Enable verbose output during native-image compilation.")
   private boolean verbose;
 
+  private final ObjectMapper objectMapper = new ObjectMapper();
+
   @Override
   public Integer call() throws Exception {
+    Map<String, AppMetadata> catalogApps = discoverCatalogApps();
+    if (catalogApps.isEmpty()) {
+      System.err.println("Error: Failed to discover applications from jbang-catalog.json.");
+      return 1;
+    }
+
     if (listOnly) {
-      printCatalogList();
+      printCatalogList(catalogApps);
       return 0;
     }
 
@@ -96,7 +98,7 @@ class InstallNative implements Callable<Integer> {
       System.out.printf("Created destination directory: %s%n", destination.toAbsolutePath());
     }
 
-    List<AppMetadata> targets = selectTargets();
+    List<AppMetadata> targets = selectTargets(catalogApps);
     if (targets.isEmpty()) {
       System.err.println("No matching native-supported applications selected.");
       return 1;
@@ -144,6 +146,128 @@ class InstallNative implements Callable<Integer> {
     return failed == 0 ? 0 : 1;
   }
 
+  /// Discovers catalog aliases from local `jbang-catalog.json` or remote GitHub repository,
+  /// then inspects script source code to evaluate dynamic native compatibility.
+  private Map<String, AppMetadata> discoverCatalogApps() {
+    Map<String, AppMetadata> apps = new LinkedHashMap<>();
+    String jsonContent = loadCatalogJson();
+    if (jsonContent == null) {
+      return apps;
+    }
+
+    try {
+      JsonNode root = objectMapper.readTree(jsonContent);
+      JsonNode aliases = root.get("aliases");
+      if (aliases != null && aliases.isObject()) {
+        aliases.properties().forEach(entry -> {
+          String alias = entry.getKey();
+          JsonNode node = entry.getValue();
+          String scriptRef = node.has("script-ref") ? node.get("script-ref").asText() : "";
+          String description = node.has("description") ? node.get("description").asText() : "";
+
+          // Don't export install-native into itself
+          if (!"install-native".equalsIgnoreCase(alias)) {
+            var compatibility = evaluateNativeCompatibility(alias, scriptRef);
+            apps.put(alias.toLowerCase(Locale.ROOT), new AppMetadata(alias, scriptRef, description,
+                compatibility.supported(), compatibility.reason()));
+          }
+        });
+      }
+    } catch (Exception e) {
+      if (verbose) {
+        System.err.println("Failed to parse catalog JSON: " + e.getMessage());
+      }
+    }
+    return apps;
+  }
+
+  private String loadCatalogJson() {
+    // 1. Try local catalog file in current working directory
+    Path localCatalog = Path.of("jbang-catalog.json");
+    if (Files.isRegularFile(localCatalog)) {
+      try {
+        return Files.readString(localCatalog);
+      } catch (Exception _) {
+        // Fallback to remote
+      }
+    }
+
+    // 2. Fetch from remote GitHub catalog
+    try {
+      HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(4)).build();
+      HttpRequest request = HttpRequest.newBuilder(URI.create(REMOTE_CATALOG_URL)).GET().build();
+      HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() == 200) {
+        return response.body();
+      }
+    } catch (Exception e) {
+      if (verbose) {
+        System.err.println("Could not fetch remote catalog: " + e.getMessage());
+      }
+    }
+    return null;
+  }
+
+  record CompatibilityResult(boolean supported, String reason) {}
+
+  /// Evaluates native compilation support by inspecting script directives and dependencies.
+  private CompatibilityResult evaluateNativeCompatibility(String alias, String scriptRef) {
+    String source = loadScriptSource(alias, scriptRef);
+    if (source == null) {
+      // Default to supported if source cannot be inspected ahead of time
+      return new CompatibilityResult(true, "Supported");
+    }
+
+    // Check for explicit native exclusion directive
+    if (source.contains("//NATIVE_DISABLED") || source.contains("//NO_NATIVE")) {
+      return new CompatibilityResult(false, "Disabled via //NATIVE_DISABLED directive");
+    }
+
+    // Check for known JNI / dynamic C-library dependencies
+    for (String jniPattern : JNI_DEPENDENCY_PATTERNS) {
+      if (source.toLowerCase(Locale.ROOT).contains(jniPattern)) {
+        return new CompatibilityResult(false,
+            "Requires JVM for dynamic JNA / C-bindings (%s)".formatted(jniPattern));
+      }
+    }
+
+    // Check for native options directive
+    if (source.contains("//NATIVE_OPTIONS")) {
+      return new CompatibilityResult(true, "Supported (AOT Configured)");
+    }
+
+    return new CompatibilityResult(true, "Supported");
+  }
+
+  private String loadScriptSource(String alias, String scriptRef) {
+    // Check local filesystem
+    if (scriptRef != null && !scriptRef.isBlank()) {
+      Path localFile = Path.of(scriptRef);
+      if (Files.isRegularFile(localFile)) {
+        try {
+          return Files.readString(localFile);
+        } catch (Exception _) {
+        }
+      }
+    }
+
+    // Check remote raw GitHub URL
+    if (scriptRef != null && !scriptRef.isBlank()) {
+      try {
+        String remoteUrl =
+            "https://raw.githubusercontent.com/alaurie/jbang-catalog/main/" + scriptRef;
+        HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
+        HttpRequest request = HttpRequest.newBuilder(URI.create(remoteUrl)).GET().build();
+        HttpResponse<String> res = client.send(request, HttpResponse.BodyHandlers.ofString());
+        if (res.statusCode() == 200) {
+          return res.body();
+        }
+      } catch (Exception _) {
+      }
+    }
+    return null;
+  }
+
   private Path resolveDestination() {
     if (targetDir != null) {
       return targetDir;
@@ -152,22 +276,21 @@ class InstallNative implements Callable<Integer> {
     return Path.of(userHome, ".jbang", "bin");
   }
 
-  private List<AppMetadata> selectTargets() {
+  private List<AppMetadata> selectTargets(Map<String, AppMetadata> catalogApps) {
     if (requestedApps == null || requestedApps.isEmpty()) {
-      // All native-supported apps
-      return APPS.values().stream().filter(AppMetadata::nativeSupported).toList();
+      return catalogApps.values().stream().filter(AppMetadata::nativeSupported).toList();
     }
 
     List<AppMetadata> result = new ArrayList<>();
     for (String req : requestedApps) {
       String key = req.trim().toLowerCase(Locale.ROOT);
-      var app = APPS.get(key);
+      var app = catalogApps.get(key);
       if (app == null) {
         System.err.printf("Warning: Unknown application '%s' (use --list to see available tools)%n",
             req);
       } else if (!app.nativeSupported()) {
         System.err.printf("Warning: '%s' is marked JVM-only (%s) - skipping native build.%n",
-            app.alias(), app.description());
+            app.alias(), app.supportReason());
       } else {
         result.add(app);
       }
@@ -176,7 +299,6 @@ class InstallNative implements Callable<Integer> {
   }
 
   private boolean exportNativeBinary(AppMetadata app, Path outputPath) {
-    // Resolve script source: prefer local repo file if present, else fallback to alias@alaurie
     String scriptSource = app.scriptRef();
     if (!Files.exists(Path.of(scriptSource))) {
       scriptSource = app.alias() + "@alaurie";
@@ -209,7 +331,6 @@ class InstallNative implements Callable<Integer> {
 
       int exitCode = process.waitFor();
       if (exitCode == 0 && Files.exists(outputPath)) {
-        // Ensure executable permissions on POSIX
         if (!IS_WINDOWS) {
           outputPath.toFile().setExecutable(true, false);
         }
@@ -222,14 +343,14 @@ class InstallNative implements Callable<Integer> {
     }
   }
 
-  private void printCatalogList() {
+  private void printCatalogList(Map<String, AppMetadata> catalogApps) {
     System.out.println("Available applications in jbang-catalog:");
     System.out.println();
-    System.out.printf("  %-12s %-16s %s%n", "ALIAS", "NATIVE BUILD", "DESCRIPTION");
-    System.out.println("  " + "-".repeat(70));
-    for (var app : APPS.values()) {
+    System.out.printf("  %-12s %-26s %s%n", "ALIAS", "NATIVE BUILD", "DESCRIPTION");
+    System.out.println("  " + "-".repeat(80));
+    for (var app : catalogApps.values()) {
       String status = app.nativeSupported() ? "Supported" : "JVM Only (JNA)";
-      System.out.printf("  %-12s %-16s %s%n", app.alias(), status, app.description());
+      System.out.printf("  %-12s %-26s %s%n", app.alias(), status, app.description());
     }
     System.out.println();
     System.out.println("Usage:");
