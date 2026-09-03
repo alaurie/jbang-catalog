@@ -17,15 +17,21 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.security.DigestOutputStream;
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Callable;
@@ -182,9 +188,12 @@ class JellyfinBackup implements Callable<Integer> {
       Path tempArchive = Path.of(archivePath.toString() + ".tmp");
       Files.deleteIfExists(tempArchive);
 
+      MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
+
       try (FileOutputStream fos = new FileOutputStream(tempArchive.toFile());
           BufferedOutputStream bos = new BufferedOutputStream(fos, 128 * 1024);
-          GZIPOutputStream gzos = new GZIPOutputStream(bos);
+          DigestOutputStream dos = new DigestOutputStream(bos, sha256);
+          GZIPOutputStream gzos = new GZIPOutputStream(dos);
           TarArchiveOutputStream tarOut = new TarArchiveOutputStream(gzos)) {
 
         tarOut.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX);
@@ -229,6 +238,13 @@ class JellyfinBackup implements Callable<Integer> {
       }
 
       Files.move(tempArchive, archivePath, StandardCopyOption.REPLACE_EXISTING);
+
+      // Write sidecar SHA-256 checksum file
+      String hexHash = HexFormat.of().formatHex(sha256.digest());
+      Path shaFile = Path.of(archivePath.toString() + ".sha256");
+      String shaContent = hexHash + "  " + archivePath.getFileName().toString() + "\n";
+      Files.writeString(shaFile, shaContent, StandardCharsets.UTF_8);
+      System.out.println("SHA-256: " + hexHash);
     }
 
     private void archiveDirectory(Path baseDir, String prefix, TarArchiveOutputStream tarOut,
@@ -345,6 +361,10 @@ class JellyfinBackup implements Callable<Integer> {
         description = "Do not automatically set jellyfin:jellyfin file ownership after restore.")
     private boolean noChown;
 
+    @Option(names = {"--no-verify"},
+        description = "Skip SHA-256 checksum integrity verification before restoring.")
+    private boolean noVerify;
+
     @Option(names = {"-y", "--yes"},
         description = "Skip confirmation prompt and proceed with restore.")
     private boolean assumeYes;
@@ -373,6 +393,19 @@ class JellyfinBackup implements Callable<Integer> {
       System.out.printf("Target Config Dir: %s%n", configDir.toAbsolutePath());
       System.out.printf("Target Data Dir:   %s%n", dataDir.toAbsolutePath());
       System.out.println("---------------------------------------------------------------");
+
+      if (!noVerify) {
+        System.out.print("Verifying archive integrity (SHA-256)... ");
+        String checksumError = verifyArchiveChecksum(archiveFile);
+        if (checksumError == null) {
+          System.out.println("OK");
+        } else {
+          System.out.println("FAILED (" + checksumError + ")");
+          System.err.println(
+              "Error: Archive verification failed. Use --no-verify to override if you are sure.");
+          return 1;
+        }
+      }
 
       if (!assumeYes && System.console() != null) {
         System.out.print(
@@ -514,6 +547,15 @@ class JellyfinBackup implements Callable<Integer> {
           formatBytes(Files.size(archiveFile)));
       System.out.println("---------------------------------------------------------------");
 
+      System.out.print("Integrity Check (SHA-256): ");
+      String checksumError = verifyArchiveChecksum(archiveFile);
+      if (checksumError == null) {
+        System.out.println("VALID");
+      } else {
+        System.out.println("FAILED / " + checksumError);
+      }
+      System.out.println();
+
       String manifestJson = null;
       List<String> plugins = new ArrayList<>();
       long totalUncompressedSize = 0;
@@ -578,6 +620,53 @@ class JellyfinBackup implements Callable<Integer> {
   // =========================================================================
   // SYSTEM & HELPER METHODS
   // =========================================================================
+  static String verifyArchiveChecksum(Path archiveFile) {
+    Path shaFile = Path.of(archiveFile.toString() + ".sha256");
+    if (!Files.isRegularFile(shaFile)) {
+      return "No .sha256 sidecar file found";
+    }
+
+    try {
+      String expectedHash = null;
+      for (String line : Files.readAllLines(shaFile, StandardCharsets.UTF_8)) {
+        line = line.trim();
+        if (!line.isEmpty() && !line.startsWith("#")) {
+          String[] parts = line.split("\\s+");
+          if (parts.length >= 1) {
+            expectedHash = parts[0].trim();
+            break;
+          }
+        }
+      }
+
+      if (expectedHash == null || expectedHash.isBlank()) {
+        return "Empty or malformed .sha256 file";
+      }
+
+      String actualHash = computeFileSha256(archiveFile);
+      if (expectedHash.equalsIgnoreCase(actualHash)) {
+        return null; // Valid
+      } else {
+        return "Hash mismatch: expected " + expectedHash + ", actual " + actualHash;
+      }
+    } catch (Exception e) {
+      return "Error reading checksum: " + e.getMessage();
+    }
+  }
+
+  static String computeFileSha256(Path file) throws Exception {
+    MessageDigest digest = MessageDigest.getInstance("SHA-256");
+    ByteBuffer buffer = ByteBuffer.allocateDirect(8 * 1024 * 1024);
+    try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ)) {
+      while (channel.read(buffer) > 0) {
+        buffer.flip();
+        digest.update(buffer);
+        buffer.clear();
+      }
+    }
+    return HexFormat.of().formatHex(digest.digest());
+  }
+
   static boolean isRunningAsRoot() {
     String user = System.getProperty("user.name");
     return "root".equals(user);
