@@ -311,8 +311,7 @@ class Fetch implements Callable<Integer> {
           InputStream in = res.body();
           FileChannel out = FileChannel.open(partPath, StandardOpenOption.CREATE,
               StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
-
-        byte[] buf = new byte[64 * 1024];
+        byte[] buf = new byte[128 * 1024];
         int read;
         while ((read = in.read(buf)) != -1) {
           out.write(ByteBuffer.wrap(buf, 0, read));
@@ -327,7 +326,7 @@ class Fetch implements Callable<Integer> {
         FileChannel out = FileChannel.open(partPath, StandardOpenOption.CREATE,
             StandardOpenOption.WRITE, StandardOpenOption.APPEND)) {
 
-      byte[] buf = new byte[64 * 1024];
+      byte[] buf = new byte[128 * 1024];
       int read;
       while ((read = in.read(buf)) != -1) {
         out.write(ByteBuffer.wrap(buf, 0, read));
