@@ -35,13 +35,13 @@ package <app-name>;
   - **Picocli Reflection Metadata**: Include `//DEPS info.picocli:picocli-codegen:4.7.7` and `//JAVAC_OPTIONS -proc:full` on every CLI script so the annotation processor generates `reflect-config.json` at compile-time for GraalVM ahead-of-time (AOT) compilation.
   - **Pure-Java vs Native C-Bindings (JNA/FFM)**: Pure-Java utilities (e.g. `digest`, `jwt`, `killport`, `reach`, `serve`, `fetch`) compile cleanly with `jbang --native`. Tools that depend on dynamic C/JNI bindings (such as `OSHI` / `JNA` in `slowfetch`) require external C dynamic link libraries (`libjnidispatch`) and are intended to run on the standard JVM (`jbang script.java`).
 - **JVM Memory & Startup Optimization**:
-  - **Tier 1 (Ultra-Compact for Stateless/Short-Lived CLIs)** (`digest`, `jwt`, `killport`, `nudge`, `typeit`, `reach`, `slowfetch`):
+  - **Tier 1 (Ultra-Compact for Stateless/Short-Lived Micro-CLIs)** (`jwt`, `killport`, `nudge`, `typeit`, `reach`, `slowfetch`):
     ```java
     //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms4m -Xmx32m -XX:TieredStopAtLevel=1 -XX:CompressedClassSpaceSize=32m -XX:ReservedCodeCacheSize=16m -XX:-UsePerfData
     ```
-  - **Tier 2 (Balanced for I/O Servers & Multithreaded Streaming)** (`serve`, `fetch`):
+  - **Tier 2 (High-Throughput Cryptography, I/O & Multithreaded Streaming)** (`digest`, `serve`, `fetch`):
     ```java
-    //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms16m -Xmx64m -XX:TieredStopAtLevel=1
+    //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms16m -Xmx64m
     ```
 
 ### Code Style & Formatting

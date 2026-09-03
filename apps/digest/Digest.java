@@ -3,7 +3,7 @@
 //DEPS info.picocli:picocli:4.7.7
 //DEPS info.picocli:picocli-codegen:4.7.7
 //JAVAC_OPTIONS -proc:full
-//JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms4m -Xmx32m -XX:TieredStopAtLevel=1 -XX:CompressedClassSpaceSize=32m -XX:ReservedCodeCacheSize=16m -XX:-UsePerfData
+//JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms8m -Xmx64m -XX:CompressedClassSpaceSize=32m -XX:ReservedCodeCacheSize=16m -XX:-UsePerfData
 //NATIVE_OPTIONS -O2 -march=native --no-fallback
 
 
@@ -254,14 +254,6 @@ class Digest implements Callable<Integer> {
   private String computeHashForPath(Path path) {
     try {
       long totalBytes = Files.size(path);
-      // For large files (>250MB), delegate to hardware-accelerated system tools if available
-      if (totalBytes > 250 * 1024 * 1024) {
-        String systemHash = computeHashWithSystemTool(path, algorithm);
-        if (systemHash != null) {
-          return systemHash;
-        }
-      }
-
       var digest = MessageDigest.getInstance(algorithm);
       int bufferSize = (int) Math.min(8 * 1024 * 1024, Math.max(64 * 1024, totalBytes));
       ByteBuffer buffer = ByteBuffer.allocateDirect(bufferSize);
@@ -278,56 +270,6 @@ class Digest implements Callable<Integer> {
       System.err.printf("Error hashing file '%s': %s%n", path, e.getMessage());
       return null;
     }
-  }
-
-  private String computeHashWithSystemTool(Path file, String algo) {
-    String algoUpper = algo.toUpperCase(Locale.ROOT).replace("-", "");
-    boolean isWindows = System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("win");
-    if (isWindows) {
-      return null;
-    }
-
-    String tool = switch (algoUpper) {
-      case "SHA256" -> "sha256sum";
-      case "SHA512" -> "sha512sum";
-      case "MD5" -> "md5sum";
-      case "SHA1" -> "sha1sum";
-      default -> null;
-    };
-    if (tool == null) {
-      return null;
-    }
-
-    try {
-      ProcessBuilder pb = new ProcessBuilder(tool, file.toAbsolutePath().toString());
-      pb.redirectError(ProcessBuilder.Redirect.DISCARD);
-      Process process = pb.start();
-      String output = new String(process.getInputStream().readAllBytes()).trim();
-      process.waitFor();
-      if (process.exitValue() == 0 && !output.isBlank()) {
-        String[] tokens = output.split("\\s+");
-        if (tokens.length >= 1 && isValidHexHash(tokens[0])) {
-          return tokens[0];
-        }
-      }
-    } catch (Exception _) {
-      // fallback to pure Java
-    }
-    return null;
-  }
-
-  private static boolean isValidHexHash(String s) {
-    int len = s.length();
-    if (len != 32 && len != 40 && len != 64 && len != 96 && len != 128) {
-      return false;
-    }
-    for (int i = 0; i < len; i++) {
-      char c = s.charAt(i);
-      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
-        return false;
-      }
-    }
-    return true;
   }
 
   /**
