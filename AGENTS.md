@@ -34,6 +34,15 @@ package <app-name>;
   - **Picocli Reflection Metadata**: Include `//DEPS info.picocli:picocli-codegen:4.7.7` and `//JAVAC_OPTIONS -proc:full` on every CLI script so the annotation processor generates `reflect-config.json` at compile-time for GraalVM ahead-of-time (AOT) compilation.
   - **Pure-Java vs Native C-Bindings (JNA/FFM)**: Pure-Java utilities (e.g. `hash`, `jwt`, `killport`, `reach`, `serve`, `fetch`) compile cleanly with `jbang --native`. Tools that depend on dynamic C/JNI bindings (such as `OSHI` / `JNA` in `slowfetch`) require external C dynamic link libraries (`libjnidispatch`) and are intended to run on the standard JVM (`jbang script.java`).
 
+- **JVM Memory & Startup Optimization**:
+  - Every CLI utility includes tuned JVM runtime options (`//JAVA_OPTIONS`) to keep the memory footprint lightweight (~40MB RSS) and startup sub-second:
+    - `-XX:+UseSerialGC`: Lightweight GC with low metadata and thread overhead (eliminates G1 internal structures).
+    - `-Xms4m -Xmx32m`: Capped heap allocation (prevents JVM ergonomics from allocating 25% of physical RAM).
+    - `-XX:TieredStopAtLevel=1`: C1 JIT compiler tier; eliminates C2 profiling threads and cuts CodeCache memory.
+    - `-XX:CompressedClassSpaceSize=32m`: Drops virtual class pointer space from 1GB to 32MB.
+    - `-XX:ReservedCodeCacheSize=16m`: Constrains JIT code cache size.
+    - `-XX:-UsePerfData`: Disables shared memory `/tmp/hsperfdata_*` instrumentation counters.
+
 ### Code Style & Formatting
 - **Style Guide**: **Google Java Style Guide**.
 - **Formatter**: `jbang-fmt --style=google`.
