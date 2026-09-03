@@ -35,6 +35,10 @@
     "slowfetch": {
       "script-ref": "apps/slowfetch/Slowfetch.java",
       "description": "Terminal system information fetcher powered by OSHI."
+    },
+    "install-native": {
+      "script-ref": "apps/install-native/InstallNative.java",
+      "description": "Compile and export catalog tools as standalone zero-overhead native executables."
     }
   }
 }

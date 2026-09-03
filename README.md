@@ -546,6 +546,52 @@ A thorough, beautiful system information tool written in modern Java.
 ```
 ---
 
+## install-native
+
+`install-native` compiles and exports catalog tools as standalone zero-overhead GraalVM native binaries directly into `~/.jbang/bin` or a custom directory, bypassing shell script wrapper overhead for instant sub-10ms CLI execution.
+
+### Usage
+
+To compile and export all native-supported tools into `~/.jbang/bin`:
+
+```bash
+jbang install-native@alaurie
+```
+
+Or export specific tools:
+
+```bash
+jbang install-native@alaurie fetch hash jwt
+```
+
+Or export to a custom directory:
+
+```bash
+jbang install-native@alaurie -d ~/.local/bin fetch hash
+```
+
+Or list catalog tools and native compatibility:
+
+```bash
+jbang install-native@alaurie --list
+```
+
+### Options
+
+```
+Usage: install-native [-fhlvV] [-d=<targetDir>] [<apps>...]
+Compile and export catalog tools as standalone zero-overhead native executables.
+      [<apps>...]         Specific application aliases to export (e.g. fetch
+                            hash jwt). Defaults to all native-supported apps.
+  -d, --dir=<targetDir>   Target destination directory for native binaries.
+                            Default: ~/.jbang/bin
+  -f, --force             Overwrite existing binaries in the target directory.
+  -h, --help              Show this help message and exit.
+  -l, --list              List all available catalog applications and native
+                            compatibility.
+  -v, --verbose           Enable verbose output during native-image compilation.
+  -V, --version           Print version information and exit.
+```
 
 ## Development
 
