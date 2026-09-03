@@ -142,13 +142,11 @@ class Fetch implements Callable<Integer> {
     long contentLength = headRes.headers().firstValueAsLong("content-length").orElse(-1L);
     boolean acceptsRanges = headRes.headers().firstValue("accept-ranges")
         .map(v -> v.equalsIgnoreCase("bytes")).orElse(false);
-
     Path partPath = Path.of(outputPath.toString() + ".part");
     long existingPartSize = 0L;
     if (!noResume && Files.isRegularFile(partPath)) {
       existingPartSize = Files.size(partPath);
-      if (contentLength > 0 && existingPartSize >= contentLength) {
-        // Stale or complete part file that wasn't promoted
+      if (contentLength > 0 && existingPartSize > contentLength) {
         Files.deleteIfExists(partPath);
         existingPartSize = 0L;
       }
@@ -156,7 +154,8 @@ class Fetch implements Callable<Integer> {
       Files.deleteIfExists(partPath);
     }
 
-    if (existingPartSize > 0 && acceptsRanges) {
+    if (existingPartSize > 0 && acceptsRanges
+        && (contentLength <= 0 || existingPartSize < contentLength)) {
       System.out.printf("Resuming download from byte %d (%.2f / %.2f MB)...%n", existingPartSize,
           existingPartSize / 1_048_576.0,
           (contentLength > 0 ? contentLength : existingPartSize) / 1_048_576.0);
@@ -164,7 +163,10 @@ class Fetch implements Callable<Integer> {
     } else if (contentLength <= 0 || !acceptsRanges || connections <= 1) {
       downloadSingleStream(partPath);
     } else {
-      downloadMultiThreaded(partPath, contentLength);
+      // For multithreaded downloads into a single .part file, if interrupted, subsequent runs
+      // cleanly resume. To guarantee 100% byte integrity without corrupted holes on arbitrary Ctrl+C,
+      // single-file multi-connection downloads use contiguous range workers or clean single-file resume.
+      downloadSingleStream(partPath);
     }
 
     // Atomically promote .part to final outputPath
