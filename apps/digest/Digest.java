@@ -7,14 +7,17 @@
 //NATIVE_OPTIONS -O2 -march=native --no-fallback
 
 
-package hash;
+package digest;
 
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
@@ -33,10 +36,10 @@ import picocli.CommandLine.Parameters;
 /// Supports checking files, recursive directory manifests, string inputs, benchmark mode, stdin,
 /// and
 /// verification files.
-@Command(name = "hash", mixinStandardHelpOptions = true, version = "hash 1.1",
+@Command(name = "digest", mixinStandardHelpOptions = true, version = "digest 1.0",
     description = "Compute and verify cryptographic checksums for files or text input.")
 @SuppressWarnings("unused")
-class Hash implements Callable<Integer> {
+class Digest implements Callable<Integer> {
 
   @Option(names = {"-a", "--algorithm"},
       description = "Hash algorithm: MD5, SHA-1, SHA-256, SHA-512, SHA3-256, SHA3-512. Default: SHA-256.")
@@ -250,12 +253,24 @@ class Hash implements Callable<Integer> {
    */
   private String computeHashForPath(Path path) {
     try {
+      long totalBytes = Files.size(path);
+      // For large files (>250MB), delegate to hardware-accelerated system tools if available
+      if (totalBytes > 250 * 1024 * 1024) {
+        String systemHash = computeHashWithSystemTool(path, algorithm);
+        if (systemHash != null) {
+          return systemHash;
+        }
+      }
+
       var digest = MessageDigest.getInstance(algorithm);
-      try (var is = Files.newInputStream(path)) {
-        var buffer = new byte[64 * 1024];
-        int read;
-        while ((read = is.read(buffer)) != -1) {
-          digest.update(buffer, 0, read);
+      int bufferSize = (int) Math.min(8 * 1024 * 1024, Math.max(64 * 1024, totalBytes));
+      ByteBuffer buffer = ByteBuffer.allocateDirect(bufferSize);
+
+      try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
+        while (channel.read(buffer) > 0) {
+          buffer.flip();
+          digest.update(buffer);
+          buffer.clear();
         }
       }
       return HexFormat.of().formatHex(digest.digest());
@@ -263,6 +278,56 @@ class Hash implements Callable<Integer> {
       System.err.printf("Error hashing file '%s': %s%n", path, e.getMessage());
       return null;
     }
+  }
+
+  private String computeHashWithSystemTool(Path file, String algo) {
+    String algoUpper = algo.toUpperCase(Locale.ROOT).replace("-", "");
+    boolean isWindows = System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("win");
+    if (isWindows) {
+      return null;
+    }
+
+    String tool = switch (algoUpper) {
+      case "SHA256" -> "sha256sum";
+      case "SHA512" -> "sha512sum";
+      case "MD5" -> "md5sum";
+      case "SHA1" -> "sha1sum";
+      default -> null;
+    };
+    if (tool == null) {
+      return null;
+    }
+
+    try {
+      ProcessBuilder pb = new ProcessBuilder(tool, file.toAbsolutePath().toString());
+      pb.redirectError(ProcessBuilder.Redirect.DISCARD);
+      Process process = pb.start();
+      String output = new String(process.getInputStream().readAllBytes()).trim();
+      process.waitFor();
+      if (process.exitValue() == 0 && !output.isBlank()) {
+        String[] tokens = output.split("\\s+");
+        if (tokens.length >= 1 && isValidHexHash(tokens[0])) {
+          return tokens[0];
+        }
+      }
+    } catch (Exception _) {
+      // fallback to pure Java
+    }
+    return null;
+  }
+
+  private static boolean isValidHexHash(String s) {
+    int len = s.length();
+    if (len != 32 && len != 40 && len != 64 && len != 96 && len != 128) {
+      return false;
+    }
+    for (int i = 0; i < len; i++) {
+      char c = s.charAt(i);
+      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /**

@@ -250,42 +250,40 @@ Find and terminate processes listening on specified network ports.
   -V, --version           Print version information and exit.
 ```
 
+## digest
 
-## hash
-
-`hash` is a CLI utility to compute and verify cryptographic checksums (MD5, SHA-1, SHA-256, SHA-512, SHA3-256, SHA3-512) for files, string text, or stdin.
+`digest` is a CLI utility to compute and verify cryptographic checksums (MD5, SHA-1, SHA-256, SHA-512, SHA3-256, SHA3-512) for files, string text, or stdin.
 
 ### Usage
 
 To run it via jbang from this catalog repository:
 
 ```bash
-jbang hash@alaurie myfile.tar.gz
+jbang digest@alaurie myfile.tar.gz
 ```
 
 Or compute an SHA-512 checksum of string text:
 
 ```bash
-jbang hash@alaurie -a SHA-512 -t "my-password-string"
+jbang digest@alaurie -a SHA-512 -t "my-password-string"
 ```
 
 Or verify files against a checksum file:
 
 ```bash
-jbang hash@alaurie -c checksums.sha256
+jbang digest@alaurie -c checksums.sha256
 ```
 
 Or, if you clone the repository locally:
 
 ```bash
-jbang hash
+jbang digest
 ```
-
 ### Options
 
 ```
-Usage: hash [-chrV] [-a=<algorithm>] [-c=<checkFile>] [-t=<textInput>]
-            [--benchmark] [<file>...]
+Usage: digest [-chrV] [-a=<algorithm>] [-c=<checkFile>] [-t=<textInput>]
+              [--benchmark] [<file>...]
 Compute and verify cryptographic checksums for files or text input.
       [<file>...]           One or more file paths or directories to hash, or
                               '-' for stdin.
@@ -562,20 +560,20 @@ jbang install-native@alaurie
 Or export specific tools:
 
 ```bash
-jbang install-native@alaurie fetch hash jwt
+jbang install-native@alaurie fetch digest jwt
 ```
 
 Or export to a custom directory:
 
 ```bash
-jbang install-native@alaurie -d ~/.local/bin fetch hash
+jbang install-native@alaurie -d ~/.local/bin fetch digest
 ```
 
 Or clean / remove exported native binaries from `~/.jbang/bin`:
 
 ```bash
 jbang install-native@alaurie --clean
-jbang install-native@alaurie --clean fetch hash
+jbang install-native@alaurie --clean fetch digest
 ```
 
 Or list catalog tools and native compatibility:
@@ -590,7 +588,7 @@ jbang install-native@alaurie --list
 Usage: install-native [-cfhlvV] [-d=<targetDir>] [<apps>...]
 Compile, export, and manage standalone zero-overhead native executables.
       [<apps>...]            Specific application aliases to export or clean (e.
-                               g. fetch hash jwt). Defaults to all
+                               g. fetch digest jwt). Defaults to all
                                native-supported apps.
   -c, --clean, --uninstall   Remove exported native binaries from the target
                                destination directory.

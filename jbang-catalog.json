@@ -20,8 +20,8 @@
       "script-ref": "apps/killport/Killport.java",
       "description": "Find and terminate processes listening on specified network ports."
     },
-    "hash": {
-      "script-ref": "apps/hash/Hash.java",
+    "digest": {
+      "script-ref": "apps/digest/Digest.java",
       "description": "Compute and verify cryptographic checksums for files or text input."
     },
     "fetch": {
