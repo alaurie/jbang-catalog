@@ -6,7 +6,7 @@
 //DEPS org.slf4j:slf4j-nop:2.0.16
 //JAVAC_OPTIONS -proc:full
 //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms4m -Xmx32m -XX:TieredStopAtLevel=1 -XX:CompressedClassSpaceSize=32m -XX:ReservedCodeCacheSize=16m -XX:-UsePerfData
-//NATIVE_OPTIONS -O2 --no-fallback
+//NATIVE_OPTIONS -O2 -march=native --no-fallback
 
 package slowfetch;
 

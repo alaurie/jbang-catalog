@@ -4,7 +4,7 @@
 //DEPS info.picocli:picocli-codegen:4.7.7
 //JAVAC_OPTIONS -proc:full
 //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms16m -Xmx64m -XX:TieredStopAtLevel=1
-//NATIVE_OPTIONS -O2 --no-fallback
+//NATIVE_OPTIONS -O2 -march=native --no-fallback
 
 
 package serve;
