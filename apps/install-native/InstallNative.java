@@ -2,7 +2,6 @@
 //JAVA 25+
 //DEPS info.picocli:picocli:4.7.7
 //DEPS info.picocli:picocli-codegen:4.7.7
-//DEPS tools.jackson.core:jackson-databind:3.2.1
 //JAVAC_OPTIONS -proc:full
 //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms4m -Xmx32m -XX:TieredStopAtLevel=1 -XX:CompressedClassSpaceSize=32m -XX:ReservedCodeCacheSize=16m -XX:-UsePerfData
 //NATIVE_OPTIONS -O2 -march=native --no-fallback
@@ -30,8 +29,6 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
 
 /// Cross-platform utility to compile, export, and manage standalone GraalVM native binaries.
 ///
@@ -55,7 +52,7 @@ class InstallNative implements Callable<Integer> {
       String supportReason) {}
 
   @Parameters(arity = "0..*", paramLabel = "<apps>",
-      description = "Specific application aliases to export or clean (e.g. fetch hash jwt). Defaults to all native-supported apps.")
+      description = "Specific application aliases to export or clean (e.g. fetch digest jwt). Defaults to all native-supported apps.")
   private List<String> requestedApps = new ArrayList<>();
 
   @Option(names = {"-d", "--dir"},
@@ -78,7 +75,6 @@ class InstallNative implements Callable<Integer> {
       description = "Enable verbose output during native-image compilation.")
   private boolean verbose;
 
-  private final ObjectMapper objectMapper = new ObjectMapper();
 
   @Override
   public Integer call() throws Exception {
@@ -211,22 +207,27 @@ class InstallNative implements Callable<Integer> {
     }
 
     try {
-      JsonNode root = objectMapper.readTree(jsonContent);
-      JsonNode aliases = root.get("aliases");
-      if (aliases != null && aliases.isObject()) {
-        aliases.properties().forEach(entry -> {
-          String alias = entry.getKey();
-          JsonNode node = entry.getValue();
-          String scriptRef = node.has("script-ref") ? node.get("script-ref").asText() : "";
-          String description = node.has("description") ? node.get("description").asText() : "";
+      Object parsed = parseJson(jsonContent);
+      if (parsed instanceof Map<?, ?> root) {
+        Object aliasesObj = root.get("aliases");
+        if (aliasesObj instanceof Map<?, ?> aliases) {
+          for (var entry : aliases.entrySet()) {
+            String alias = String.valueOf(entry.getKey());
+            if (entry.getValue() instanceof Map<?, ?> node) {
+              String scriptRef =
+                  node.containsKey("script-ref") ? String.valueOf(node.get("script-ref")) : "";
+              String description =
+                  node.containsKey("description") ? String.valueOf(node.get("description")) : "";
 
-          // Don't export install-native into itself
-          if (!"install-native".equalsIgnoreCase(alias)) {
-            var compatibility = evaluateNativeCompatibility(alias, scriptRef);
-            apps.put(alias.toLowerCase(Locale.ROOT), new AppMetadata(alias, scriptRef, description,
-                compatibility.supported(), compatibility.reason()));
+              // Don't export install-native into itself
+              if (!"install-native".equalsIgnoreCase(alias)) {
+                var compatibility = evaluateNativeCompatibility(alias, scriptRef);
+                apps.put(alias.toLowerCase(Locale.ROOT), new AppMetadata(alias, scriptRef,
+                    description, compatibility.supported(), compatibility.reason()));
+              }
+            }
           }
-        });
+        }
       }
     } catch (Exception e) {
       if (verbose) {
@@ -234,6 +235,171 @@ class InstallNative implements Callable<Integer> {
       }
     }
     return apps;
+  }
+
+  private static Object parseJson(String json) {
+    return new JsonParser(json.trim()).parse();
+  }
+
+  private static class JsonParser {
+    private final String src;
+    private int pos;
+
+    JsonParser(String src) {
+      this.src = src;
+    }
+
+    Object parse() {
+      skipWhitespace();
+      Object val = parseValue();
+      skipWhitespace();
+      return val;
+    }
+
+    private Object parseValue() {
+      skipWhitespace();
+      if (pos >= src.length())
+        return null;
+      char c = src.charAt(pos);
+      if (c == '{')
+        return parseObject();
+      if (c == '[')
+        return parseArray();
+      if (c == '"')
+        return parseString();
+      if (c == 't' || c == 'f')
+        return parseBoolean();
+      if (c == 'n')
+        return parseNull();
+      if (c == '-' || (c >= '0' && c <= '9'))
+        return parseNumber();
+      throw new IllegalArgumentException("Unexpected char: " + c);
+    }
+
+    private Map<String, Object> parseObject() {
+      Map<String, Object> map = new LinkedHashMap<>();
+      pos++;
+      skipWhitespace();
+      if (pos < src.length() && src.charAt(pos) == '}') {
+        pos++;
+        return map;
+      }
+      while (pos < src.length()) {
+        skipWhitespace();
+        String key = parseString();
+        skipWhitespace();
+        if (pos < src.length() && src.charAt(pos) == ':') {
+          pos++;
+        }
+        Object val = parseValue();
+        map.put(key, val);
+        skipWhitespace();
+        if (pos < src.length() && src.charAt(pos) == ',') {
+          pos++;
+        } else if (pos < src.length() && src.charAt(pos) == '}') {
+          pos++;
+          break;
+        }
+      }
+      return map;
+    }
+
+    private List<Object> parseArray() {
+      List<Object> list = new ArrayList<>();
+      pos++;
+      skipWhitespace();
+      if (pos < src.length() && src.charAt(pos) == ']') {
+        pos++;
+        return list;
+      }
+      while (pos < src.length()) {
+        list.add(parseValue());
+        skipWhitespace();
+        if (pos < src.length() && src.charAt(pos) == ',') {
+          pos++;
+        } else if (pos < src.length() && src.charAt(pos) == ']') {
+          pos++;
+          break;
+        }
+      }
+      return list;
+    }
+
+    private String parseString() {
+      pos++;
+      var sb = new StringBuilder();
+      while (pos < src.length()) {
+        char c = src.charAt(pos++);
+        if (c == '"') {
+          return sb.toString();
+        }
+        if (c == '\\' && pos < src.length()) {
+          char esc = src.charAt(pos++);
+          switch (esc) {
+            case '"' -> sb.append('"');
+            case '\\' -> sb.append('\\');
+            case '/' -> sb.append('/');
+            case 'b' -> sb.append('\b');
+            case 'f' -> sb.append('\f');
+            case 'n' -> sb.append('\n');
+            case 'r' -> sb.append('\r');
+            case 't' -> sb.append('\t');
+            case 'u' -> {
+              if (pos + 4 <= src.length()) {
+                sb.append((char) Integer.parseInt(src.substring(pos, pos + 4), 16));
+                pos += 4;
+              }
+            }
+            default -> sb.append(esc);
+          }
+        } else {
+          sb.append(c);
+        }
+      }
+      return sb.toString();
+    }
+
+    private Boolean parseBoolean() {
+      if (src.startsWith("true", pos)) {
+        pos += 4;
+        return Boolean.TRUE;
+      }
+      if (src.startsWith("false", pos)) {
+        pos += 5;
+        return Boolean.FALSE;
+      }
+      throw new IllegalArgumentException("Invalid boolean");
+    }
+
+    private Object parseNull() {
+      if (src.startsWith("null", pos)) {
+        pos += 4;
+        return null;
+      }
+      throw new IllegalArgumentException("Invalid null");
+    }
+
+    private Number parseNumber() {
+      int start = pos;
+      if (src.charAt(pos) == '-')
+        pos++;
+      while (pos < src.length()
+          && (Character.isDigit(src.charAt(pos)) || src.charAt(pos) == '.' || src.charAt(pos) == 'e'
+              || src.charAt(pos) == 'E' || src.charAt(pos) == '+' || src.charAt(pos) == '-')) {
+        pos++;
+      }
+      String numStr = src.substring(start, pos);
+      if (numStr.contains(".") || numStr.contains("e") || numStr.contains("E")) {
+        return Double.parseDouble(numStr);
+      }
+      return Long.parseLong(numStr);
+    }
+
+    private void skipWhitespace() {
+      while (pos < src.length() && Character.isWhitespace(src.charAt(pos))) {
+        pos++;
+      }
+    }
   }
 
   private String loadCatalogJson() {
@@ -404,7 +570,7 @@ class InstallNative implements Callable<Integer> {
     System.out.println();
     System.out.println("Usage:");
     System.out.println("  jbang install-native@alaurie              # Install all native apps");
-    System.out.println("  jbang install-native@alaurie fetch hash   # Install specific apps");
+    System.out.println("  jbang install-native@alaurie fetch digest   # Install specific apps");
     System.out
         .println("  jbang install-native@alaurie --clean      # Remove installed native binaries");
   }
