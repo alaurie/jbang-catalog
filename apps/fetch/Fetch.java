@@ -60,7 +60,8 @@ class Fetch implements Callable<Integer> {
   private String explicitHash;
 
   private static final List<String> CANDIDATE_MANIFESTS =
-      List.of("SHA512SUMS", "SHA256SUMS", "CHECKSUM", "CHECKSUMS", "MD5SUMS");
+      List.of("SHA512SUMS", "SHA256SUMS", "SHA512", "SHA256", "MD5SUMS", "MD5", "CHECKSUMS",
+          "CHECKSUM", "sha512sums.txt", "sha256sums.txt", "sha512sum.txt", "sha256sum.txt");
 
   private final HttpClient client = HttpClient.newBuilder()
       .followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(Duration.ofSeconds(15)).build();
@@ -284,18 +285,71 @@ class Fetch implements Callable<Integer> {
 
   private String determineAlgorithm(String manifestName) {
     String lower = manifestName.toLowerCase();
-    if (lower.contains("sha512"))
+    if (lower.contains("sha512") || lower.contains("sha-512")) {
       return "SHA-512";
-    if (lower.contains("md5"))
+    }
+    if (lower.contains("sha384") || lower.contains("sha-384")) {
+      return "SHA-384";
+    }
+    if (lower.contains("sha1") || lower.contains("sha-1")) {
+      return "SHA-1";
+    }
+    if (lower.contains("md5")) {
       return "MD5";
+    }
     return "SHA-256";
   }
 
   private String extractHash(String manifestBody, String filename) {
-    return manifestBody.lines().map(String::trim)
-        .filter(line -> !line.startsWith("#") && !line.isBlank())
-        .filter(line -> line.endsWith(filename) || line.split("\\s+").length == 1).findFirst()
-        .map(line -> line.split("\\s+")[0]).orElse(null);
+    for (String line : manifestBody.lines().map(String::trim).toList()) {
+      if (line.isBlank() || line.startsWith("#")) {
+        continue;
+      }
+      // Format 1: BSD style -> "SHA256 (filename) = hash" or "MD5(filename)= hash"
+      if (line.contains("(") && line.contains(")") && line.contains("=")) {
+        int openParen = line.indexOf('(');
+        int closeParen = line.lastIndexOf(')');
+        int equals = line.lastIndexOf('=');
+        if (openParen < closeParen && closeParen < equals) {
+          String target = line.substring(openParen + 1, closeParen).trim();
+          // Strip potential directory prefixes in the manifest target path
+          if (target.endsWith("/" + filename) || target.equals(filename)) {
+            return line.substring(equals + 1).trim();
+          }
+        }
+      }
+
+      // Format 2: GNU/coreutils style -> "<hash> [* ]<filename>" or "<hash>  <path/to/filename>"
+      String[] tokens = line.split("\\s+");
+      if (tokens.length >= 2) {
+        String hashToken = tokens[0];
+        String pathToken = line.substring(hashToken.length()).trim();
+        if (pathToken.startsWith("*")) {
+          pathToken = pathToken.substring(1).trim();
+        }
+        if (pathToken.equals(filename) || pathToken.endsWith("/" + filename)) {
+          return hashToken;
+        }
+      } else if (tokens.length == 1 && isValidHexHash(tokens[0])) {
+        // Single hash in file (e.g. filename.sha256 containing just the hash)
+        return tokens[0];
+      }
+    }
+    return null;
+  }
+
+  private static boolean isValidHexHash(String s) {
+    int len = s.length();
+    if (len != 32 && len != 40 && len != 64 && len != 96 && len != 128) {
+      return false;
+    }
+    for (int i = 0; i < len; i++) {
+      char c = s.charAt(i);
+      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+        return false;
+      }
+    }
+    return true;
   }
 
   private String computeFileHash(Path file, String algorithm) throws Exception {
