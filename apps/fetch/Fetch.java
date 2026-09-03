@@ -153,6 +153,15 @@ class Fetch implements Callable<Integer> {
     } else if (noResume) {
       Files.deleteIfExists(partPath);
     }
+    String streamedHash = null;
+    MessageDigest onTheFlyDigest = null;
+    if (expectedHash != null && existingPartSize == 0L) {
+      try {
+        onTheFlyDigest = MessageDigest.getInstance(expectedHash.algorithm());
+      } catch (Exception _) {
+        onTheFlyDigest = null;
+      }
+    }
 
     if (existingPartSize > 0 && acceptsRanges
         && (contentLength <= 0 || existingPartSize < contentLength)) {
@@ -161,12 +170,12 @@ class Fetch implements Callable<Integer> {
           (contentLength > 0 ? contentLength : existingPartSize) / 1_048_576.0);
       downloadResumedStream(partPath, existingPartSize, contentLength);
     } else if (contentLength <= 0 || !acceptsRanges || connections <= 1) {
-      downloadSingleStream(partPath);
+      streamedHash = downloadSingleStream(partPath, onTheFlyDigest);
     } else {
       // For multithreaded downloads into a single .part file, if interrupted, subsequent runs
       // cleanly resume. To guarantee 100% byte integrity without corrupted holes on arbitrary Ctrl+C,
       // single-file multi-connection downloads use contiguous range workers or clean single-file resume.
-      downloadSingleStream(partPath);
+      streamedHash = downloadSingleStream(partPath, onTheFlyDigest);
     }
 
     // Atomically promote .part to final outputPath
@@ -180,7 +189,7 @@ class Fetch implements Callable<Integer> {
     System.out.println("Saved: " + outputPath.toAbsolutePath());
 
     if (expectedHash != null || !skipChecksum) {
-      boolean verified = verifyAutoChecksum(expectedHash);
+      boolean verified = verifyAutoChecksum(expectedHash, streamedHash);
       if (!verified) {
         return 1;
       }
@@ -226,7 +235,7 @@ class Fetch implements Callable<Integer> {
     return null;
   }
 
-  private boolean verifyAutoChecksum(ExpectedHash expectedHash) {
+  private boolean verifyAutoChecksum(ExpectedHash expectedHash, String streamedHash) {
     if (expectedHash == null) {
       System.out.println("No matching checksum manifest detected on remote server.");
       return true;
@@ -237,7 +246,10 @@ class Fetch implements Callable<Integer> {
     System.out.print("Verifying checksum... ");
 
     try {
-      String actualHash = computeFileHash(outputPath, expectedHash.algorithm());
+      String actualHash = streamedHash;
+      if (actualHash == null) {
+        actualHash = computeFileHash(outputPath, expectedHash.algorithm());
+      }
       if (expectedHash.hash().equalsIgnoreCase(actualHash)) {
         System.out.println("OK");
         System.out.println("Hash: " + actualHash);
@@ -254,7 +266,7 @@ class Fetch implements Callable<Integer> {
     }
   }
 
-  private void downloadSingleStream(Path partPath) throws Exception {
+  private String downloadSingleStream(Path partPath, MessageDigest digest) throws Exception {
     HttpRequest req = HttpRequest.newBuilder(uri).GET().build();
     HttpResponse<InputStream> res = client.send(req, HttpResponse.BodyHandlers.ofInputStream());
 
@@ -264,13 +276,17 @@ class Fetch implements Callable<Integer> {
         FileChannel out = FileChannel.open(partPath, StandardOpenOption.CREATE,
             StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
 
-      byte[] buf = new byte[64 * 1024];
+      byte[] buf = new byte[128 * 1024];
       int read;
       while ((read = in.read(buf)) != -1) {
         out.write(ByteBuffer.wrap(buf, 0, read));
+        if (digest != null) {
+          digest.update(buf, 0, read);
+        }
         pb.stepBy(read);
       }
     }
+    return digest != null ? HexFormat.of().formatHex(digest.digest()) : null;
   }
 
   private void downloadResumedStream(Path partPath, long startOffset, long totalSize)
@@ -283,7 +299,7 @@ class Fetch implements Callable<Integer> {
     if (status != 206 && status != 200) {
       System.err.println("Warning: Server rejected range request (HTTP " + status
           + "). Starting from beginning...");
-      downloadSingleStream(partPath);
+      downloadSingleStream(partPath, null);
       return;
     }
 
@@ -436,12 +452,20 @@ class Fetch implements Callable<Integer> {
   }
 
   private String computeFileHash(Path file, String algorithm) throws Exception {
+    long totalBytes = Files.size(file);
     MessageDigest digest = MessageDigest.getInstance(algorithm);
-    try (InputStream is = Files.newInputStream(file)) {
-      byte[] buffer = new byte[1024 * 1024];
-      int read;
-      while ((read = is.read(buffer)) != -1) {
-        digest.update(buffer, 0, read);
+    int bufferSize = 8 * 1024 * 1024; // 8 MB high-throughput direct buffer
+    ByteBuffer buffer = ByteBuffer.allocateDirect(bufferSize);
+
+    String taskName = "Verifying " + algorithm;
+    try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ);
+        ProgressBar pb = new ProgressBar(taskName, totalBytes, 0L)) {
+      while (channel.read(buffer) > 0) {
+        buffer.flip();
+        int remaining = buffer.remaining();
+        digest.update(buffer);
+        buffer.clear();
+        pb.stepBy(remaining);
       }
     }
     return HexFormat.of().formatHex(digest.digest());
