@@ -2,7 +2,6 @@
 //JAVA 25+
 //DEPS info.picocli:picocli:4.7.7
 //DEPS info.picocli:picocli-codegen:4.7.7
-//DEPS tools.jackson.core:jackson-databind:3.2.1
 //JAVAC_OPTIONS -proc:full
 //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms4m -Xmx32m -XX:TieredStopAtLevel=1 -XX:CompressedClassSpaceSize=32m -XX:ReservedCodeCacheSize=16m -XX:-UsePerfData
 //NATIVE_OPTIONS -O2 -march=native --no-fallback
@@ -22,14 +21,15 @@ import java.util.Base64;
 import java.util.concurrent.Callable;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
-import tools.jackson.databind.SerializationFeature;
-import tools.jackson.databind.json.JsonMapper;
 
 /// CLI utility to inspect and decode JSON Web Tokens (JWT) safely off-line.
 ///
@@ -42,8 +42,6 @@ import tools.jackson.databind.json.JsonMapper;
 @SuppressWarnings("unused")
 class Jwt implements Callable<Integer> {
 
-  private static final ObjectMapper MAPPER =
-      JsonMapper.builder().enable(SerializationFeature.INDENT_OUTPUT).build();
   private static final DateTimeFormatter DATE_FORMATTER =
       DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z");
 
@@ -127,26 +125,29 @@ class Jwt implements Callable<Integer> {
       return 0;
     }
 
-    var payloadNode = MAPPER.readTree(payloadJson);
+    Map<String, Object> payloadMap = parseJsonObject(payloadJson);
+    if (payloadMap == null) {
+      payloadMap = Map.of();
+    }
 
     if (exportEnv) {
-      exportPayloadAsEnv(payloadNode);
+      exportPayloadAsEnv(payloadMap);
       return 0;
     }
 
     var nowSec = Instant.now().getEpochSecond();
-    var expNode = payloadNode.get("exp");
+    var expObj = payloadMap.get("exp");
     var isExpired = false;
 
-    if (expNode != null && expNode.isNumber()) {
-      var expSec = expNode.asLong();
+    if (expObj instanceof Number num) {
+      var expSec = num.longValue();
       if (nowSec > expSec) {
         isExpired = true;
       }
     }
 
     if (checkExp) {
-      if (expNode == null) {
+      if (expObj == null) {
         System.out.println("No 'exp' claim present in JWT.");
         return 0;
       }
@@ -166,28 +167,28 @@ class Jwt implements Callable<Integer> {
     System.out.println(prettyPrintJson(payloadJson));
 
     System.out.println("\n=== CLAIMS SUMMARY ===");
-    printClaimTimestamp(payloadNode, "iat", "Issued At", nowSec);
-    printClaimTimestamp(payloadNode, "nbf", "Not Before", nowSec);
-    printClaimTimestamp(payloadNode, "exp", "Expiration", nowSec);
-    if (payloadNode.has("iss")) {
-      System.out.println("Issuer (iss):    " + payloadNode.get("iss").asString());
+    printClaimTimestamp(payloadMap, "iat", "Issued At", nowSec);
+    printClaimTimestamp(payloadMap, "nbf", "Not Before", nowSec);
+    printClaimTimestamp(payloadMap, "exp", "Expiration", nowSec);
+    if (payloadMap.containsKey("iss")) {
+      System.out.println("Issuer (iss):    " + payloadMap.get("iss"));
     }
-    if (payloadNode.has("sub")) {
-      System.out.println("Subject (sub):   " + payloadNode.get("sub").asString());
+    if (payloadMap.containsKey("sub")) {
+      System.out.println("Subject (sub):   " + payloadMap.get("sub"));
     }
-    if (payloadNode.has("aud")) {
-      System.out.println("Audience (aud):  " + payloadNode.get("aud"));
+    if (payloadMap.containsKey("aud")) {
+      System.out.println("Audience (aud):  " + formatJsonValue(payloadMap.get("aud")));
     }
-
     System.out.println("\n=== SIGNATURE ===");
     if (signatureStr.isBlank()) {
       System.out.println("[Unsigned Token]");
     } else {
       System.out.println(signatureStr);
       if (secret != null && !secret.isBlank()) {
-        var headerNode = MAPPER.readTree(headerJson);
-        var algNode = headerNode.get("alg");
-        var alg = algNode != null ? algNode.asString() : "";
+        var headerMap = parseJsonObject(headerJson);
+        var alg =
+            (headerMap != null && headerMap.get("alg") != null) ? headerMap.get("alg").toString()
+                : "";
         var verified = verifyHmacSignature(parts[0] + "." + parts[1], signatureStr, secret, alg);
         if (verified) {
           System.out.println("Signature Verification: OK (HMAC " + alg + ")");
@@ -235,14 +236,14 @@ class Jwt implements Callable<Integer> {
     }
   }
 
-  private static void exportPayloadAsEnv(JsonNode payload) {
+  private static void exportPayloadAsEnv(Map<String, Object> payload) {
     var isWindows = System.getProperty("os.name", "").toLowerCase().contains("win");
-    var propertyNames = payload.propertyNames();
-    for (var key : propertyNames) {
+    for (var entry : payload.entrySet()) {
+      var key = entry.getKey();
       var envKey =
           key.replaceAll("([a-z])([A-Z])", "$1_$2").replaceAll("[^a-zA-Z0-9_]", "_").toUpperCase();
-      var value = payload.get(key);
-      var valStr = value.isTextual() ? value.asString() : value.toString();
+      var value = entry.getValue();
+      var valStr = value instanceof String s ? s : formatJsonValue(value);
 
       if (isWindows) {
         System.out.printf("SET %s=%s%n", envKey, valStr);
@@ -303,10 +304,248 @@ class Jwt implements Callable<Integer> {
    */
   private static String prettyPrintJson(String rawJson) {
     try {
-      var tree = MAPPER.readTree(rawJson);
-      return MAPPER.writeValueAsString(tree);
+      Object parsed = parseJson(rawJson.trim());
+      return prettyFormat(parsed, 0);
     } catch (Exception e) {
       return rawJson;
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Map<String, Object> parseJsonObject(String json) {
+    try {
+      Object obj = parseJson(json.trim());
+      return (obj instanceof Map<?, ?> m) ? (Map<String, Object>) m : null;
+    } catch (Exception _) {
+      return null;
+    }
+  }
+
+  private static Object parseJson(String json) {
+    return new JsonParser(json).parse();
+  }
+
+  private static String formatJsonValue(Object val) {
+    if (val == null)
+      return "null";
+    if (val instanceof String s)
+      return "\"" + escapeJson(s) + "\"";
+    if (val instanceof Number || val instanceof Boolean)
+      return val.toString();
+    return prettyFormat(val, 0);
+  }
+
+  private static String prettyFormat(Object obj, int indent) {
+    String pad = "  ".repeat(indent);
+    String innerPad = "  ".repeat(indent + 1);
+
+    if (obj == null) {
+      return "null";
+    }
+    if (obj instanceof String s) {
+      return "\"" + escapeJson(s) + "\"";
+    }
+    if (obj instanceof Number || obj instanceof Boolean) {
+      return obj.toString();
+    }
+    if (obj instanceof Map<?, ?> map) {
+      if (map.isEmpty())
+        return "{}";
+      var sb = new StringBuilder("{\n");
+      int i = 0;
+      for (var entry : map.entrySet()) {
+        sb.append(innerPad).append("\"").append(escapeJson(String.valueOf(entry.getKey())))
+            .append("\": ");
+        sb.append(prettyFormat(entry.getValue(), indent + 1));
+        if (++i < map.size()) {
+          sb.append(",");
+        }
+        sb.append("\n");
+      }
+      sb.append(pad).append("}");
+      return sb.toString();
+    }
+    if (obj instanceof List<?> list) {
+      if (list.isEmpty())
+        return "[]";
+      var sb = new StringBuilder("[\n");
+      for (int i = 0; i < list.size(); i++) {
+        sb.append(innerPad).append(prettyFormat(list.get(i), indent + 1));
+        if (i + 1 < list.size()) {
+          sb.append(",");
+        }
+        sb.append("\n");
+      }
+      sb.append(pad).append("]");
+      return sb.toString();
+    }
+    return String.valueOf(obj);
+  }
+
+  private static String escapeJson(String s) {
+    return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r")
+        .replace("\t", "\\t");
+  }
+
+  /// Lightweight recursive-descent JSON parser for standard JSON structures.
+  private static class JsonParser {
+    private final String src;
+    private int pos;
+
+    JsonParser(String src) {
+      this.src = src;
+    }
+
+    Object parse() {
+      skipWhitespace();
+      Object val = parseValue();
+      skipWhitespace();
+      return val;
+    }
+
+    private Object parseValue() {
+      skipWhitespace();
+      if (pos >= src.length())
+        return null;
+      char c = src.charAt(pos);
+      if (c == '{')
+        return parseObject();
+      if (c == '[')
+        return parseArray();
+      if (c == '"')
+        return parseString();
+      if (c == 't' || c == 'f')
+        return parseBoolean();
+      if (c == 'n')
+        return parseNull();
+      if (c == '-' || (c >= '0' && c <= '9'))
+        return parseNumber();
+      throw new IllegalArgumentException("Unexpected char: " + c);
+    }
+
+    private Map<String, Object> parseObject() {
+      Map<String, Object> map = new LinkedHashMap<>();
+      pos++; // skip '{'
+      skipWhitespace();
+      if (pos < src.length() && src.charAt(pos) == '}') {
+        pos++;
+        return map;
+      }
+      while (pos < src.length()) {
+        skipWhitespace();
+        String key = parseString();
+        skipWhitespace();
+        if (pos < src.length() && src.charAt(pos) == ':') {
+          pos++;
+        }
+        Object val = parseValue();
+        map.put(key, val);
+        skipWhitespace();
+        if (pos < src.length() && src.charAt(pos) == ',') {
+          pos++;
+        } else if (pos < src.length() && src.charAt(pos) == '}') {
+          pos++;
+          break;
+        }
+      }
+      return map;
+    }
+
+    private List<Object> parseArray() {
+      List<Object> list = new ArrayList<>();
+      pos++; // skip '['
+      skipWhitespace();
+      if (pos < src.length() && src.charAt(pos) == ']') {
+        pos++;
+        return list;
+      }
+      while (pos < src.length()) {
+        list.add(parseValue());
+        skipWhitespace();
+        if (pos < src.length() && src.charAt(pos) == ',') {
+          pos++;
+        } else if (pos < src.length() && src.charAt(pos) == ']') {
+          pos++;
+          break;
+        }
+      }
+      return list;
+    }
+
+    private String parseString() {
+      pos++; // skip opening quote
+      var sb = new StringBuilder();
+      while (pos < src.length()) {
+        char c = src.charAt(pos++);
+        if (c == '"') {
+          return sb.toString();
+        }
+        if (c == '\\' && pos < src.length()) {
+          char esc = src.charAt(pos++);
+          switch (esc) {
+            case '"' -> sb.append('"');
+            case '\\' -> sb.append('\\');
+            case '/' -> sb.append('/');
+            case 'b' -> sb.append('\b');
+            case 'f' -> sb.append('\f');
+            case 'n' -> sb.append('\n');
+            case 'r' -> sb.append('\r');
+            case 't' -> sb.append('\t');
+            case 'u' -> {
+              if (pos + 4 <= src.length()) {
+                sb.append((char) Integer.parseInt(src.substring(pos, pos + 4), 16));
+                pos += 4;
+              }
+            }
+            default -> sb.append(esc);
+          }
+        } else {
+          sb.append(c);
+        }
+      }
+      return sb.toString();
+    }
+
+    private Boolean parseBoolean() {
+      if (src.startsWith("true", pos)) {
+        pos += 4;
+        return Boolean.TRUE;
+      }
+      if (src.startsWith("false", pos)) {
+        pos += 5;
+        return Boolean.FALSE;
+      }
+      throw new IllegalArgumentException("Invalid boolean");
+    }
+
+    private Object parseNull() {
+      if (src.startsWith("null", pos)) {
+        pos += 4;
+        return null;
+      }
+      throw new IllegalArgumentException("Invalid null");
+    }
+
+    private Number parseNumber() {
+      int start = pos;
+      if (src.charAt(pos) == '-')
+        pos++;
+      while (pos < src.length()
+          && (Character.isDigit(src.charAt(pos)) || src.charAt(pos) == '.' || src.charAt(pos) == 'e'
+              || src.charAt(pos) == 'E' || src.charAt(pos) == '+' || src.charAt(pos) == '-')) {
+        pos++;
+      }
+      String numStr = src.substring(start, pos);
+      if (numStr.contains(".") || numStr.contains("e") || numStr.contains("E")) {
+        return Double.parseDouble(numStr);
+      }
+      return Long.parseLong(numStr);
+    }
+
+    private void skipWhitespace() {
+      while (pos < src.length() && Character.isWhitespace(src.charAt(pos))) {
+        pos++;
+      }
     }
   }
 
@@ -318,11 +557,13 @@ class Jwt implements Callable<Integer> {
    * @param label Display label.
    * @param nowSec Current epoch timestamp in seconds.
    */
-  private static void printClaimTimestamp(JsonNode node, String key, String label, long nowSec) {
-    if (!node.has(key) || !node.get(key).isNumber()) {
+  private static void printClaimTimestamp(Map<String, Object> payload, String key, String label,
+      long nowSec) {
+    var val = payload.get(key);
+    if (!(val instanceof Number num)) {
       return;
     }
-    var epochSec = node.get(key).asLong();
+    var epochSec = num.longValue();
     var zdt = ZonedDateTime.ofInstant(Instant.ofEpochSecond(epochSec), ZoneId.systemDefault());
     var formattedDate = zdt.format(DATE_FORMATTER);
     var diffSec = epochSec - nowSec;
