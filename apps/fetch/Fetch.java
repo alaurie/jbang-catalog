@@ -15,8 +15,10 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.time.Duration;
@@ -50,6 +52,9 @@ class Fetch implements Callable<Integer> {
   @Option(names = {"-c", "--connections"}, defaultValue = "4",
       description = "Concurrent chunk download connections")
   private int connections;
+  @Option(names = {"--no-resume"},
+      description = "Disable automatic download resumption and start fresh")
+  private boolean noResume;
 
   @Option(names = {"--no-checksum"},
       description = "Skip automatic checksum probing and verification")
@@ -106,18 +111,21 @@ class Fetch implements Callable<Integer> {
     } else if (!skipChecksum) {
       expectedHash = findExpectedHash(remoteFilename, localFilename);
     }
-
-    if (expectedHash != null && Files.isRegularFile(outputPath)) {
-      System.out.printf("Found manifest: %s (Algorithm: %s)%n", expectedHash.candidate(),
-          expectedHash.algorithm());
-      System.out.print("Local file exists. Verifying checksum... ");
-      String actualHash = computeFileHash(outputPath, expectedHash.algorithm());
-      if (expectedHash.hash().equalsIgnoreCase(actualHash)) {
-        System.out.println("OK");
-        System.out.println("File already downloaded and verified. Skipping download.");
-        return 0;
+    if (Files.isRegularFile(outputPath)) {
+      if (expectedHash != null) {
+        System.out.printf("Found manifest: %s (Algorithm: %s)%n", expectedHash.candidate(),
+            expectedHash.algorithm());
+        System.out.print("Local file exists. Verifying checksum... ");
+        String actualHash = computeFileHash(outputPath, expectedHash.algorithm());
+        if (expectedHash.hash().equalsIgnoreCase(actualHash)) {
+          System.out.println("OK");
+          System.out.println("File already downloaded and verified. Skipping download.");
+          return 0;
+        } else {
+          System.out.println("FAILED (Hash mismatch). Re-downloading...");
+        }
       } else {
-        System.out.println("FAILED (Hash mismatch). Re-downloading...");
+        System.out.println("Local file exists. Re-downloading...");
       }
     }
 
@@ -135,10 +143,36 @@ class Fetch implements Callable<Integer> {
     boolean acceptsRanges = headRes.headers().firstValue("accept-ranges")
         .map(v -> v.equalsIgnoreCase("bytes")).orElse(false);
 
-    if (contentLength <= 0 || !acceptsRanges || connections <= 1) {
-      downloadSingleStream();
+    Path partPath = Path.of(outputPath.toString() + ".part");
+    long existingPartSize = 0L;
+    if (!noResume && Files.isRegularFile(partPath)) {
+      existingPartSize = Files.size(partPath);
+      if (contentLength > 0 && existingPartSize >= contentLength) {
+        // Stale or complete part file that wasn't promoted
+        Files.deleteIfExists(partPath);
+        existingPartSize = 0L;
+      }
+    } else if (noResume) {
+      Files.deleteIfExists(partPath);
+    }
+
+    if (existingPartSize > 0 && acceptsRanges) {
+      System.out.printf("Resuming download from byte %d (%.2f / %.2f MB)...%n", existingPartSize,
+          existingPartSize / 1_048_576.0,
+          (contentLength > 0 ? contentLength : existingPartSize) / 1_048_576.0);
+      downloadResumedStream(partPath, existingPartSize, contentLength);
+    } else if (contentLength <= 0 || !acceptsRanges || connections <= 1) {
+      downloadSingleStream(partPath);
     } else {
-      downloadMultiThreaded(contentLength);
+      downloadMultiThreaded(partPath, contentLength);
+    }
+
+    // Atomically promote .part to final outputPath
+    try {
+      Files.move(partPath, outputPath, StandardCopyOption.REPLACE_EXISTING,
+          StandardCopyOption.ATOMIC_MOVE);
+    } catch (AtomicMoveNotSupportedException _) {
+      Files.move(partPath, outputPath, StandardCopyOption.REPLACE_EXISTING);
     }
 
     System.out.println("Saved: " + outputPath.toAbsolutePath());
@@ -218,14 +252,14 @@ class Fetch implements Callable<Integer> {
     }
   }
 
-  private void downloadSingleStream() throws Exception {
+  private void downloadSingleStream(Path partPath) throws Exception {
     HttpRequest req = HttpRequest.newBuilder(uri).GET().build();
     HttpResponse<InputStream> res = client.send(req, HttpResponse.BodyHandlers.ofInputStream());
 
     long total = res.headers().firstValueAsLong("content-length").orElse(-1L);
-    try (ProgressBar pb = createProgressBar(total);
+    try (ProgressBar pb = createProgressBar(total, 0L);
         InputStream in = res.body();
-        FileChannel out = FileChannel.open(outputPath, StandardOpenOption.CREATE,
+        FileChannel out = FileChannel.open(partPath, StandardOpenOption.CREATE,
             StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
 
       byte[] buf = new byte[64 * 1024];
@@ -237,13 +271,59 @@ class Fetch implements Callable<Integer> {
     }
   }
 
-  private void downloadMultiThreaded(long totalSize) throws Exception {
+  private void downloadResumedStream(Path partPath, long startOffset, long totalSize)
+      throws Exception {
+    HttpRequest req =
+        HttpRequest.newBuilder(uri).header("Range", "bytes=" + startOffset + "-").GET().build();
+    HttpResponse<InputStream> res = client.send(req, HttpResponse.BodyHandlers.ofInputStream());
+
+    int status = res.statusCode();
+    if (status != 206 && status != 200) {
+      System.err.println("Warning: Server rejected range request (HTTP " + status
+          + "). Starting from beginning...");
+      downloadSingleStream(partPath);
+      return;
+    }
+
+    // If server sent 200 OK instead of 206 Partial Content, it doesn't support resume for this request
+    if (status == 200) {
+      long total = res.headers().firstValueAsLong("content-length").orElse(totalSize);
+      try (ProgressBar pb = createProgressBar(total, 0L);
+          InputStream in = res.body();
+          FileChannel out = FileChannel.open(partPath, StandardOpenOption.CREATE,
+              StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+
+        byte[] buf = new byte[64 * 1024];
+        int read;
+        while ((read = in.read(buf)) != -1) {
+          out.write(ByteBuffer.wrap(buf, 0, read));
+          pb.stepBy(read);
+        }
+      }
+      return;
+    }
+
+    try (ProgressBar pb = createProgressBar(totalSize, startOffset);
+        InputStream in = res.body();
+        FileChannel out = FileChannel.open(partPath, StandardOpenOption.CREATE,
+            StandardOpenOption.WRITE, StandardOpenOption.APPEND)) {
+
+      byte[] buf = new byte[64 * 1024];
+      int read;
+      while ((read = in.read(buf)) != -1) {
+        out.write(ByteBuffer.wrap(buf, 0, read));
+        pb.stepBy(read);
+      }
+    }
+  }
+
+  private void downloadMultiThreaded(Path partPath, long totalSize) throws Exception {
     long chunkSize = (long) Math.ceil((double) totalSize / connections);
 
     try (
-        FileChannel fileChannel = FileChannel.open(outputPath, StandardOpenOption.CREATE,
+        FileChannel fileChannel = FileChannel.open(partPath, StandardOpenOption.CREATE,
             StandardOpenOption.WRITE, StandardOpenOption.READ);
-        ProgressBar pb = createProgressBar(totalSize);
+        ProgressBar pb = createProgressBar(totalSize, 0L);
         ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
 
       fileChannel.truncate(totalSize);
@@ -252,8 +332,9 @@ class Fetch implements Callable<Integer> {
       for (int i = 0; i < connections; i++) {
         long start = i * chunkSize;
         long end = Math.min(start + chunkSize - 1, totalSize - 1);
-        if (start > end)
+        if (start > end) {
           break;
+        }
 
         futures.add(CompletableFuture.runAsync(() -> {
           try {
@@ -364,8 +445,8 @@ class Fetch implements Callable<Integer> {
     return HexFormat.of().formatHex(digest.digest());
   }
 
-  private ProgressBar createProgressBar(long total) {
-    return new ProgressBar(outputPath.getFileName().toString(), total);
+  private ProgressBar createProgressBar(long total, long initialOffset) {
+    return new ProgressBar(outputPath.getFileName().toString(), total, initialOffset);
   }
 
   /** Pure-Java lightweight progress bar with transfer rate and ETA calculations. */
@@ -382,9 +463,12 @@ class Fetch implements Callable<Integer> {
     private final Thread renderThread;
     private volatile boolean closed = false;
 
-    ProgressBar(String taskName, long totalBytes) {
+    ProgressBar(String taskName, long totalBytes, long initialOffset) {
       this.taskName = taskName;
       this.totalBytes = totalBytes;
+      if (initialOffset > 0) {
+        this.downloaded.add(initialOffset);
+      }
       this.shutdownHook = new Thread(() -> System.out.print(SHOW_CURSOR));
       try {
         Runtime.getRuntime().addShutdownHook(shutdownHook);

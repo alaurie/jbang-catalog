@@ -474,7 +474,7 @@ jbang fetch https://example.com/file.iso
 ### Options
 
 ```
-Usage: fetch [-hV] [--no-checksum] [-c=<connections>]
+Usage: fetch [-hV] [--no-checksum] [--no-resume] [-c=<connections>]
              [--expected-hash=<explicitHash>] [-o=<outputPath>] <uri>
 High-performance multi-threaded CLI file downloader with auto-checksum
 verification
@@ -486,6 +486,7 @@ verification
                         algorithm by length). Bypasses server probe.
   -h, --help          Show this help message and exit.
       --no-checksum   Skip automatic checksum probing and verification
+      --no-resume     Disable automatic download resumption and start fresh
   -o, --output=<outputPath>
                       Target file output path
   -V, --version       Print version information and exit.
