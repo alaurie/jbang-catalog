@@ -3,7 +3,7 @@
 //DEPS info.picocli:picocli:4.7.7
 //DEPS info.picocli:picocli-codegen:4.7.7
 //JAVAC_OPTIONS -proc:full
-//JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms16m -Xmx64m -XX:TieredStopAtLevel=1
+//JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms16m -Xmx64m
 //NATIVE_OPTIONS -O2 -march=native --no-fallback
 
 
@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.concurrent.Executors;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -151,8 +152,8 @@ class Serve implements Callable<Integer> {
       }
 
       var logFilter = SimpleFileServer.createOutputFilter(System.out, outputLevel);
-
       server = HttpServer.create(addr, 0);
+      server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
 
       var context = server.createContext("/", finalHandler);
       context.getFilters().add(logFilter);
