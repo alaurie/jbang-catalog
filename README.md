@@ -604,6 +604,46 @@ Compile, export, and manage standalone zero-overhead native executables.
   -V, --version              Print version information and exit.
 ```
 
+---
+
+## jellyfin-backup
+
+`jellyfin-backup` is a complete disaster recovery backup, restore, and inspection utility for Jellyfin media server across Linux distributions.
+
+### Usage
+
+To create a full Jellyfin backup archive:
+
+```bash
+sudo jbang jellyfin-backup@alaurie backup -o /path/to/backups/
+```
+
+Or inspect a backup file without extracting:
+
+```bash
+jbang jellyfin-backup@alaurie inspect /path/to/backups/jellyfin-backup-2026-09-04_120000.tar.gz
+```
+
+Or restore onto a fresh OS installation:
+
+```bash
+sudo jbang jellyfin-backup@alaurie restore /path/to/backups/jellyfin-backup-2026-09-04_120000.tar.gz
+```
+
+### Options
+
+```
+Usage: jellyfin-backup [-hV] [COMMAND]
+Complete backup, restore, and disaster recovery utility for Jellyfin media
+server.
+  -h, --help      Show this help message and exit.
+  -V, --version   Print version information and exit.
+Commands:
+  backup   Create a complete, self-contained backup archive of Jellyfin.
+  restore  Restore a Jellyfin backup archive into the target system.
+  inspect  Inspect the contents, manifest, and database metrics of a backup
+             archive.
+```
 ## Development
 
 To automatically run `jbang-fmt` on staged `.java` files before committing, enable the repository's pre-commit hook:

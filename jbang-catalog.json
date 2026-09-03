@@ -39,6 +39,10 @@
     "install-native": {
       "script-ref": "apps/install-native/InstallNative.java",
       "description": "Compile and export catalog tools as standalone zero-overhead native executables."
+    },
+    "jellyfin-backup": {
+      "script-ref": "apps/jellyfin-backup/JellyfinBackup.java",
+      "description": "Complete disaster recovery backup, restore, and inspection utility for Jellyfin media server."
     }
   }
 }
