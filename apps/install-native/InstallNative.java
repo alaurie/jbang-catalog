@@ -33,15 +33,12 @@ import picocli.CommandLine.Parameters;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
-/// Cross-platform utility to compile and export catalog applications as standalone GraalVM native
-/// binaries.
+/// Cross-platform utility to compile, export, and manage standalone GraalVM native binaries.
 ///
-/// Dynamically inspects catalog manifests and source script directives (`//NATIVE_OPTIONS`,
-/// dependencies)
-/// to determine native compatibility and exports binaries directly into `~/.jbang/bin` or a
-/// specified directory.
-@Command(name = "install-native", mixinStandardHelpOptions = true, version = "install-native 1.1",
-    description = "Compile and export catalog tools as standalone zero-overhead native executables.")
+/// Supports compiling/exporting native binaries directly to `~/.jbang/bin` (or custom directory),
+/// listing native compatibility, and cleaning/uninstalling exported binaries.
+@Command(name = "install-native", mixinStandardHelpOptions = true, version = "install-native 1.2",
+    description = "Compile, export, and manage standalone zero-overhead native executables.")
 @SuppressWarnings("unused")
 class InstallNative implements Callable<Integer> {
 
@@ -58,7 +55,7 @@ class InstallNative implements Callable<Integer> {
       String supportReason) {}
 
   @Parameters(arity = "0..*", paramLabel = "<apps>",
-      description = "Specific application aliases to export (e.g. fetch hash jwt). Defaults to all native-supported apps.")
+      description = "Specific application aliases to export or clean (e.g. fetch hash jwt). Defaults to all native-supported apps.")
   private List<String> requestedApps = new ArrayList<>();
 
   @Option(names = {"-d", "--dir"},
@@ -68,6 +65,10 @@ class InstallNative implements Callable<Integer> {
   @Option(names = {"-l", "--list"},
       description = "List all available catalog applications and dynamic native compatibility.")
   private boolean listOnly;
+
+  @Option(names = {"-c", "--clean", "--uninstall"},
+      description = "Remove exported native binaries from the target destination directory.")
+  private boolean cleanOnly;
 
   @Option(names = {"-f", "--force"},
       description = "Overwrite existing binaries in the target directory.")
@@ -93,12 +94,17 @@ class InstallNative implements Callable<Integer> {
     }
 
     Path destination = resolveDestination();
+
+    if (cleanOnly) {
+      return cleanNativeBinaries(catalogApps, destination);
+    }
+
     if (!Files.exists(destination)) {
       Files.createDirectories(destination);
       System.out.printf("Created destination directory: %s%n", destination.toAbsolutePath());
     }
 
-    List<AppMetadata> targets = selectTargets(catalogApps);
+    List<AppMetadata> targets = selectTargets(catalogApps, false);
     if (targets.isEmpty()) {
       System.err.println("No matching native-supported applications selected.");
       return 1;
@@ -146,6 +152,55 @@ class InstallNative implements Callable<Integer> {
     return failed == 0 ? 0 : 1;
   }
 
+  private int cleanNativeBinaries(Map<String, AppMetadata> catalogApps, Path destination) {
+    if (!Files.isDirectory(destination)) {
+      System.out.printf("Directory '%s' does not exist. Nothing to clean.%n",
+          destination.toAbsolutePath());
+      return 0;
+    }
+
+    List<AppMetadata> targets = selectTargets(catalogApps, true);
+    if (targets.isEmpty()) {
+      System.err.println("No applications selected for cleaning.");
+      return 1;
+    }
+
+    System.out.println("===============================================================");
+    System.out.println("  jbang-catalog native cleaner");
+    System.out.println("===============================================================");
+    System.out.printf("Target Directory: %s%n", destination.toAbsolutePath());
+    System.out.printf("Applications to remove (%d): %s%n%n", targets.size(),
+        String.join(", ", targets.stream().map(AppMetadata::alias).toList()));
+
+    int removed = 0;
+    int missing = 0;
+
+    for (var app : targets) {
+      String binaryName = IS_WINDOWS ? app.alias() + ".exe" : app.alias();
+      Path binaryPath = destination.resolve(binaryName);
+
+      if (Files.exists(binaryPath)) {
+        try {
+          Files.delete(binaryPath);
+          removed++;
+          System.out.printf("  ✓ Removed: %s%n", binaryPath.getFileName());
+        } catch (Exception e) {
+          System.err.printf("  ✗ Error removing %s: %s%n", binaryPath.getFileName(),
+              e.getMessage());
+        }
+      } else {
+        missing++;
+        if (verbose) {
+          System.out.printf("  - Not found: %s%n", binaryPath.getFileName());
+        }
+      }
+    }
+
+    System.out.println("---------------------------------------------------------------");
+    System.out.printf("Clean complete: %d removed, %d not found.%n", removed, missing);
+    return 0;
+  }
+
   /// Discovers catalog aliases from local `jbang-catalog.json` or remote GitHub repository,
   /// then inspects script source code to evaluate dynamic native compatibility.
   private Map<String, AppMetadata> discoverCatalogApps() {
@@ -182,17 +237,14 @@ class InstallNative implements Callable<Integer> {
   }
 
   private String loadCatalogJson() {
-    // 1. Try local catalog file in current working directory
     Path localCatalog = Path.of("jbang-catalog.json");
     if (Files.isRegularFile(localCatalog)) {
       try {
         return Files.readString(localCatalog);
       } catch (Exception _) {
-        // Fallback to remote
       }
     }
 
-    // 2. Fetch from remote GitHub catalog
     try {
       HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(4)).build();
       HttpRequest request = HttpRequest.newBuilder(URI.create(REMOTE_CATALOG_URL)).GET().build();
@@ -210,20 +262,16 @@ class InstallNative implements Callable<Integer> {
 
   record CompatibilityResult(boolean supported, String reason) {}
 
-  /// Evaluates native compilation support by inspecting script directives and dependencies.
   private CompatibilityResult evaluateNativeCompatibility(String alias, String scriptRef) {
     String source = loadScriptSource(alias, scriptRef);
     if (source == null) {
-      // Default to supported if source cannot be inspected ahead of time
       return new CompatibilityResult(true, "Supported");
     }
 
-    // Check for explicit native exclusion directive
     if (source.contains("//NATIVE_DISABLED") || source.contains("//NO_NATIVE")) {
       return new CompatibilityResult(false, "Disabled via //NATIVE_DISABLED directive");
     }
 
-    // Check for known JNI / dynamic C-library dependencies
     for (String jniPattern : JNI_DEPENDENCY_PATTERNS) {
       if (source.toLowerCase(Locale.ROOT).contains(jniPattern)) {
         return new CompatibilityResult(false,
@@ -231,7 +279,6 @@ class InstallNative implements Callable<Integer> {
       }
     }
 
-    // Check for native options directive
     if (source.contains("//NATIVE_OPTIONS")) {
       return new CompatibilityResult(true, "Supported (AOT Configured)");
     }
@@ -240,7 +287,6 @@ class InstallNative implements Callable<Integer> {
   }
 
   private String loadScriptSource(String alias, String scriptRef) {
-    // Check local filesystem
     if (scriptRef != null && !scriptRef.isBlank()) {
       Path localFile = Path.of(scriptRef);
       if (Files.isRegularFile(localFile)) {
@@ -251,7 +297,6 @@ class InstallNative implements Callable<Integer> {
       }
     }
 
-    // Check remote raw GitHub URL
     if (scriptRef != null && !scriptRef.isBlank()) {
       try {
         String remoteUrl =
@@ -276,8 +321,12 @@ class InstallNative implements Callable<Integer> {
     return Path.of(userHome, ".jbang", "bin");
   }
 
-  private List<AppMetadata> selectTargets(Map<String, AppMetadata> catalogApps) {
+  private List<AppMetadata> selectTargets(Map<String, AppMetadata> catalogApps,
+      boolean includeAllForClean) {
     if (requestedApps == null || requestedApps.isEmpty()) {
+      if (includeAllForClean) {
+        return new ArrayList<>(catalogApps.values());
+      }
       return catalogApps.values().stream().filter(AppMetadata::nativeSupported).toList();
     }
 
@@ -288,7 +337,7 @@ class InstallNative implements Callable<Integer> {
       if (app == null) {
         System.err.printf("Warning: Unknown application '%s' (use --list to see available tools)%n",
             req);
-      } else if (!app.nativeSupported()) {
+      } else if (!includeAllForClean && !app.nativeSupported()) {
         System.err.printf("Warning: '%s' is marked JVM-only (%s) - skipping native build.%n",
             app.alias(), app.supportReason());
       } else {
@@ -356,6 +405,8 @@ class InstallNative implements Callable<Integer> {
     System.out.println("Usage:");
     System.out.println("  jbang install-native@alaurie              # Install all native apps");
     System.out.println("  jbang install-native@alaurie fetch hash   # Install specific apps");
+    System.out
+        .println("  jbang install-native@alaurie --clean      # Remove installed native binaries");
   }
 
   private void checkPathEnvironment(Path destination) {

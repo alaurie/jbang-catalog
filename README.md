@@ -570,6 +570,13 @@ Or export to a custom directory:
 jbang install-native@alaurie -d ~/.local/bin fetch hash
 ```
 
+Or clean / remove exported native binaries from `~/.jbang/bin`:
+
+```bash
+jbang install-native@alaurie --clean
+jbang install-native@alaurie --clean fetch hash
+```
+
 Or list catalog tools and native compatibility:
 
 ```bash
@@ -579,18 +586,23 @@ jbang install-native@alaurie --list
 ### Options
 
 ```
-Usage: install-native [-fhlvV] [-d=<targetDir>] [<apps>...]
-Compile and export catalog tools as standalone zero-overhead native executables.
-      [<apps>...]         Specific application aliases to export (e.g. fetch
-                            hash jwt). Defaults to all native-supported apps.
-  -d, --dir=<targetDir>   Target destination directory for native binaries.
-                            Default: ~/.jbang/bin
-  -f, --force             Overwrite existing binaries in the target directory.
-  -h, --help              Show this help message and exit.
-  -l, --list              List all available catalog applications and native
-                            compatibility.
-  -v, --verbose           Enable verbose output during native-image compilation.
-  -V, --version           Print version information and exit.
+Usage: install-native [-cfhlvV] [-d=<targetDir>] [<apps>...]
+Compile, export, and manage standalone zero-overhead native executables.
+      [<apps>...]            Specific application aliases to export or clean (e.
+                               g. fetch hash jwt). Defaults to all
+                               native-supported apps.
+  -c, --clean, --uninstall   Remove exported native binaries from the target
+                               destination directory.
+  -d, --dir=<targetDir>      Target destination directory for native binaries.
+                               Default: ~/.jbang/bin
+  -f, --force                Overwrite existing binaries in the target
+                               directory.
+  -h, --help                 Show this help message and exit.
+  -l, --list                 List all available catalog applications and
+                               dynamic native compatibility.
+  -v, --verbose              Enable verbose output during native-image
+                               compilation.
+  -V, --version              Print version information and exit.
 ```
 
 ## Development
