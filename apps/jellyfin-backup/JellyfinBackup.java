@@ -63,6 +63,11 @@ class JellyfinBackup implements Callable<Integer> {
   static final String MANIFEST_ENTRY_NAME = "jellyfin-manifest.json";
 
   void main(String... args) {
+    if (needsElevation(args) && !isRunningAsRoot() && isLinux()) {
+      int exitCode = reexecWithSudo(args);
+      System.exit(exitCode);
+    }
+
     int exitCode = new CommandLine(this).execute(args);
     System.exit(exitCode);
   }
@@ -106,11 +111,9 @@ class JellyfinBackup implements Callable<Integer> {
 
     @Override
     public Integer call() throws Exception {
-      boolean isRoot = isRunningAsRoot();
-      if (!isRoot) {
+      if (!isRunningAsRoot()) {
         System.err.println(
             "Error: 'jellyfin-backup backup' requires root privileges to read /var/lib/jellyfin and stop services.");
-        System.err.println("Please run: sudo ~/.jbang/bin/jellyfin-backup backup [options]");
         return 1;
       }
 
@@ -382,11 +385,9 @@ class JellyfinBackup implements Callable<Integer> {
         return 1;
       }
 
-      boolean isRoot = isRunningAsRoot();
-      if (!isRoot) {
+      if (!isRunningAsRoot()) {
         System.err.println(
             "Error: 'jellyfin-backup restore' requires root privileges to write /var/lib/jellyfin and /etc/jellyfin.");
-        System.err.println("Please run: sudo ~/.jbang/bin/jellyfin-backup restore <archive-file>");
         return 1;
       }
 
@@ -627,6 +628,46 @@ class JellyfinBackup implements Callable<Integer> {
   // =========================================================================
   // SYSTEM & HELPER METHODS
   // =========================================================================
+  static boolean needsElevation(String... args) {
+    if (args == null || args.length == 0) {
+      return false;
+    }
+    String first = args[0].toLowerCase(Locale.ROOT);
+    if (first.equals("-h") || first.equals("--help") || first.equals("-v") || first.equals("-V")
+        || first.equals("--version")) {
+      return false;
+    }
+    return first.equals("backup") || first.equals("restore");
+  }
+
+  static int reexecWithSudo(String... args) {
+    String selfCommand = ProcessHandle.current().info().command().orElse(null);
+    if (selfCommand == null || selfCommand.isBlank() || selfCommand.endsWith("java")) {
+      String userHome = System.getProperty("user.home", "");
+      Path binaryPath = Path.of(userHome, ".jbang", "bin", "jellyfin-backup");
+      if (Files.isExecutable(binaryPath)) {
+        selfCommand = binaryPath.toAbsolutePath().toString();
+      }
+    }
+
+    if (selfCommand != null && Files.isExecutable(Path.of(selfCommand))) {
+      List<String> sudoCmd = new ArrayList<>();
+      sudoCmd.add("sudo");
+      sudoCmd.add(selfCommand);
+      for (String a : args) {
+        sudoCmd.add(a);
+      }
+      try {
+        Process process = new ProcessBuilder(sudoCmd).inheritIO().start();
+        return process.waitFor();
+      } catch (Exception e) {
+        System.err.println("Error executing sudo: " + e.getMessage());
+        return 1;
+      }
+    }
+    return 1;
+  }
+
   static String verifyArchiveChecksum(Path archiveFile) {
     Path shaFile = Path.of(archiveFile.toString() + ".sha256");
     if (!Files.isRegularFile(shaFile)) {
