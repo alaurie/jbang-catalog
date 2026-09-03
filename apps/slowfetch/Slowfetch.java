@@ -18,6 +18,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
 import oshi.SystemInfo;
 import oshi.hardware.CentralProcessor;
 import oshi.hardware.ComputerSystem;
@@ -98,7 +100,31 @@ class Slowfetch implements Callable<Integer> {
 
     infoLines.add("%sOS:%s %s %s %s".formatted(bold, reset, osName, version, arch));
 
-    var cs = hal.getComputerSystem();
+    CompletableFuture<ComputerSystem> csFuture;
+    CompletableFuture<String> packagesFuture;
+    CompletableFuture<List<String>> displaysFuture;
+    CompletableFuture<String> deFuture;
+    CompletableFuture<String> wmThemeFuture;
+    CompletableFuture<String> themeFuture;
+    CompletableFuture<String> iconsFuture;
+    CompletableFuture<String> fontFuture;
+    CompletableFuture<String> cursorFuture;
+    CompletableFuture<String> terminalFuture;
+
+    try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+      csFuture = CompletableFuture.supplyAsync(hal::getComputerSystem, executor);
+      packagesFuture = CompletableFuture.supplyAsync(this::detectPackages, executor);
+      displaysFuture = CompletableFuture.supplyAsync(this::detectDisplays, executor);
+      deFuture = CompletableFuture.supplyAsync(this::detectDesktopEnvironment, executor);
+      wmThemeFuture = CompletableFuture.supplyAsync(this::detectWmTheme, executor);
+      themeFuture = CompletableFuture.supplyAsync(this::detectGtkTheme, executor);
+      iconsFuture = CompletableFuture.supplyAsync(this::detectIcons, executor);
+      fontFuture = CompletableFuture.supplyAsync(this::detectFont, executor);
+      cursorFuture = CompletableFuture.supplyAsync(this::detectCursor, executor);
+      terminalFuture = CompletableFuture.supplyAsync(this::detectTerminal, executor);
+    }
+
+    var cs = csFuture.join();
     var model = cs.getModel();
     if (model != null && !model.isBlank() && !model.equalsIgnoreCase("System Product Name")) {
       infoLines.add("%sHost:%s %s (%s)".formatted(bold, reset, model, cs.getManufacturer()));
@@ -112,7 +138,7 @@ class Slowfetch implements Callable<Integer> {
     var uptimeSec = os.getSystemUptime();
     infoLines.add("%sUptime:%s %s".formatted(bold, reset, formatUptime(uptimeSec)));
 
-    var packages = detectPackages();
+    var packages = packagesFuture.join();
     if (packages != null) {
       infoLines.add("%sPackages:%s %s".formatted(bold, reset, packages));
     }
@@ -123,42 +149,42 @@ class Slowfetch implements Callable<Integer> {
       infoLines.add("%sShell:%s %s".formatted(bold, reset, shellName));
     }
 
-    var displays = detectDisplays();
+    var displays = displaysFuture.join();
     for (var display : displays) {
       infoLines.add("%sDisplay:%s %s".formatted(bold, reset, display));
     }
 
-    var de = detectDesktopEnvironment();
+    var de = deFuture.join();
     if (de != null) {
       infoLines.add("%sDE/WM:%s %s".formatted(bold, reset, de));
     }
 
-    var wmTheme = detectWmTheme();
+    var wmTheme = wmThemeFuture.join();
     if (wmTheme != null) {
       infoLines.add("%sWM Theme:%s %s".formatted(bold, reset, wmTheme));
     }
 
-    var theme = detectGtkTheme();
+    var theme = themeFuture.join();
     if (theme != null) {
       infoLines.add("%sTheme:%s %s".formatted(bold, reset, theme));
     }
 
-    var icons = detectIcons();
+    var icons = iconsFuture.join();
     if (icons != null) {
       infoLines.add("%sIcons:%s %s".formatted(bold, reset, icons));
     }
 
-    var font = detectFont();
+    var font = fontFuture.join();
     if (font != null) {
       infoLines.add("%sFont:%s %s".formatted(bold, reset, font));
     }
 
-    var cursor = detectCursor();
+    var cursor = cursorFuture.join();
     if (cursor != null) {
       infoLines.add("%sCursor:%s %s".formatted(bold, reset, cursor));
     }
 
-    var terminal = detectTerminal();
+    var terminal = terminalFuture.join();
     if (terminal != null) {
       infoLines.add("%sTerminal:%s %s".formatted(bold, reset, terminal));
     }
