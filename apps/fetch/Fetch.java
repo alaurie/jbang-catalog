@@ -39,7 +39,7 @@ import picocli.CommandLine.Parameters;
 /// High-performance multi-threaded CLI file downloader with auto-checksum verification.
 ///
 /// Supports concurrent chunked range requests and automatic remote manifest probing.
-@Command(name = "fetch", mixinStandardHelpOptions = true, version = "fetch 0.1",
+@Command(name = "fetch", mixinStandardHelpOptions = true, version = "fetch 1.0",
     description = "High-performance multi-threaded CLI file downloader with auto-checksum verification")
 @SuppressWarnings("unused")
 class Fetch implements Callable<Integer> {
