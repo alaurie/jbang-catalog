@@ -72,7 +72,7 @@ class InstallNative implements Callable<Integer> {
 
   @Option(names = {"-f", "--force"},
       description = "Overwrite existing binaries in the target directory.")
-  private boolean force = true;
+  private boolean force;
 
   @Option(names = {"-v", "--verbose"},
       description = "Enable verbose output during native-image compilation.")
