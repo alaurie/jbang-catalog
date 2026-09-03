@@ -4,7 +4,7 @@
 //DEPS info.picocli:picocli-codegen:4.7.7
 //JAVAC_OPTIONS -proc:full
 //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms16m -Xmx64m -XX:TieredStopAtLevel=1
-//NATIVE_OPTIONS -O2 --no-fallback
+//NATIVE_OPTIONS -O2 -march=native --no-fallback
 
 package fetch;
 
@@ -25,6 +25,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -453,6 +454,14 @@ class Fetch implements Callable<Integer> {
 
   private String computeFileHash(Path file, String algorithm) throws Exception {
     long totalBytes = Files.size(file);
+    // For large files (>250MB), try delegating to hardware-optimized system utilities if available
+    if (totalBytes > 250 * 1024 * 1024) {
+      String systemHash = computeHashWithSystemTool(file, algorithm, totalBytes);
+      if (systemHash != null) {
+        return systemHash;
+      }
+    }
+
     MessageDigest digest = MessageDigest.getInstance(algorithm);
     int bufferSize = 8 * 1024 * 1024; // 8 MB high-throughput direct buffer
     ByteBuffer buffer = ByteBuffer.allocateDirect(bufferSize);
@@ -469,6 +478,66 @@ class Fetch implements Callable<Integer> {
       }
     }
     return HexFormat.of().formatHex(digest.digest());
+  }
+
+  private String computeHashWithSystemTool(Path file, String algorithm, long totalBytes) {
+    String algoUpper = algorithm.toUpperCase(Locale.ROOT);
+    List<String> command = null;
+    boolean isWindows = System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("win");
+
+    if (!isWindows) {
+      String tool = switch (algoUpper) {
+        case "SHA-256", "SHA256" -> "sha256sum";
+        case "SHA-512", "SHA512" -> "sha512sum";
+        case "MD5" -> "md5sum";
+        case "SHA-1", "SHA1" -> "sha1sum";
+        default -> null;
+      };
+      if (tool != null) {
+        command = List.of(tool, file.toAbsolutePath().toString());
+      }
+    }
+
+    if (command == null) {
+      return null;
+    }
+
+    try {
+      String taskName = "Verifying " + algorithm;
+      try (ProgressBar pb = new ProgressBar(taskName, totalBytes, 0L)) {
+        ProcessBuilder pbCmd = new ProcessBuilder(command);
+        pbCmd.redirectError(ProcessBuilder.Redirect.DISCARD);
+        Process process = pbCmd.start();
+
+        // Estimate progress while external process runs
+        Thread poller = Thread.ofVirtual().start(() -> {
+          long step = totalBytes / 40;
+          while (process.isAlive()) {
+            pb.stepBy(step);
+            try {
+              Thread.sleep(100);
+            } catch (InterruptedException _) {
+              break;
+            }
+          }
+        });
+
+        String output = new String(process.getInputStream().readAllBytes()).trim();
+        process.waitFor();
+        poller.interrupt();
+        pb.stepBy(totalBytes);
+
+        if (process.exitValue() == 0 && !output.isBlank()) {
+          String[] tokens = output.split("\\s+");
+          if (tokens.length >= 1 && isValidHexHash(tokens[0])) {
+            return tokens[0];
+          }
+        }
+      }
+    } catch (Exception _) {
+      // Fall back to pure Java implementation on any tool invocation issue
+    }
+    return null;
   }
 
   private ProgressBar createProgressBar(long total, long initialOffset) {
