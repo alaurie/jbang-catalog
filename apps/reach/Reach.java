@@ -36,6 +36,9 @@ import java.util.DoubleSummaryStatistics;
 import java.util.Hashtable;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import javax.naming.directory.Attribute;
 import javax.naming.directory.Attributes;
 import javax.naming.directory.InitialDirContext;
@@ -137,16 +140,17 @@ class Reach implements Callable<Integer> {
 
   @Override
   public Integer call() throws Exception {
-    var host = target;
+    String parsedHost = target;
     String rawPortStr = null;
 
     if (target.contains(":")) {
       var parts = target.split(":", 2);
-      host = parts[0];
+      parsedHost = parts[0];
       rawPortStr = parts[1];
     } else if (portSpec != null && !portSpec.isBlank()) {
       rawPortStr = portSpec;
     }
+    final String host = parsedHost;
 
     List<Integer> ports = parsePorts(rawPortStr, Boolean.TRUE.equals(forceSsl));
     if (ports.isEmpty()) {
@@ -178,9 +182,21 @@ class Reach implements Callable<Integer> {
     }
     var dnsTimeMs = (System.nanoTime() - dnsStart) / 1_000_000.0;
 
-    DnsInfo dnsInfo = checkDns ? inspectDnsRecords(host) : null;
-    WhoisInfo whoisInfo = checkWhois ? queryWhois(host) : null;
-
+    DnsInfo dnsInfo = null;
+    WhoisInfo whoisInfo = null;
+    if (checkDns || checkWhois) {
+      try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+        var dnsFuture =
+            checkDns ? CompletableFuture.supplyAsync(() -> inspectDnsRecords(host), executor)
+                : null;
+        var whoisFuture =
+            checkWhois ? CompletableFuture.supplyAsync(() -> queryWhois(host), executor) : null;
+        if (dnsFuture != null)
+          dnsInfo = dnsFuture.join();
+        if (whoisFuture != null)
+          whoisInfo = whoisFuture.join();
+      }
+    }
     var overallSuccess = true;
     var certWarningTriggered = false;
     List<PortResult> results = new ArrayList<>();
