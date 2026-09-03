@@ -11,6 +11,7 @@ package killport;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -98,8 +99,7 @@ class Killport implements Callable<Integer> {
       }
 
       for (var pid : pids) {
-        var optHandle = ProcessHandle.of(pid);
-        var name = optHandle.flatMap(ph -> ph.info().command()).orElse("Unknown process");
+        var name = resolveProcessName(pid);
 
         if (dryRun) {
           System.out.printf(" [DRY-RUN] Found PID %d (%s) listening on port %d.%n", pid, name,
@@ -260,5 +260,22 @@ class Killport implements Callable<Integer> {
     } catch (Exception _) {
       return false;
     }
+  }
+
+  private String resolveProcessName(long pid) {
+    var optHandle = ProcessHandle.of(pid);
+    if (optHandle.isPresent()) {
+      var info = optHandle.get().info();
+      if (info.command().isPresent()) {
+        var cmd = info.command().get();
+        return Path.of(cmd).getFileName().toString();
+      }
+      if (info.commandLine().isPresent()) {
+        var cmdLine = info.commandLine().get().trim();
+        var firstToken = cmdLine.split("\\s+")[0];
+        return Path.of(firstToken).getFileName().toString();
+      }
+    }
+    return "Unknown process";
   }
 }
