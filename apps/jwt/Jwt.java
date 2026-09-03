@@ -4,7 +4,7 @@
 //DEPS info.picocli:picocli-codegen:4.7.7
 //DEPS tools.jackson.core:jackson-databind:3.2.1
 //JAVAC_OPTIONS -proc:full
-//JAVA_OPTIONS --enable-native-access=ALL-UNNAMED
+//JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms16m -Xmx64m -XX:TieredStopAtLevel=1
 //NATIVE_OPTIONS -O2 --no-fallback
 
 package jwt;

@@ -3,7 +3,7 @@
 //DEPS info.picocli:picocli:4.7.7
 //DEPS info.picocli:picocli-codegen:4.7.7
 //JAVAC_OPTIONS -proc:full
-//JAVA_OPTIONS --enable-native-access=ALL-UNNAMED
+//JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms16m -Xmx64m -XX:TieredStopAtLevel=1
 //NATIVE_OPTIONS -O2 --no-fallback
 
 package nudge;
@@ -38,59 +38,42 @@ import picocli.CommandLine.Option;
 /// Supports Linux Wayland natively via direct kernel virtual input (`/dev/uinput` via FFM),
 /// CLI tools (`ydotool`, `wtype`, `dotool`), D-Bus idle inhibition, and standard `java.awt.Robot`
 /// on X11, macOS, and Windows.
-@Command(
-    name = "nudge",
-    mixinStandardHelpOptions = true,
-    version = "nudge 1.3",
-    description =
-        "Simulates user activity (mouse movement, key press, scrolling) when idle to keep your"
-            + " presence status active.")
+@Command(name = "nudge", mixinStandardHelpOptions = true, version = "nudge 1.3",
+    description = "Simulates user activity (mouse movement, key press, scrolling) when idle to keep your"
+        + " presence status active.")
 @SuppressWarnings("unused")
 class Nudge implements Callable<Integer> {
 
   private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss");
   private final Random random = new Random();
 
-  @Option(
-      names = {"-s", "--seconds"},
+  @Option(names = {"-s", "--seconds"},
       description = "Define in seconds how long to wait between idle checks. Default: 300.")
   private int seconds = 300;
 
-  @Option(
-      names = {"-b", "--buffer"},
-      description =
-          "Initial buffer delay in seconds before the first check. Default: same as check"
-              + " interval.")
+  @Option(names = {"-b", "--buffer"},
+      description = "Initial buffer delay in seconds before the first check. Default: same as check"
+          + " interval.")
   private Integer buffer;
 
-  @Option(
-      names = {"-p", "--pixels"},
+  @Option(names = {"-p", "--pixels"},
       description = "Set how many pixels the mouse should move. Default: 5.")
   private int pixels = 5;
 
-  @Option(
-      names = {"-c", "--circular"},
+  @Option(names = {"-c", "--circular"},
       description = "Move mouse in a circle pattern. Default: move out-and-back.")
   private boolean circular;
 
-  @Option(
-      names = {"-m", "--mode"},
+  @Option(names = {"-m", "--mode"},
       description = "Action mode: mouse, keyboard, both, scroll. Default: mouse.")
   private Mode mode = Mode.mouse;
 
-  @Option(
-      names = {"-r", "--random"},
-      arity = "2",
-      paramLabel = "<START> <STOP>",
-      description =
-          "Execute actions using a random interval between START and STOP seconds. Overrides"
-              + " --seconds.")
+  @Option(names = {"-r", "--random"}, arity = "2", paramLabel = "<START> <STOP>",
+      description = "Execute actions using a random interval between START and STOP seconds. Overrides"
+          + " --seconds.")
   private List<Integer> randomRange;
 
-  @Option(
-      names = {"--between"},
-      arity = "2",
-      paramLabel = "<START> <STOP>",
+  @Option(names = {"--between"}, arity = "2", paramLabel = "<START> <STOP>",
       description = "Only perform nudges between HH:mm and HH:mm working hours window.")
   private List<String> betweenHours;
 
@@ -119,15 +102,15 @@ class Nudge implements Callable<Integer> {
     int randStop = 0;
     if (randomRange != null && !randomRange.isEmpty()) {
       if (randomRange.size() != 2) {
-        System.err.println(
-            "Error: --random requires exactly two integer arguments (e.g. -r 3 10).");
+        System.err
+            .println("Error: --random requires exactly two integer arguments (e.g. -r 3 10).");
         return 1;
       }
       randStart = randomRange.getFirst();
       randStop = randomRange.getLast();
       if (randStart > randStop) {
-        System.err.println(
-            "Error: Random initial number needs to be lower than random limit number.");
+        System.err
+            .println("Error: Random initial number needs to be lower than random limit number.");
         return 1;
       }
     }
@@ -151,17 +134,12 @@ class Nudge implements Callable<Integer> {
       log("Mouse wheel scroll is enabled");
     }
     if (isMouseEnabled) {
-      log(
-          "Mouse is enabled, moving %d pixels%s"
-              .formatted(pixels, circular ? " (circularly)" : " (out-and-back)"));
+      log("Mouse is enabled, moving %d pixels%s".formatted(pixels,
+          circular ? " (circularly)" : " (out-and-back)"));
     }
 
-    int initialDelay =
-        buffer != null
-            ? buffer
-            : (randomRange != null
-                ? random.nextInt(randStop - randStart + 1) + randStart
-                : seconds);
+    int initialDelay = buffer != null ? buffer
+        : (randomRange != null ? random.nextInt(randStop - randStart + 1) + randStart : seconds);
 
     if (randomRange != null) {
       log("Random timing is enabled between %d and %d seconds.".formatted(randStart, randStop));
@@ -173,19 +151,16 @@ class Nudge implements Callable<Integer> {
 
     Point lastPosition = backend.getPointerPosition();
 
-    Runtime.getRuntime()
-        .addShutdownHook(
-            new Thread(
-                () -> {
-                  if (backend != null) {
-                    try {
-                      backend.close();
-                    } catch (Exception _) {
-                      // Cleanup
-                    }
-                  }
-                  System.out.println("\nBye bye ;-)\n");
-                }));
+    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+      if (backend != null) {
+        try {
+          backend.close();
+        } catch (Exception _) {
+          // Cleanup
+        }
+      }
+      System.out.println("\nBye bye ;-)\n");
+    }));
 
     try {
       Thread.sleep(initialDelay * 1000L);
@@ -221,12 +196,8 @@ class Nudge implements Callable<Integer> {
       }
 
       if (isOutsideHours) {
-        log(
-            "Outside active hours window ("
-                + betweenHours.getFirst()
-                + " - "
-                + betweenHours.getLast()
-                + "). Skipping nudge.");
+        log("Outside active hours window (" + betweenHours.getFirst() + " - "
+            + betweenHours.getLast() + "). Skipping nudge.");
       } else if (isUserAway) {
         log(currentPosition != null ? "Idle detection" : "Idle check (scheduled interval)");
         if (isMouseEnabled) {
@@ -269,9 +240,8 @@ class Nudge implements Callable<Integer> {
   private InputBackend initializeBackend() {
     var os = System.getProperty("os.name", "").toLowerCase();
     if (os.contains("mac")) {
-      log(
-          "Note: On macOS, ensure Terminal/Java has Accessibility permissions (System Settings ->"
-              + " Privacy & Security -> Accessibility).");
+      log("Note: On macOS, ensure Terminal/Java has Accessibility permissions (System Settings ->"
+          + " Privacy & Security -> Accessibility).");
     }
 
     var isWayland = isWaylandSession();
@@ -303,8 +273,8 @@ class Nudge implements Callable<Integer> {
     }
 
     if (GraphicsEnvironment.isHeadless()) {
-      System.err.println(
-          "Error: Headless environment detected. Desktop GUI environment is required.");
+      System.err
+          .println("Error: Headless environment detected. Desktop GUI environment is required.");
       return null;
     }
 
@@ -337,10 +307,8 @@ class Nudge implements Callable<Integer> {
   private static boolean hasCommand(String command) {
     try {
       var process =
-          new ProcessBuilder("which", command)
-              .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-              .redirectError(ProcessBuilder.Redirect.DISCARD)
-              .start();
+          new ProcessBuilder("which", command).redirectOutput(ProcessBuilder.Redirect.DISCARD)
+              .redirectError(ProcessBuilder.Redirect.DISCARD).start();
       return process.waitFor() == 0;
     } catch (Exception _) {
       return false;
@@ -401,10 +369,7 @@ class Nudge implements Callable<Integer> {
 
   /// Available action modes executed upon idle detection.
   public enum Mode {
-    mouse,
-    keyboard,
-    both,
-    scroll
+    mouse, keyboard, both, scroll
   }
 
   /// Abstraction for input simulation and desktop presence.
@@ -458,31 +423,16 @@ class Nudge implements Callable<Integer> {
         var linker = Linker.nativeLinker();
         var lookup = linker.defaultLookup();
 
-        var openHandle =
-            linker.downcallHandle(
-                lookup.find("open").orElseThrow(),
-                FunctionDescriptor.of(
-                    ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
-        var ioctlHandle =
-            linker.downcallHandle(
-                lookup.find("ioctl").orElseThrow(),
-                FunctionDescriptor.of(
-                    ValueLayout.JAVA_INT,
-                    ValueLayout.JAVA_INT,
-                    ValueLayout.JAVA_LONG,
-                    ValueLayout.JAVA_LONG));
-        var writeHandle =
-            linker.downcallHandle(
-                lookup.find("write").orElseThrow(),
-                FunctionDescriptor.of(
-                    ValueLayout.JAVA_LONG,
-                    ValueLayout.JAVA_INT,
-                    ValueLayout.ADDRESS,
-                    ValueLayout.JAVA_LONG));
-        var closeHandle =
-            linker.downcallHandle(
-                lookup.find("close").orElseThrow(),
-                FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
+        var openHandle = linker.downcallHandle(lookup.find("open").orElseThrow(),
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+        var ioctlHandle = linker.downcallHandle(lookup.find("ioctl").orElseThrow(),
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG,
+                ValueLayout.JAVA_LONG));
+        var writeHandle = linker.downcallHandle(lookup.find("write").orElseThrow(),
+            FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG));
+        var closeHandle = linker.downcallHandle(lookup.find("close").orElseThrow(),
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
 
         int fd;
         try (var arena = Arena.ofConfined()) {
@@ -603,7 +553,8 @@ class Nudge implements Callable<Integer> {
       switch (tool) {
         case "ydotool" -> run("ydotool", "mousemove", "--", String.valueOf(dx), String.valueOf(dy));
         case "dotool" -> runPipe("echo 'mrel %d %d' | dotool".formatted(dx, dy));
-        default -> {}
+        default -> {
+        }
       }
     }
 
@@ -612,7 +563,8 @@ class Nudge implements Callable<Integer> {
       switch (tool) {
         case "ydotool" -> run("ydotool", "mousemove", "--wheel", String.valueOf(clicks));
         case "dotool" -> runPipe("echo 'wheel %d' | dotool".formatted(clicks));
-        default -> {}
+        default -> {
+        }
       }
     }
 
@@ -622,17 +574,15 @@ class Nudge implements Callable<Integer> {
         case "ydotool" -> run("ydotool", "key", "42:1", "42:0");
         case "wtype" -> run("wtype", "-k", "Shift_L");
         case "dotool" -> runPipe("echo 'key shift' | dotool");
-        default -> {}
+        default -> {
+        }
       }
     }
 
     private void run(String... args) {
       try {
-        new ProcessBuilder(args)
-            .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-            .redirectError(ProcessBuilder.Redirect.DISCARD)
-            .start()
-            .waitFor();
+        new ProcessBuilder(args).redirectOutput(ProcessBuilder.Redirect.DISCARD)
+            .redirectError(ProcessBuilder.Redirect.DISCARD).start().waitFor();
       } catch (Exception _) {
         // Ignored
       }
@@ -640,11 +590,8 @@ class Nudge implements Callable<Integer> {
 
     private void runPipe(String shellCmd) {
       try {
-        new ProcessBuilder("sh", "-c", shellCmd)
-            .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-            .redirectError(ProcessBuilder.Redirect.DISCARD)
-            .start()
-            .waitFor();
+        new ProcessBuilder("sh", "-c", shellCmd).redirectOutput(ProcessBuilder.Redirect.DISCARD)
+            .redirectError(ProcessBuilder.Redirect.DISCARD).start().waitFor();
       } catch (Exception _) {
         // Ignored
       }
@@ -680,18 +627,9 @@ class Nudge implements Callable<Integer> {
 
       // 1. Try busctl
       try {
-        var pb =
-            new ProcessBuilder(
-                "busctl",
-                "--user",
-                "call",
-                "org.freedesktop.ScreenSaver",
-                "/org/freedesktop/ScreenSaver",
-                "org.freedesktop.ScreenSaver",
-                "Inhibit",
-                "ss",
-                "nudge",
-                "keep presence active");
+        var pb = new ProcessBuilder("busctl", "--user", "call", "org.freedesktop.ScreenSaver",
+            "/org/freedesktop/ScreenSaver", "org.freedesktop.ScreenSaver", "Inhibit", "ss", "nudge",
+            "keep presence active");
         var p = pb.start();
         var out = new String(p.getInputStream().readAllBytes()).trim();
         if (p.waitFor() == 0 && out.startsWith("u ")) {
@@ -704,19 +642,9 @@ class Nudge implements Callable<Integer> {
       // 2. Try gdbus
       if (cookie == null) {
         try {
-          var pb =
-              new ProcessBuilder(
-                  "gdbus",
-                  "call",
-                  "--session",
-                  "--dest",
-                  "org.freedesktop.ScreenSaver",
-                  "--object-path",
-                  "/org/freedesktop/ScreenSaver",
-                  "--method",
-                  "org.freedesktop.ScreenSaver.Inhibit",
-                  "nudge",
-                  "keep presence active");
+          var pb = new ProcessBuilder("gdbus", "call", "--session", "--dest",
+              "org.freedesktop.ScreenSaver", "--object-path", "/org/freedesktop/ScreenSaver",
+              "--method", "org.freedesktop.ScreenSaver.Inhibit", "nudge", "keep presence active");
           var p = pb.start();
           var out = new String(p.getInputStream().readAllBytes()).trim();
           if (p.waitFor() == 0 && out.contains("uint32 ")) {
@@ -733,16 +661,8 @@ class Nudge implements Callable<Integer> {
       // 3. Try systemd-inhibit
       if (cookie == null) {
         try {
-          proc =
-              new ProcessBuilder(
-                      "systemd-inhibit",
-                      "--what=idle:sleep",
-                      "--who=nudge",
-                      "--why=Keep presence active",
-                      "--mode=block",
-                      "sleep",
-                      "infinity")
-                  .start();
+          proc = new ProcessBuilder("systemd-inhibit", "--what=idle:sleep", "--who=nudge",
+              "--why=Keep presence active", "--mode=block", "sleep", "infinity").start();
         } catch (Exception _) {
           // Fallback only
         }
@@ -802,33 +722,14 @@ class Nudge implements Callable<Integer> {
     public void close() {
       if (cookie != null) {
         try {
-          new ProcessBuilder(
-                  "busctl",
-                  "--user",
-                  "call",
-                  "org.freedesktop.ScreenSaver",
-                  "/org/freedesktop/ScreenSaver",
-                  "org.freedesktop.ScreenSaver",
-                  "UnInhibit",
-                  "u",
-                  cookie)
-              .start()
-              .waitFor();
+          new ProcessBuilder("busctl", "--user", "call", "org.freedesktop.ScreenSaver",
+              "/org/freedesktop/ScreenSaver", "org.freedesktop.ScreenSaver", "UnInhibit", "u",
+              cookie).start().waitFor();
         } catch (Exception _) {
           try {
-            new ProcessBuilder(
-                    "gdbus",
-                    "call",
-                    "--session",
-                    "--dest",
-                    "org.freedesktop.ScreenSaver",
-                    "--object-path",
-                    "/org/freedesktop/ScreenSaver",
-                    "--method",
-                    "org.freedesktop.ScreenSaver.UnInhibit",
-                    cookie)
-                .start()
-                .waitFor();
+            new ProcessBuilder("gdbus", "call", "--session", "--dest",
+                "org.freedesktop.ScreenSaver", "--object-path", "/org/freedesktop/ScreenSaver",
+                "--method", "org.freedesktop.ScreenSaver.UnInhibit", cookie).start().waitFor();
           } catch (Exception _) {
             // Cleanup error ignored
           }
