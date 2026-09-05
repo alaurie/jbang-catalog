@@ -4,7 +4,7 @@
 //DEPS info.picocli:picocli-codegen:4.7.7
 //JAVAC_OPTIONS -proc:full
 //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms16m -Xmx64m
-//NATIVE_OPTIONS -O2 -march=native --no-fallback
+//NATIVE_OPTIONS -O2 -march=native --no-fallback -H:IncludeResourceBundles=sun.net.httpserver.simpleserver.resources.simpleserver
 
 
 package serve;
@@ -69,6 +69,18 @@ class Serve implements Callable<Integer> {
       description = "Optional directory path and/or port number")
   private List<String> positionalArgs = new ArrayList<>();
 
+  private HttpServer server;
+  private volatile Thread serverThread;
+
+  public void stop() {
+    if (server != null) {
+      server.stop(0);
+    }
+    if (serverThread != null) {
+      serverThread.interrupt();
+    }
+  }
+
   /**
    * Helper method checking whether a string represents a valid integer.
    *
@@ -122,7 +134,7 @@ class Serve implements Callable<Integer> {
     var addr = new InetSocketAddress(bind, port);
     var outputLevel = verbose ? OutputLevel.VERBOSE : OutputLevel.INFO;
 
-    HttpServer server;
+    // Initialize server instance
 
     try {
       HttpHandler fileHandler = SimpleFileServer.createFileHandler(absDir);
@@ -239,9 +251,12 @@ class Serve implements Callable<Integer> {
     }
 
     try {
+      serverThread = Thread.currentThread();
       Thread.currentThread().join();
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
+    } catch (InterruptedException _) {
+      // Thread interrupted on server stop
+    } finally {
+      serverThread = null;
     }
 
     return 0;
