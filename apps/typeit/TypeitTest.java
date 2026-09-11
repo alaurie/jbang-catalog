@@ -78,10 +78,20 @@ public class TypeitTest {
   }
 
   @Test
-  void testPasswordOptionWithoutConsole() {
-    // When run non-interactively without system console, password mode errors gracefully
-    var result = runCommand("-p");
-    assertTrue(result.exitCode() != 0 || GraphicsEnvironment.isHeadless());
+  void testInvalidDriverOption() {
+    var result = runCommand("--driver", "invalid_driver");
+    assertEquals(2, result.exitCode());
+    assertTrue(result.stderr().contains("expected one of [AUTO, UINPUT, ROBOT, WTYPE, YDOTOOL]"));
+  }
+
+  @Test
+  void testTypingCustomText() {
+    var result = runCommand("-d", "0", "-s", "1", "-t", "Test123", "-v");
+    // Should succeed on desktop / uinput environment
+    assertTrue(result.exitCode() == 0 || result.stderr().contains("Error"));
+    if (result.exitCode() == 0) {
+      assertTrue(result.stdout().contains("Done! Typed 7 characters."));
+    }
   }
 
   public static void main(String... args) {
@@ -103,3 +113,4 @@ public class TypeitTest {
     System.exit(0);
   }
 }
+

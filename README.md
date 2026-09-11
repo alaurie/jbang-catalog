@@ -109,7 +109,7 @@ keep your presence status active.
 
 ## typeit
 
-`typeit` reads your system clipboard (or a custom string) and simulates keystroke-by-keystroke typing into your active window after a countdown delay. Useful for remote consoles, VDIs, or VMs where copy-paste is blocked but keystrokes work.
+`typeit` reads your system clipboard (or a custom string) and simulates keystroke-by-keystroke typing into your active window after a countdown delay. Supports Wayland and X11 on Linux (via direct kernel `/dev/uinput` simulation, `wtype`, and `ydotool`), as well as macOS and Windows via `java.awt.Robot`. Useful for remote consoles, VDIs, or VMs where copy-paste is blocked but keystrokes work.
 
 ### Usage
 
@@ -134,11 +134,15 @@ jbang typeit@alaurie -t "my-secret-password"
 ### Options
 
 ```
-Usage: typeit [-ehpvV] [-d=<delay>] [-s=<speed>] [-t=<customText>]
+Usage: typeit [-ehpvV] [-d=<delay>] [--driver=<driverType>] [-s=<speed>]
+              [-t=<customText>]
 Simulates typing clipboard text (or specified string) into the active window
 after a countdown delay.
   -d, --delay=<delay>       Countdown delay in seconds before typing starts
                               (default: 5).
+      --driver, --backend=<driverType>
+                            Keyboard simulation driver: AUTO, UINPUT, ROBOT,
+                              WTYPE, YDOTOOL (default: AUTO).
   -e, --enter               Press Enter key after typing completes.
   -h, --help                Show this help message and exit.
   -p, --password            Prompt securely for password input without echoing
@@ -150,6 +154,7 @@ after a countdown delay.
   -v, --verbose             Print characters as they are typed.
   -V, --version             Print version information and exit.
 ```
+
 
 
 ---
