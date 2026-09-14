@@ -573,6 +573,12 @@ Or export to a custom directory:
 jbang install-native@alaurie -d /usr/local/bin fetch digest
 ```
 
+Or export tools using parallel compilation jobs:
+
+```bash
+jbang install-native@alaurie -j 4
+```
+
 Or clean / remove exported native binaries from `~/.local/bin`:
 
 ```bash
@@ -589,7 +595,7 @@ jbang install-native@alaurie --list
 ### Options
 
 ```
-Usage: install-native [-cfhlvV] [-d=<targetDir>] [<apps>...]
+Usage: install-native [-cfhlvV] [-d=<targetDir>] [-j=<jobs>] [<apps>...]
 Compile, export, and manage standalone zero-overhead native executables.
       [<apps>...]            Specific application aliases to export or clean (e.
                                g. fetch digest jwt). Defaults to all
@@ -601,6 +607,8 @@ Compile, export, and manage standalone zero-overhead native executables.
   -f, --force                Overwrite existing binaries in the target
                                directory.
   -h, --help                 Show this help message and exit.
+  -j, --jobs=<jobs>          Number of concurrent native compilation jobs.
+                               Default: 1
   -l, --list                 List all available catalog applications and
                                dynamic native compatibility.
   -v, --verbose              Enable verbose output during native-image

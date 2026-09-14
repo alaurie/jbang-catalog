@@ -25,6 +25,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -66,6 +68,10 @@ class InstallNative implements Callable<Integer> {
   @Option(names = {"-c", "--clean", "--uninstall"},
       description = "Remove exported native binaries from the target destination directory.")
   private boolean cleanOnly;
+
+  @Option(names = {"-j", "--jobs"},
+      description = "Number of concurrent native compilation jobs. Default: 1", defaultValue = "1")
+  private int jobs = 1;
 
   @Option(names = {"-f", "--force"},
       description = "Overwrite existing binaries in the target directory.")
@@ -113,38 +119,100 @@ class InstallNative implements Callable<Integer> {
     System.out.printf("Applications to export (%d): %s%n%n", targets.size(),
         String.join(", ", targets.stream().map(AppMetadata::alias).toList()));
 
+    boolean isBatch = requestedApps == null || requestedApps.size() != 1;
+    int effectiveJobs = Math.max(1, jobs);
+
     int successful = 0;
+    int skipped = 0;
     int failed = 0;
+    int total = targets.size();
 
-    for (int i = 0; i < targets.size(); i++) {
-      var app = targets.get(i);
-      String binaryName = IS_WINDOWS ? app.alias() + ".exe" : app.alias();
-      Path outputPath = destination.resolve(binaryName);
+    if (effectiveJobs <= 1 || total <= 1) {
+      for (int i = 0; i < total; i++) {
+        var app = targets.get(i);
+        String binaryName = IS_WINDOWS ? app.alias() + ".exe" : app.alias();
+        Path outputPath = destination.resolve(binaryName);
 
-      System.out.printf("[%d/%d] Compiling and exporting '%s' -> %s...%n", i + 1, targets.size(),
-          app.alias(), outputPath.getFileName());
+        System.out.printf("[%d/%d] Compiling and exporting '%s' -> %s...%n", i + 1, total,
+            app.alias(), outputPath.getFileName());
 
-      long startTime = System.currentTimeMillis();
-      System.out.flush();
-      boolean ok = exportNativeBinary(app, outputPath);
-      long elapsed = System.currentTimeMillis() - startTime;
-
-      if (ok) {
-        successful++;
-        System.out.printf("      SUCCESS in %.1fs (%s)%n%n", elapsed / 1000.0,
-            formatFileSize(outputPath));
-      } else {
-        failed++;
+        long startTime = System.currentTimeMillis();
         System.out.flush();
-        System.err.printf("      FAILED after %.1fs%n%n", elapsed / 1000.0);
-        System.err.flush();
+        var res = exportNativeBinary(app, outputPath, isBatch, true);
+        long elapsed = System.currentTimeMillis() - startTime;
+
+        if (res.skipped()) {
+          skipped++;
+          System.out.printf("      SKIPPED: %s%n%n", res.message());
+        } else if (res.ok()) {
+          successful++;
+          System.out.printf("      SUCCESS in %.1fs (%s)%n%n", elapsed / 1000.0,
+              formatFileSize(outputPath));
+        } else {
+          failed++;
+          System.out.flush();
+          System.err.printf("      FAILED after %.1fs: %s%n", elapsed / 1000.0, res.message());
+          if (!verbose && !res.logs().isEmpty()) {
+            for (String errLine : res.logs()) {
+              System.err.println("      " + errLine);
+            }
+          }
+          System.err.println();
+          System.err.flush();
+        }
+      }
+    } else {
+      record TaskOutcome(int index, AppMetadata app, Path outputPath, ExportResult result,
+          long elapsedMs) {}
+
+      System.out.printf("Running %d compilation jobs in parallel...%n%n", effectiveJobs);
+      try (var executor = Executors.newFixedThreadPool(effectiveJobs)) {
+        List<Future<TaskOutcome>> futures = new ArrayList<>();
+        for (int i = 0; i < total; i++) {
+          final int index = i + 1;
+          var app = targets.get(i);
+          String binaryName = IS_WINDOWS ? app.alias() + ".exe" : app.alias();
+          Path outputPath = destination.resolve(binaryName);
+
+          futures.add(executor.submit(() -> {
+            long startTime = System.currentTimeMillis();
+            var res = exportNativeBinary(app, outputPath, isBatch, false);
+            long elapsed = System.currentTimeMillis() - startTime;
+            return new TaskOutcome(index, app, outputPath, res, elapsed);
+          }));
+        }
+
+        for (var future : futures) {
+          var outcome = future.get();
+          var res = outcome.result();
+          if (res.skipped()) {
+            skipped++;
+            System.out.printf("[%d/%d] '%s' -> SKIPPED: %s%n", outcome.index(), total,
+                outcome.app().alias(), res.message());
+          } else if (res.ok()) {
+            successful++;
+            System.out.printf("[%d/%d] '%s' -> SUCCESS in %.1fs (%s)%n", outcome.index(), total,
+                outcome.app().alias(), outcome.elapsedMs() / 1000.0,
+                formatFileSize(outcome.outputPath()));
+          } else {
+            failed++;
+            System.err.printf("[%d/%d] '%s' -> FAILED after %.1fs: %s%n", outcome.index(), total,
+                outcome.app().alias(), outcome.elapsedMs() / 1000.0, res.message());
+            if (!res.logs().isEmpty()) {
+              for (String errLine : res.logs()) {
+                System.err.println("      " + errLine);
+              }
+            }
+          }
+        }
       }
     }
 
     System.out.flush();
     System.out.println("---------------------------------------------------------------");
-    System.out.printf("Export complete: %d succeeded, %d failed.%n", successful, failed);
-    if (successful > 0) {
+    System.out.printf("Export complete: %d succeeded, %d skipped, %d failed.%n", successful,
+        skipped, failed);
+    if (successful > 0 || skipped > 0) {
       System.out.printf("Native binaries ready in: %s%n", destination.toAbsolutePath());
       checkPathEnvironment(destination);
     }
@@ -569,13 +637,20 @@ class InstallNative implements Callable<Integer> {
     return null;
   }
 
-  private boolean exportNativeBinary(AppMetadata app, Path outputPath) {
+  private record ExportResult(boolean ok, boolean skipped, String message, List<String> logs) {}
+
+  private ExportResult exportNativeBinary(AppMetadata app, Path outputPath, boolean isBatch,
+      boolean liveOutput) {
     if (Files.exists(outputPath) && !force) {
-      System.out.flush();
-      System.err.printf("      Binary '%s' already exists. Use --force (-f) to overwrite.%n",
-          outputPath.getFileName());
-      System.err.flush();
-      return false;
+      if (!isBatch) {
+        return new ExportResult(false, false,
+            "Binary '%s' already exists. Use --force (-f) to overwrite."
+                .formatted(outputPath.getFileName()),
+            List.of());
+      }
+      return new ExportResult(true, true,
+          "Already installed (%s). Use -f to overwrite.".formatted(formatFileSize(outputPath)),
+          List.of());
     }
 
     String scriptSource = app.scriptRef();
@@ -606,7 +681,7 @@ class InstallNative implements Callable<Integer> {
         String line;
         while ((line = reader.readLine()) != null) {
           outputLines.add(line);
-          if (verbose || line.startsWith("[jbang] Building")) {
+          if (liveOutput && (verbose || line.startsWith("[jbang] Building"))) {
             System.out.println("      " + line);
           }
         }
@@ -617,30 +692,29 @@ class InstallNative implements Callable<Integer> {
         if (!IS_WINDOWS) {
           outputPath.toFile().setExecutable(true, false);
         }
-        return true;
+        return new ExportResult(true, false, "SUCCESS", outputLines);
       }
 
-      if (!verbose) {
-        boolean printed = false;
-        for (String line : outputLines) {
-          String lower = line.toLowerCase(Locale.ROOT);
-          if (lower.contains("error") || lower.contains("fatal") || lower.contains("cannot export")
-              || lower.contains("already exists") || lower.contains("exception")) {
-            System.err.println("      " + line);
-            printed = true;
-          }
-        }
-        if (!printed) {
-          int start = Math.max(0, outputLines.size() - 5);
-          for (int i = start; i < outputLines.size(); i++) {
-            System.err.println("      " + outputLines.get(i));
-          }
+      List<String> errorLines = new ArrayList<>();
+      for (String line : outputLines) {
+        String lower = line.toLowerCase(Locale.ROOT);
+        if (lower.contains("error") || lower.contains("fatal") || lower.contains("cannot export")
+            || lower.contains("already exists") || lower.contains("exception")) {
+          errorLines.add(line);
         }
       }
-      return false;
+      if (errorLines.isEmpty()) {
+        int start = Math.max(0, outputLines.size() - 5);
+        for (int i = start; i < outputLines.size(); i++) {
+          errorLines.add(outputLines.get(i));
+        }
+      }
+
+      return new ExportResult(false, false, "jbang export exited with code " + exitCode,
+          errorLines);
     } catch (Exception e) {
-      System.err.println("      Error executing jbang export: " + e.getMessage());
-      return false;
+      return new ExportResult(false, false, "Error executing jbang export: " + e.getMessage(),
+          List.of());
     }
   }
 

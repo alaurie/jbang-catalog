@@ -124,6 +124,26 @@ public class InstallNativeTest {
     assertTrue(result.stderr().contains("already exists. Use --force (-f) to overwrite."));
   }
 
+  @Test
+  void testBatchSkipsExistingBinaryWithoutForce(@TempDir Path tempDir) throws Exception {
+    Path dummyNudge = tempDir.resolve("nudge");
+    Path dummyServe = tempDir.resolve("serve");
+    Files.writeString(dummyNudge, "dummy binary");
+    Files.writeString(dummyServe, "dummy binary");
+
+    var result = runCommand("-d", tempDir.toString(), "nudge", "serve");
+    assertEquals(0, result.exitCode());
+    assertTrue(result.stdout().contains("SKIPPED: Already installed"));
+    assertTrue(result.stdout().contains("Export complete: 0 succeeded, 2 skipped, 0 failed."));
+  }
+
+  @Test
+  void testHelpDisplaysJobsOption() {
+    var result = runCommand("--help");
+    assertEquals(0, result.exitCode());
+    assertTrue(result.stdout().contains("-j, --jobs"));
+  }
+
   public static void main(String... args) {
     var launcher = LauncherFactory.create();
     var summaryListener = new SummaryGeneratingListener();
