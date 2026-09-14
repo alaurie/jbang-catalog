@@ -4,7 +4,7 @@
 //DEPS info.picocli:picocli-codegen:4.7.7
 //JAVAC_OPTIONS -proc:full
 //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms4m -Xmx32m -XX:TieredStopAtLevel=1 -XX:CompressedClassSpaceSize=32m -XX:ReservedCodeCacheSize=16m -XX:-UsePerfData
-//NATIVE_OPTIONS -O2 -march=native --no-fallback
+//NATIVE_OPTIONS -O2 -march=native --no-fallback --enable-native-access=ALL-UNNAMED
 
 package typeit;
 
@@ -259,11 +259,11 @@ class Typeit implements Callable<Integer> {
           }
         }
       }
-      if (!GraphicsEnvironment.isHeadless()) {
-        try {
+      try {
+        if (!GraphicsEnvironment.isHeadless()) {
           return new RobotKeyboardDriver(speed);
-        } catch (Exception _) {
         }
+      } catch (Throwable _) {
       }
       throw new IllegalStateException(
           "No compatible keyboard simulation driver found for Linux/Wayland.");
@@ -300,8 +300,8 @@ class Typeit implements Callable<Integer> {
       }
     }
 
-    if (!GraphicsEnvironment.isHeadless()) {
-      try {
+    try {
+      if (!GraphicsEnvironment.isHeadless()) {
         var clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
         if (clipboard.isDataFlavorAvailable(DataFlavor.stringFlavor)) {
           var data = (String) clipboard.getData(DataFlavor.stringFlavor);
@@ -309,10 +309,10 @@ class Typeit implements Callable<Integer> {
             return data;
           }
         }
-      } catch (Exception e) {
-        if (verbose) {
-          System.err.printf("[debug] AWT clipboard read error: %s%n", e.getMessage());
-        }
+      }
+    } catch (Throwable e) {
+      if (verbose) {
+        System.err.printf("[debug] AWT clipboard read error: %s%n", e.getMessage());
       }
     }
 

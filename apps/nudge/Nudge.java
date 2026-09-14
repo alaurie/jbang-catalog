@@ -4,7 +4,7 @@
 //DEPS info.picocli:picocli-codegen:4.7.7
 //JAVAC_OPTIONS -proc:full
 //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms4m -Xmx32m -XX:TieredStopAtLevel=1 -XX:CompressedClassSpaceSize=32m -XX:ReservedCodeCacheSize=16m -XX:-UsePerfData
-//NATIVE_OPTIONS -O2 -march=native --no-fallback
+//NATIVE_OPTIONS -O2 -march=native --no-fallback --enable-native-access=ALL-UNNAMED
 
 package nudge;
 
@@ -272,15 +272,14 @@ class Nudge implements Callable<Integer> {
       return FallbackWaylandBackend.create();
     }
 
-    if (GraphicsEnvironment.isHeadless()) {
-      System.err
-          .println("Error: Headless environment detected. Desktop GUI environment is required.");
-      return null;
-    }
-
     try {
+      if (GraphicsEnvironment.isHeadless()) {
+        System.err
+            .println("Error: Headless environment detected. Desktop GUI environment is required.");
+        return null;
+      }
       return new AwtRobotBackend();
-    } catch (Exception e) {
+    } catch (Throwable e) {
       System.err.printf("Error initializing AWT Robot: %s%n", e.getMessage());
       return null;
     }
@@ -365,6 +364,19 @@ class Nudge implements Callable<Integer> {
    */
   private void log(String message) {
     System.out.printf("%s %s%n", LocalTime.now().format(TIME_FORMATTER), message);
+  }
+
+  /**
+   * Safely retrieves current mouse cursor location if available, or {@code null} if AWT
+   * libraries or pointer tracking cannot be initialized (e.g. Wayland, GraalVM AOT).
+   */
+  private static Point safePointerPosition() {
+    try {
+      var info = MouseInfo.getPointerInfo();
+      return info != null ? info.getLocation() : null;
+    } catch (Throwable _) {
+      return null;
+    }
   }
 
   /// Available action modes executed upon idle detection.
@@ -507,8 +519,7 @@ class Nudge implements Callable<Integer> {
 
     @Override
     public Point getPointerPosition() {
-      var info = MouseInfo.getPointerInfo();
-      return info != null ? info.getLocation() : null;
+      return safePointerPosition();
     }
 
     @Override
@@ -599,8 +610,7 @@ class Nudge implements Callable<Integer> {
 
     @Override
     public Point getPointerPosition() {
-      var info = MouseInfo.getPointerInfo();
-      return info != null ? info.getLocation() : null;
+      return safePointerPosition();
     }
 
     @Override
@@ -709,8 +719,7 @@ class Nudge implements Callable<Integer> {
 
     @Override
     public Point getPointerPosition() {
-      var info = MouseInfo.getPointerInfo();
-      return info != null ? info.getLocation() : null;
+      return safePointerPosition();
     }
 
     @Override
@@ -776,8 +785,7 @@ class Nudge implements Callable<Integer> {
 
     @Override
     public Point getPointerPosition() {
-      var info = MouseInfo.getPointerInfo();
-      return info != null ? info.getLocation() : null;
+      return safePointerPosition();
     }
 
     @Override
