@@ -32,7 +32,7 @@ import picocli.CommandLine.Parameters;
 
 /// Cross-platform utility to compile, export, and manage standalone GraalVM native binaries.
 ///
-/// Supports compiling/exporting native binaries directly to `~/.jbang/bin` (or custom directory),
+/// Supports compiling/exporting native binaries directly to `~/.local/bin` (or custom directory),
 /// listing native compatibility, and cleaning/uninstalling exported binaries.
 @Command(name = "install-native", mixinStandardHelpOptions = true, version = "install-native 1.2",
     description = "Compile, export, and manage standalone zero-overhead native executables.")
@@ -56,7 +56,7 @@ class InstallNative implements Callable<Integer> {
   private List<String> requestedApps = new ArrayList<>();
 
   @Option(names = {"-d", "--dir"},
-      description = "Target destination directory for native binaries. Default: ~/.jbang/bin")
+      description = "Target destination directory for native binaries. Default: ~/.local/bin (~/.jbang/bin on Windows)")
   private Path targetDir;
 
   @Option(names = {"-l", "--list"},
@@ -125,6 +125,7 @@ class InstallNative implements Callable<Integer> {
           app.alias(), outputPath.getFileName());
 
       long startTime = System.currentTimeMillis();
+      System.out.flush();
       boolean ok = exportNativeBinary(app, outputPath);
       long elapsed = System.currentTimeMillis() - startTime;
 
@@ -134,10 +135,13 @@ class InstallNative implements Callable<Integer> {
             formatFileSize(outputPath));
       } else {
         failed++;
+        System.out.flush();
         System.err.printf("      FAILED after %.1fs%n%n", elapsed / 1000.0);
+        System.err.flush();
       }
     }
 
+    System.out.flush();
     System.out.println("---------------------------------------------------------------");
     System.out.printf("Export complete: %d succeeded, %d failed.%n", successful, failed);
     if (successful > 0) {
@@ -220,7 +224,8 @@ class InstallNative implements Callable<Integer> {
                   node.containsKey("description") ? String.valueOf(node.get("description")) : "";
 
               // Don't export install-native into itself
-              if (!"install-native".equalsIgnoreCase(alias)) {
+              if (!"install-native".equalsIgnoreCase(alias)
+                  && !"native-install".equalsIgnoreCase(alias)) {
                 var compatibility = evaluateNativeCompatibility(alias, scriptRef);
                 apps.put(alias.toLowerCase(Locale.ROOT), new AppMetadata(alias, scriptRef,
                     description, compatibility.supported(), compatibility.reason()));
@@ -484,7 +489,14 @@ class InstallNative implements Callable<Integer> {
       return targetDir;
     }
     String userHome = System.getProperty("user.home");
-    return Path.of(userHome, ".jbang", "bin");
+    if (IS_WINDOWS) {
+      return Path.of(userHome, ".jbang", "bin");
+    }
+    String xdgBin = System.getenv("XDG_BIN_HOME");
+    if (xdgBin != null && !xdgBin.isBlank()) {
+      return Path.of(xdgBin);
+    }
+    return Path.of(userHome, ".local", "bin");
   }
 
   private List<AppMetadata> selectTargets(Map<String, AppMetadata> catalogApps,
@@ -498,8 +510,7 @@ class InstallNative implements Callable<Integer> {
 
     List<AppMetadata> result = new ArrayList<>();
     for (String req : requestedApps) {
-      String key = req.trim().toLowerCase(Locale.ROOT);
-      var app = catalogApps.get(key);
+      var app = findApp(catalogApps, req);
       if (app == null) {
         System.err.printf("Warning: Unknown application '%s' (use --list to see available tools)%n",
             req);
@@ -513,14 +524,69 @@ class InstallNative implements Callable<Integer> {
     return result;
   }
 
+  private AppMetadata findApp(Map<String, AppMetadata> catalogApps, String req) {
+    if (req == null || req.isBlank()) {
+      return null;
+    }
+    String normalized = req.trim();
+
+    // 1. Direct lookup: "nudge"
+    var app = catalogApps.get(normalized.toLowerCase(Locale.ROOT));
+    if (app != null) {
+      return app;
+    }
+
+    // 2. Strip catalog / repo suffix: "nudge@alaurie" -> "nudge"
+    if (normalized.contains("@")) {
+      String stripped = normalized.substring(0, normalized.indexOf('@')).trim();
+      app = catalogApps.get(stripped.toLowerCase(Locale.ROOT));
+      if (app != null) {
+        return app;
+      }
+    }
+
+    // 3. Normalize file path or extension: "apps/nudge/Nudge.java" or "nudge.java" -> "nudge"
+    String baseName = Path.of(normalized).getFileName().toString();
+    if (baseName.contains("@")) {
+      baseName = baseName.substring(0, baseName.indexOf('@')).trim();
+    }
+    if (baseName.toLowerCase(Locale.ROOT).endsWith(".java")) {
+      baseName = baseName.substring(0, baseName.length() - ".java".length());
+    }
+    app = catalogApps.get(baseName.toLowerCase(Locale.ROOT));
+    if (app != null) {
+      return app;
+    }
+
+    // 4. Case-insensitive match against alias or scriptRef
+    for (var entry : catalogApps.values()) {
+      if (entry.alias().equalsIgnoreCase(normalized) || entry.alias().equalsIgnoreCase(baseName)
+          || entry.scriptRef().equalsIgnoreCase(normalized)) {
+        return entry;
+      }
+    }
+
+    return null;
+  }
+
   private boolean exportNativeBinary(AppMetadata app, Path outputPath) {
+    if (Files.exists(outputPath) && !force) {
+      System.out.flush();
+      System.err.printf("      Binary '%s' already exists. Use --force (-f) to overwrite.%n",
+          outputPath.getFileName());
+      System.err.flush();
+      return false;
+    }
+
     String scriptSource = app.scriptRef();
     if (!Files.exists(Path.of(scriptSource))) {
       scriptSource = app.alias() + "@alaurie";
     }
 
+    String jbangCmd = IS_WINDOWS ? "jbang.cmd" : "jbang";
+
     List<String> command = new ArrayList<>();
-    command.add("jbang");
+    command.add(jbangCmd);
     command.add("export");
     command.add("native");
     command.add(scriptSource);
@@ -535,10 +601,12 @@ class InstallNative implements Callable<Integer> {
       processBuilder.redirectErrorStream(true);
 
       var process = processBuilder.start();
+      List<String> outputLines = new ArrayList<>();
       try (var reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
         String line;
         while ((line = reader.readLine()) != null) {
-          if (verbose || line.startsWith("[jbang] Building") || line.contains("Error")) {
+          outputLines.add(line);
+          if (verbose || line.startsWith("[jbang] Building")) {
             System.out.println("      " + line);
           }
         }
@@ -550,6 +618,24 @@ class InstallNative implements Callable<Integer> {
           outputPath.toFile().setExecutable(true, false);
         }
         return true;
+      }
+
+      if (!verbose) {
+        boolean printed = false;
+        for (String line : outputLines) {
+          String lower = line.toLowerCase(Locale.ROOT);
+          if (lower.contains("error") || lower.contains("fatal") || lower.contains("cannot export")
+              || lower.contains("already exists") || lower.contains("exception")) {
+            System.err.println("      " + line);
+            printed = true;
+          }
+        }
+        if (!printed) {
+          int start = Math.max(0, outputLines.size() - 5);
+          for (int i = start; i < outputLines.size(); i++) {
+            System.err.println("      " + outputLines.get(i));
+          }
+        }
       }
       return false;
     } catch (Exception e) {

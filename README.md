@@ -11,6 +11,7 @@ This repository contains a [jbang](https://jbang.dev/) catalog of useful scripts
 `serve` is a simple HTTP file server inspired by `python -m http.server` with built-in SPA routing and Basic Auth support.
 
 ### Usage
+
 To run it via jbang from this catalog repository:
 
 ```bash
@@ -60,6 +61,7 @@ Simple HTTP file server inspired by python -m http.server
 `nudge` is a tool inspired by `carrot69/keep-presence` that simulates user activity (mouse movement, key press, or scrolling) when idle to keep your Microsoft Teams presence status active.
 
 ### Usage
+
 To run it via jbang from this catalog repository:
 
 ```bash
@@ -155,8 +157,6 @@ after a countdown delay.
   -V, --version             Print version information and exit.
 ```
 
-
-
 ---
 
 ## jwt
@@ -208,7 +208,6 @@ parties.
                             HS384, HS512).
   -V, --version           Print version information and exit.
 ```
-
 
 ## killport
 
@@ -284,6 +283,7 @@ Or, if you clone the repository locally:
 ```bash
 jbang digest
 ```
+
 ### Options
 
 ```
@@ -305,7 +305,6 @@ Compute and verify cryptographic checksums for files or text input.
   -V, --version             Print version information and exit.
 ```
 
-
 ### Usage
 
 To run it via jbang from this catalog repository:
@@ -319,6 +318,7 @@ Or specify concurrent connection chunks and custom output path:
 ```bash
 jbang fetch@alaurie -c 8 -o debian.iso https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-13.0.0-amd64-netinst.iso
 ```
+
 Or explicitly verify against a specific hash (skips download if file already exists locally and matches):
 
 ```bash
@@ -330,7 +330,6 @@ Or skip automatic checksum probing:
 ```bash
 jbang fetch@alaurie --no-checksum https://example.com/file.zip
 ```
-
 
 Or, if you clone the repository locally:
 
@@ -390,20 +389,18 @@ Or output machine-readable JSON for scripts & monitoring:
 ```bash
 jbang reach@alaurie -j -H github.com 443
 ```
+
 Or query comprehensive DNS records (A, AAAA, MX, NS, CNAME, TXT) and WHOIS domain info:
 
 ```bash
 jbang reach@alaurie --dns --whois google.com 443
 ```
 
-
-
 Or warn and exit code 2 if SSL cert expires in less than 30 days:
 
 ```bash
 jbang reach@alaurie --warn-days 30 example.com 443
 ```
-
 
 Or, if you clone the repository locally:
 
@@ -514,6 +511,7 @@ Or display all mounted physical disks:
 ```bash
 jbang slowfetch@alaurie --disks
 ```
+
 Or inspect top consuming processes:
 
 ```bash
@@ -548,15 +546,16 @@ A thorough, beautiful system information tool written in modern Java.
       --top                Show top 3 processes by CPU and Memory consumption.
   -V, --version            Print version information and exit.
 ```
+
 ---
 
 ## install-native
 
-`install-native` compiles and exports catalog tools as standalone zero-overhead GraalVM native binaries directly into `~/.jbang/bin` or a custom directory, bypassing shell script wrapper overhead for instant sub-10ms CLI execution.
+`install-native` compiles and exports catalog tools as standalone zero-overhead GraalVM native binaries directly into `~/.local/bin` (or custom directory), bypassing shell script wrapper overhead for instant sub-10ms CLI execution.
 
 ### Usage
 
-To compile and export all native-supported tools into `~/.jbang/bin`:
+To compile and export all native-supported tools into `~/.local/bin`:
 
 ```bash
 jbang install-native@alaurie
@@ -571,10 +570,10 @@ jbang install-native@alaurie fetch digest jwt
 Or export to a custom directory:
 
 ```bash
-jbang install-native@alaurie -d ~/.local/bin fetch digest
+jbang install-native@alaurie -d /usr/local/bin fetch digest
 ```
 
-Or clean / remove exported native binaries from `~/.jbang/bin`:
+Or clean / remove exported native binaries from `~/.local/bin`:
 
 ```bash
 jbang install-native@alaurie --clean
@@ -598,7 +597,7 @@ Compile, export, and manage standalone zero-overhead native executables.
   -c, --clean, --uninstall   Remove exported native binaries from the target
                                destination directory.
   -d, --dir=<targetDir>      Target destination directory for native binaries.
-                               Default: ~/.jbang/bin
+                               Default: ~/.local/bin (~/.jbang/bin on Windows)
   -f, --force                Overwrite existing binaries in the target
                                directory.
   -h, --help                 Show this help message and exit.
@@ -649,6 +648,7 @@ Commands:
   inspect  Inspect the contents, manifest, and database metrics of a backup
              archive.
 ```
+
 ## Development
 
 To automatically run `jbang-fmt` on staged `.java` files before committing, enable the repository's pre-commit hook:

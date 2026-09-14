@@ -476,7 +476,7 @@ class JellyfinBackup implements Callable<Integer> {
 
         TarArchiveEntry entry;
         int restoredFiles = 0;
-        while ((entry = tarIn.getNextTarEntry()) != null) {
+        while ((entry = tarIn.getNextEntry()) != null) {
           String name = entry.getName();
           if (name.equals(MANIFEST_ENTRY_NAME)) {
             continue;
@@ -576,7 +576,7 @@ class JellyfinBackup implements Callable<Integer> {
           TarArchiveInputStream tarIn = new TarArchiveInputStream(gzis)) {
 
         TarArchiveEntry entry;
-        while ((entry = tarIn.getNextTarEntry()) != null) {
+        while ((entry = tarIn.getNextEntry()) != null) {
           totalEntries++;
           totalUncompressedSize += entry.getSize();
           String name = entry.getName();

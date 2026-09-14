@@ -102,6 +102,28 @@ public class InstallNativeTest {
     assertTrue(result.stdout().contains("Removed"));
   }
 
+  @Test
+  void testCleanWithCatalogQualifier(@TempDir Path tempDir) throws Exception {
+    Path dummyNudge = tempDir.resolve("nudge");
+    Files.writeString(dummyNudge, "dummy binary");
+    assertTrue(Files.exists(dummyNudge));
+
+    var result = runCommand("-c", "-d", tempDir.toString(), "nudge@alaurie");
+    assertEquals(0, result.exitCode());
+    assertFalse(Files.exists(dummyNudge));
+    assertTrue(result.stdout().contains("Removed: nudge"));
+  }
+
+  @Test
+  void testExistingBinaryRequiresForce(@TempDir Path tempDir) throws Exception {
+    Path dummyNudge = tempDir.resolve("nudge");
+    Files.writeString(dummyNudge, "dummy binary");
+
+    var result = runCommand("-d", tempDir.toString(), "nudge@alaurie");
+    assertEquals(1, result.exitCode());
+    assertTrue(result.stderr().contains("already exists. Use --force (-f) to overwrite."));
+  }
+
   public static void main(String... args) {
     var launcher = LauncherFactory.create();
     var summaryListener = new SummaryGeneratingListener();
