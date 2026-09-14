@@ -81,36 +81,30 @@ class Serve implements Callable<Integer> {
     }
   }
 
-  /**
-   * Helper method checking whether a string represents a valid integer.
-   *
-   * @param s String to check.
-   * @return {@code true} if string can be parsed as an integer, {@code false} otherwise.
-   */
+  /// Helper method checking whether a string represents a valid integer.
+  ///
+  /// @param s String to check.
+  /// @return `true` if string can be parsed as an integer, `false` otherwise.
   private static boolean isInteger(String s) {
     try {
       Integer.parseInt(s);
       return true;
-    } catch (NumberFormatException e) {
+    } catch (NumberFormatException _) {
       return false;
     }
   }
 
-  /**
-   * Main entry point for the JBang script execution.
-   *
-   * @param args Command-line arguments.
-   */
+  /// Main entry point for the JBang script execution.
+  ///
+  /// @param args Command-line arguments.
   void main(String... args) {
     var exitCode = new CommandLine(this).execute(args);
     System.exit(exitCode);
   }
 
-  /**
-   * Resolves arguments, validates directory and port parameters, and launches the file server.
-   *
-   * @return Status code 0 for success, 1 for errors.
-   */
+  /// Resolves arguments, validates directory and port parameters, and launches the file server.
+  ///
+  /// @return Status code 0 for success, 1 for errors.
   @SuppressWarnings("HttpUrlsUsage")
   @Override
   public Integer call() {
@@ -262,11 +256,11 @@ class Serve implements Callable<Integer> {
     return 0;
   }
 
-  /** Resolves positional arguments to determine directory and port options. */
+  /// Resolves positional arguments to determine directory and port options.
   private void resolveArguments() {
     if (directory == null && port == null) {
       if (positionalArgs.size() == 1) {
-        String arg = positionalArgs.get(0);
+        String arg = positionalArgs.getFirst();
         if (isInteger(arg)) {
           port = Integer.parseInt(arg);
           directory = Path.of(".");
@@ -275,7 +269,7 @@ class Serve implements Callable<Integer> {
           port = 8080;
         }
       } else if (positionalArgs.size() >= 2) {
-        String arg1 = positionalArgs.get(0);
+        String arg1 = positionalArgs.getFirst();
         String arg2 = positionalArgs.get(1);
 
         if (!isInteger(arg1) && isInteger(arg2)) {

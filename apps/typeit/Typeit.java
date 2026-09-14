@@ -23,6 +23,7 @@ import java.lang.invoke.MethodHandle;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 import picocli.CommandLine;
@@ -46,7 +47,7 @@ import picocli.CommandLine.Option;
 @SuppressWarnings("unused")
 class Typeit implements Callable<Integer> {
 
-  /** Supported keyboard input simulation driver backends. */
+  /// Supported keyboard input simulation driver backends.
   public enum DriverType {
     AUTO, UINPUT, ROBOT, WTYPE, YDOTOOL
   }
@@ -77,21 +78,17 @@ class Typeit implements Callable<Integer> {
       description = "Keyboard simulation driver: AUTO, UINPUT, ROBOT, WTYPE, YDOTOOL (default: AUTO).")
   private DriverType driverType = DriverType.AUTO;
 
-  /**
-   * Main entry point for the JBang script execution.
-   *
-   * @param args Command-line arguments.
-   */
+  /// Main entry point for the JBang script execution.
+  ///
+  /// @param args Command-line arguments.
   void main(String... args) {
     int exitCode = new CommandLine(this).execute(args);
     System.exit(exitCode);
   }
 
-  /**
-   * Executes the countdown, reads the target text, and simulates character-by-character typing.
-   *
-   * @return Status code 0 for success, 1 for failure or invalid environment.
-   */
+  /// Executes the countdown, reads the target text, and simulates character-by-character typing.
+  ///
+  /// @return Status code 0 for success, 1 for failure or invalid environment.
   @Override
   public Integer call() {
     checkEnvironmentWarnings();
@@ -144,7 +141,7 @@ class Typeit implements Callable<Integer> {
           System.out.printf("%d... ", i);
           System.out.flush();
           try {
-            Thread.sleep(1000L);
+            Thread.sleep(Duration.ofSeconds(1));
           } catch (InterruptedException _) {
             System.out.println("\nCancelled.");
             Thread.currentThread().interrupt();
@@ -184,7 +181,7 @@ class Typeit implements Callable<Integer> {
     }
   }
 
-  /** Displays helpful hints when driver initialization fails. */
+  /// Displays helpful hints when driver initialization fails.
   private void printDriverHelpHints() {
     String osName = System.getProperty("os.name", "").toLowerCase();
     if (osName.contains("linux")) {
@@ -202,7 +199,7 @@ class Typeit implements Callable<Integer> {
     }
   }
 
-  /** Checks for OS-specific desktop security policies (macOS Accessibility, Linux Wayland). */
+  /// Checks for OS-specific desktop security policies (macOS Accessibility, Linux Wayland).
   private void checkEnvironmentWarnings() {
     String osName = System.getProperty("os.name", "").toLowerCase();
     if (osName.contains("mac")) {
@@ -214,12 +211,10 @@ class Typeit implements Callable<Integer> {
     }
   }
 
-  /**
-   * Creates the appropriate keyboard driver based on configuration and operating environment.
-   *
-   * @return Active keyboard simulation driver.
-   * @throws Exception If initialization fails.
-   */
+  /// Creates the appropriate keyboard driver based on configuration and operating environment.
+  ///
+  /// @return Active keyboard simulation driver.
+  /// @throws Exception If initialization fails.
   private KeyboardDriver createKeyboardDriver() throws Exception {
     String osName = System.getProperty("os.name", "").toLowerCase();
     boolean isLinux = osName.contains("linux");
@@ -279,7 +274,7 @@ class Typeit implements Callable<Integer> {
     return new RobotKeyboardDriver(speed);
   }
 
-  /** Detects whether the current session is running under Wayland. */
+  /// Detects whether the current session is running under Wayland.
   private static boolean isWaylandSession() {
     String waylandDisplay = System.getenv("WAYLAND_DISPLAY");
     String sessionType = System.getenv("XDG_SESSION_TYPE");
@@ -287,12 +282,10 @@ class Typeit implements Callable<Integer> {
         || (waylandDisplay != null && !waylandDisplay.isEmpty());
   }
 
-  /**
-   * Reads plain text string content from the system clipboard, supporting Wayland CLI tools
-   * (`wl-paste`), X11 tools (`xclip`, `xsel`), and Java AWT Clipboard.
-   *
-   * @return String content from clipboard, or {@code null} if clipboard is empty or unreadable.
-   */
+  /// Reads plain text string content from the system clipboard, supporting Wayland CLI tools
+  /// (`wl-paste`), X11 tools (`xclip`, `xsel`), and Java AWT Clipboard.
+  ///
+  /// @return String content from clipboard, or `null` if clipboard is empty or unreadable.
   private String readClipboardText() {
     String osName = System.getProperty("os.name", "").toLowerCase();
     if (osName.contains("linux")) {
@@ -338,7 +331,7 @@ class Typeit implements Callable<Integer> {
     return null;
   }
 
-  /** Runs a process and captures its standard output as a string. */
+  /// Runs a process and captures its standard output as a string.
   private static String runCommandCaptureOutput(String... command) {
     try {
       var process =
@@ -353,7 +346,7 @@ class Typeit implements Callable<Integer> {
     return null;
   }
 
-  /** Common interface for keyboard simulation backends. */
+  /// Common interface for keyboard simulation backends.
   interface KeyboardDriver extends AutoCloseable {
     String name();
 
@@ -365,12 +358,10 @@ class Typeit implements Callable<Integer> {
     void close();
   }
 
-  /**
-   * Pure-Java `/dev/uinput` Virtual Keyboard Driver for Linux (Wayland, X11, Console).
-   *
-   * Uses Java 25 Foreign Function and Memory (FFM) API to create a virtual input device
-   * directly with the Linux kernel without requiring external binaries.
-   */
+  /// Pure-Java `/dev/uinput` Virtual Keyboard Driver for Linux (Wayland, X11, Console).
+  ///
+  /// Uses Java 25 Foreign Function and Memory (FFM) API to create a virtual input device
+  /// directly with the Linux kernel without requiring external binaries.
   static class UInputKeyboardDriver implements KeyboardDriver {
     private static final long UI_SET_EVBIT = 0x40045564L;
     private static final long UI_SET_KEYBIT = 0x40045565L;
@@ -480,7 +471,7 @@ class Typeit implements Callable<Integer> {
         int _ = (int) ioctlIntHandle.invokeExact(fd, UI_DEV_CREATE, 0L);
 
         this.eventSegment = arena.allocate(24);
-        Thread.sleep(100L); // Allow compositor/udev to register virtual device
+        Thread.sleep(Duration.ofMillis(100)); // Allow compositor/udev to register virtual device
       } catch (Throwable t) {
         close();
         throw new RuntimeException("Failed to initialize uinput device", t);
@@ -520,7 +511,7 @@ class Typeit implements Callable<Integer> {
         emitEvent(KEY_LEFTSHIFT, 0);
       }
       try {
-        Thread.sleep(speed);
+        Thread.sleep(Duration.ofMillis(speed));
       } catch (InterruptedException _) {
         Thread.currentThread().interrupt();
       }
@@ -649,7 +640,7 @@ class Typeit implements Callable<Integer> {
     }
   }
 
-  /** Wayland `wtype` CLI Driver (for wlroots compositors: Sway, Hyprland, Wayfire). */
+  /// Wayland `wtype` CLI Driver (for wlroots compositors: Sway, Hyprland, Wayfire).
   static class WTypeKeyboardDriver implements KeyboardDriver {
     private final int speed;
 
@@ -680,7 +671,7 @@ class Typeit implements Callable<Integer> {
           new ProcessBuilder("wtype", "-d", String.valueOf(speed), String.valueOf(c)).start()
               .waitFor(500, TimeUnit.MILLISECONDS);
         }
-        Thread.sleep(speed);
+        Thread.sleep(Duration.ofMillis(speed));
       } catch (Exception _) {
       }
     }
@@ -697,7 +688,7 @@ class Typeit implements Callable<Integer> {
     public void close() {}
   }
 
-  /** `ydotool` CLI Driver. */
+  /// `ydotool` CLI Driver.
   static class YDoToolKeyboardDriver implements KeyboardDriver {
     private final int speed;
 
@@ -730,7 +721,7 @@ class Typeit implements Callable<Integer> {
           new ProcessBuilder("ydotool", "type", "-d", String.valueOf(speed), String.valueOf(c))
               .start().waitFor(500, TimeUnit.MILLISECONDS);
         }
-        Thread.sleep(speed);
+        Thread.sleep(Duration.ofMillis(speed));
       } catch (Exception _) {
       }
     }
@@ -748,7 +739,7 @@ class Typeit implements Callable<Integer> {
     public void close() {}
   }
 
-  /** Standard `java.awt.Robot` Driver (for Windows, macOS, and Linux X11). */
+  /// Standard `java.awt.Robot` Driver (for Windows, macOS, and Linux X11).
   static class RobotKeyboardDriver implements KeyboardDriver {
     private final Robot robot;
 
@@ -875,7 +866,7 @@ class Typeit implements Callable<Integer> {
     public void close() {}
   }
 
-  /** Helper to verify if an executable exists on the system PATH. */
+  /// Helper to verify if an executable exists on the system PATH.
   private static boolean isExecutableOnPath(String executable) {
     String pathEnv = System.getenv("PATH");
     if (pathEnv == null) {

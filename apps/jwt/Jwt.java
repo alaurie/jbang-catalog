@@ -67,21 +67,17 @@ class Jwt implements Callable<Integer> {
       description = "JWT token string, file path containing token, or '-' for stdin.")
   private String tokenOrFile;
 
-  /**
-   * Main entry point using Java 25 instance main convention.
-   *
-   * @param args Command-line arguments.
-   */
+  /// Main entry point using Java 25 instance main convention.
+  ///
+  /// @param args Command-line arguments.
   void main(String... args) {
     var exitCode = new CommandLine(this).execute(args);
     System.exit(exitCode);
   }
 
-  /**
-   * Decodes and displays JWT details.
-   *
-   * @return Status code 0 for success, 1 for errors/expiration/verification failure.
-   */
+  /// Decodes and displays JWT details.
+  ///
+  /// @return Status code 0 for success, 1 for errors/expiration/verification failure.
   @Override
   public Integer call() throws Exception {
     var rawToken = resolveToken();
@@ -202,15 +198,13 @@ class Jwt implements Callable<Integer> {
     return isExpired ? 1 : 0;
   }
 
-  /**
-   * Verifies HMAC signature for HS256, HS384, or HS512 JWTs.
-   *
-   * @param signingInput Header and payload joined by dot (parts[0] + "." + parts[1]).
-   * @param signature Base64url signature from JWT.
-   * @param secretKey Secret key byte array string.
-   * @param alg Algorithm name from header (e.g. HS256).
-   * @return {@code true} if signature matches, {@code false} otherwise.
-   */
+  /// Verifies HMAC signature for HS256, HS384, or HS512 JWTs.
+  ///
+  /// @param signingInput Header and payload joined by dot (parts[0] + "." + parts[1]).
+  /// @param signature Base64url signature from JWT.
+  /// @param secretKey Secret key byte array string.
+  /// @param alg Algorithm name from header (e.g. HS256).
+  /// @return `true` if signature matches, `false` otherwise.
   private static boolean verifyHmacSignature(String signingInput, String signature,
       String secretKey, String alg) {
     String hmacAlg = switch (alg.toUpperCase()) {
@@ -253,12 +247,10 @@ class Jwt implements Callable<Integer> {
     }
   }
 
-  /**
-   * Resolves token string from command positional argument, file path, or stdin.
-   *
-   * @return Token string or {@code null} if unresolvable.
-   * @throws Exception On I/O reading errors.
-   */
+  /// Resolves token string from command positional argument, file path, or stdin.
+  ///
+  /// @return Token string or `null` if unresolvable.
+  /// @throws Exception On I/O reading errors.
   private String resolveToken() throws Exception {
     if (tokenOrFile != null && !tokenOrFile.isBlank() && !tokenOrFile.equals("-")) {
       var path = Path.of(tokenOrFile);
@@ -281,12 +273,10 @@ class Jwt implements Callable<Integer> {
     return null;
   }
 
-  /**
-   * Base64url decodes a JWT section.
-   *
-   * @param part Base64url encoded string slice.
-   * @return Decoded UTF-8 string, or {@code null} on failure.
-   */
+  /// Base64url decodes a JWT section.
+  ///
+  /// @param part Base64url encoded string slice.
+  /// @return Decoded UTF-8 string, or `null` on failure.
   private static String decodePart(String part) {
     try {
       var bytes = Base64.getUrlDecoder().decode(part);
@@ -296,12 +286,10 @@ class Jwt implements Callable<Integer> {
     }
   }
 
-  /**
-   * Formats raw JSON string into pretty indented JSON string.
-   *
-   * @param rawJson Raw JSON string.
-   * @return Indented JSON string or original string if parsing fails.
-   */
+  /// Formats raw JSON string into pretty indented JSON string.
+  ///
+  /// @param rawJson Raw JSON string.
+  /// @return Indented JSON string or original string if parsing fails.
   private static String prettyPrintJson(String rawJson) {
     try {
       Object parsed = parseJson(rawJson.trim());
@@ -549,14 +537,12 @@ class Jwt implements Callable<Integer> {
     }
   }
 
-  /**
-   * Prints claim timestamp and relative duration if present in payload JSON.
-   *
-   * @param node JSON payload root node.
-   * @param key Claim key name.
-   * @param label Display label.
-   * @param nowSec Current epoch timestamp in seconds.
-   */
+  /// Prints claim timestamp and relative duration if present in payload JSON.
+  ///
+  /// @param payload JSON payload root map.
+  /// @param key Claim key name.
+  /// @param label Display label.
+  /// @param nowSec Current epoch timestamp in seconds.
   private static void printClaimTimestamp(Map<String, Object> payload, String key, String label,
       long nowSec) {
     var val = payload.get(key);
@@ -572,12 +558,10 @@ class Jwt implements Callable<Integer> {
     System.out.printf("%-16s %s (%s)%n", label + " (" + key + "):", formattedDate, relative);
   }
 
-  /**
-   * Computes human-readable relative time string.
-   *
-   * @param diffSec Difference in seconds from now.
-   * @return Formatted relative time string (e.g. "in 2 hours", "5 minutes ago").
-   */
+  /// Computes human-readable relative time string.
+  ///
+  /// @param diffSec Difference in seconds from now.
+  /// @return Formatted relative time string (e.g. "in 2 hours", "5 minutes ago").
   private static String getRelativeTimeString(long diffSec) {
     if (diffSec == 0) {
       return "now";

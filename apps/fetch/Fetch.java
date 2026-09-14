@@ -475,7 +475,7 @@ class Fetch implements Callable<Integer> {
     return new ProgressBar(outputPath.getFileName().toString(), total, initialOffset);
   }
 
-  /** Pure-Java lightweight progress bar with transfer rate and ETA calculations. */
+  /// Pure-Java lightweight progress bar with transfer rate and ETA calculations.
   static class ProgressBar implements AutoCloseable {
     private static final String HIDE_CURSOR = "\u001B[?25l";
     private static final String SHOW_CURSOR = "\u001B[?25h";
@@ -514,7 +514,7 @@ class Fetch implements Callable<Integer> {
       while (!closed) {
         render();
         try {
-          Thread.sleep(75); // ~13 FPS smooth update rate
+          Thread.sleep(Duration.ofMillis(75)); // ~13 FPS smooth update rate
         } catch (InterruptedException _) {
           break;
         }

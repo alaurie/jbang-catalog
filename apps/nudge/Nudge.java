@@ -20,6 +20,7 @@ import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
+import java.time.Duration;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
@@ -84,22 +85,18 @@ class Nudge implements Callable<Integer> {
   private InputBackend backend;
   private int mouseDirection = 0;
 
-  /**
-   * Main entry point for the JBang script execution.
-   *
-   * @param args Command-line arguments.
-   */
+  /// Main entry point for the JBang script execution.
+  ///
+  /// @param args Command-line arguments.
   void main(String... args) {
     int exitCode = new CommandLine(this).execute(args);
     System.exit(exitCode);
   }
 
-  /**
-   * Initializes the appropriate input backend, starts the initial delay buffer, and enters the idle
-   * detection loop.
-   *
-   * @return Status code 0 for success, 1 for errors.
-   */
+  /// Initializes the appropriate input backend, starts the initial delay buffer, and enters the idle
+  /// detection loop.
+  ///
+  /// @return Status code 0 for success, 1 for errors.
   @Override
   public Integer call() {
     int randStart = 0;
@@ -167,7 +164,7 @@ class Nudge implements Callable<Integer> {
     }));
 
     try {
-      Thread.sleep(initialDelay * 1000L);
+      Thread.sleep(Duration.ofSeconds(initialDelay));
     } catch (InterruptedException _) {
       Thread.currentThread().interrupt();
       return 0;
@@ -226,7 +223,7 @@ class Nudge implements Callable<Integer> {
 
       try {
         //noinspection BusyWait
-        Thread.sleep(delaySeconds * 1000L);
+        Thread.sleep(Duration.ofSeconds(delaySeconds));
       } catch (InterruptedException _) {
         Thread.currentThread().interrupt();
         break;
@@ -236,11 +233,9 @@ class Nudge implements Callable<Integer> {
     return 0;
   }
 
-  /**
-   * Selects and initializes the most capable presence/input backend for the current platform.
-   *
-   * @return Active {@link InputBackend} instance.
-   */
+  /// Selects and initializes the most capable presence/input backend for the current platform.
+  ///
+  /// @return Active `InputBackend` instance.
   private InputBackend initializeBackend() {
     var os = System.getProperty("os.name", "").toLowerCase();
     if (os.contains("mac")) {
@@ -289,11 +284,9 @@ class Nudge implements Callable<Integer> {
     }
   }
 
-  /**
-   * Determines if the current environment is running a Wayland display server.
-   *
-   * @return {@code true} if Wayland is detected.
-   */
+  /// Determines if the current environment is running a Wayland display server.
+  ///
+  /// @return `true` if Wayland is detected.
   private static boolean isWaylandSession() {
     var sessionType = System.getenv("XDG_SESSION_TYPE");
     var waylandDisplay = System.getenv("WAYLAND_DISPLAY");
@@ -301,12 +294,10 @@ class Nudge implements Callable<Integer> {
         || (waylandDisplay != null && !waylandDisplay.isBlank());
   }
 
-  /**
-   * Checks whether a system CLI executable is available in PATH.
-   *
-   * @param command Command name.
-   * @return {@code true} if command is found.
-   */
+  /// Checks whether a system CLI executable is available in PATH.
+  ///
+  /// @param command Command name.
+  /// @return `true` if command is found.
   private static boolean hasCommand(String command) {
     try {
       var process =
@@ -318,12 +309,10 @@ class Nudge implements Callable<Integer> {
     }
   }
 
-  /**
-   * Moves mouse cursor according to configured mode (out-and-back or circular).
-   *
-   * @param current The starting cursor position if known.
-   * @return The updated cursor position after movement, or {@code null}.
-   */
+  /// Moves mouse cursor according to configured mode (out-and-back or circular).
+  ///
+  /// @param current The starting cursor position if known.
+  /// @return The updated cursor position after movement, or `null`.
   private Point moveMouse(Point current) {
     int step = Math.max(1, pixels);
     int deltaX;
@@ -338,7 +327,7 @@ class Nudge implements Callable<Integer> {
     } else {
       backend.moveMouse(step, step);
       try {
-        Thread.sleep(80);
+        Thread.sleep(Duration.ofMillis(80));
       } catch (InterruptedException _) {
         Thread.currentThread().interrupt();
       }
@@ -349,31 +338,27 @@ class Nudge implements Callable<Integer> {
     return backend.getPointerPosition();
   }
 
-  /** Simulates a mouse wheel scroll. */
+  /// Simulates a mouse wheel scroll.
   private void scrollMouse() {
     backend.scrollMouse(2);
     log("Mouse wheel scrolled");
   }
 
-  /** Simulates pressing and releasing the Shift key. */
+  /// Simulates pressing and releasing the Shift key.
   private void pressShiftKey() {
     backend.pressShiftKey();
     log("Shift key pressed");
   }
 
-  /**
-   * Prints timestamped log message to stdout.
-   *
-   * @param message Message string.
-   */
+  /// Prints timestamped log message to stdout.
+  ///
+  /// @param message Message string.
   private void log(String message) {
     System.out.printf("%s %s%n", LocalTime.now().format(TIME_FORMATTER), message);
   }
 
-  /**
-   * Safely retrieves current mouse cursor location if available, or {@code null} if AWT
-   * libraries or pointer tracking cannot be initialized (e.g. Wayland, GraalVM AOT).
-   */
+  /// Safely retrieves current mouse cursor location if available, or `null` if AWT
+  /// libraries or pointer tracking cannot be initialized (e.g. Wayland, GraalVM AOT).
   private static Point safePointerPosition() {
     try {
       var info = MouseInfo.getPointerInfo();
@@ -501,7 +486,7 @@ class Nudge implements Callable<Integer> {
       emit(EV_KEY, KEY_LEFTSHIFT, 1);
       emit(EV_SYN, (short) 0, 0);
       try {
-        Thread.sleep(40);
+        Thread.sleep(Duration.ofMillis(40));
       } catch (InterruptedException _) {
         Thread.currentThread().interrupt();
       }

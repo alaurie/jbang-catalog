@@ -9,6 +9,7 @@ Instructions, conventions, and engineering standards for AI coding agents operat
 `jbang-catalog` is a curated repository of single-file Java CLI utilities distributed via [JBang](https://jbang.dev/).
 
 ### Architectural Principles
+
 - **Single-File Executables**: Every tool lives in a single `.java` source file that can be executed directly by JBang without requiring a Gradle/Maven project wrapper or build steps.
 - **Zero-Installer Philosophy**: All dependencies are declared directly inside the file header via `//DEPS` directives, allowing scripts to run instantly on any machine with JBang installed.
 - **Standard Library First**: Prefer Java Standard Library APIs (`java.net.http`, `java.nio.file`, `java.awt`, `java.time`, `java.util.concurrent`, `java.util.stream`) over external libraries. Third-party dependencies should be minimal, lightweight, and focused (e.g., `picocli` for CLI parsing, `jackson` when JSON parsing is required).
@@ -18,7 +19,9 @@ Instructions, conventions, and engineering standards for AI coding agents operat
 ## 2. Technical Requirements & Standards
 
 ### Java Version & Directives
+
 - **Target JDK**: **Java 25+** (`//JAVA 25+` directive on line 2 of every script).
+
 ```java
 ///usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 25+
@@ -30,21 +33,26 @@ Instructions, conventions, and engineering standards for AI coding agents operat
 
 package <app-name>;
 ```
+
 - **Native Image Support (`jbang --native`)**:
   - **Host Architecture Optimization (`-march=native`)**: All CLI scripts include `//NATIVE_OPTIONS -O2 -march=native --no-fallback` to instruct GraalVM to compile with host-specific CPU SIMD vectorization and hardware cryptographic instructions (e.g. SHA-NI, AVX2, AVX-512, ARM Neon).
   - **Picocli Reflection Metadata**: Include `//DEPS info.picocli:picocli-codegen:4.7.7` and `//JAVAC_OPTIONS -proc:full` on every CLI script so the annotation processor generates `reflect-config.json` at compile-time for GraalVM ahead-of-time (AOT) compilation.
 - **Pure-Java vs Native C-Bindings (JNA/FFM)**: All CLI tools in this catalog (`digest`, `jwt`, `killport`, `reach`, `serve`, `fetch`, `nudge`, `typeit`, `jellyfin-backup`, `install-native`) are pure-Java (or standard FFM) and compile cleanly with GraalVM native image (`jbang --native`).
 - **JVM Memory & Startup Optimization**:
 - **Tier 1 (Ultra-Compact for Stateless/Short-Lived Micro-CLIs)** (`jwt`, `killport`, `nudge`, `typeit`, `reach`):
+
     ```java
     //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms4m -Xmx32m -XX:TieredStopAtLevel=1 -XX:CompressedClassSpaceSize=32m -XX:ReservedCodeCacheSize=16m -XX:-UsePerfData
     ```
+
   - **Tier 2 (High-Throughput Cryptography, I/O & Multithreaded Streaming)** (`digest`, `serve`, `fetch`):
+
     ```java
     //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms16m -Xmx64m
     ```
 
 ### Code Style & Formatting
+
 - **Style Guide**: **Google Java Style Guide**.
 - **Formatter**: `jbang-fmt --style=google`.
 - **Indentation**: Exactly **2 spaces** (never use tab `\t` characters).
@@ -55,15 +63,20 @@ package <app-name>;
   - Class-level Javadoc describing the utility's purpose, background, and platform/OS notes.
   - Method-level Javadoc for helper methods describing behavior, parameters (`@param`), return values (`@return`), and exceptions (`@throws`).
 - **Automated Formatting Hook**: Pre-commit hook at `.githooks/pre-commit` enforces `jbang-fmt --style=google` on all staged Java files. Enable via:
+
   ```bash
   git config core.hooksPath .githooks
   ```
+
 ### Modern Java Idioms
+
 - **Type Inference (`var`)**: Use `var` for local variables whenever the right-hand type assignment or initialization is clear.
 - **Unnamed Variables (`_`)**: Use `_` for unneeded exception catches, lambda parameters, or unused variables (JEP 456, Java 22+):
+
   ```java
   try { ... } catch (Exception _) { /* silent fallback */ }
   ```
+
 - **Virtual Threads**: Prefer `Executors.newVirtualThreadPerTaskExecutor()` or `Thread.ofVirtual().start(...)` for I/O-bound concurrency over fixed thread pools.
 - **Sequenced Collections**: Use `.getFirst()`, `.getLast()`, and `.reversed()` on lists, deques, and sets (JEP 431, Java 21+).
 - **Hex Formatting**: Use standard `java.util.HexFormat` for digest/hash hex encoding instead of manual byte loops or external libraries.
@@ -84,6 +97,7 @@ package <app-name>;
 
 - **Callable Contract**: All main CLI classes must implement `java.util.concurrent.Callable<Integer>` and return `0` on successful execution or a non-zero exit code (`1` or `2`) on failure.
 - **Picocli `@Command` Annotation**:
+
   ```java
   @Command(
       name = "script-name",
@@ -92,6 +106,7 @@ package <app-name>;
       description = "Concise description of what the utility does."
   )
   ```
+
 - **Standard Options**:
   - `-h`, `--help`: Display usage options and exit.
   - `-v` / `-V`, `--version`: Display version information and exit.
@@ -100,6 +115,7 @@ package <app-name>;
   In Java 25+, `public` access modifiers and `static` declarations are **no longer required** for main entry points (JEP 495). You can use flexible instance or package-private main methods:
   
   *Option A — Instance Main (Recommended for Picocli)*:
+
   ```java
   void main(String... args) {
     int exitCode = new CommandLine(this).execute(args);
@@ -108,6 +124,7 @@ package <app-name>;
   ```
   
   *Option B — Package-Private Static Main*:
+
   ```java
   static void main(String... args) {
     int exitCode = new CommandLine(new MyScriptClass()).execute(args);
@@ -116,9 +133,11 @@ package <app-name>;
   ```
 
 ### Picocli Field Rules
+
 - **Never mark `@Option` or `@Parameters` fields `final`**: picocli assigns them via reflection at runtime; `final` prevents injection in Java 9+ module-aware environments.
 - **Always add `@SuppressWarnings("unused")` on every picocli command class**: IDEs cannot see reflection-based assignment and will incorrectly flag `@Option`/`@Parameters` fields as never assigned or never used.
 - **Suppress at class level, not field level**: one annotation covers all injected fields cleanly.
+
   ```java
   @Command(name = "my-tool", ...)
   @SuppressWarnings("unused")
@@ -129,11 +148,13 @@ package <app-name>;
   ```
 
 ### Logging & Terminal Output
+
 - **No Heavy Logging Frameworks**: Never pull in heavyweight logging frameworks (`log4j`, `logback`, `commons-logging`). CLI utilities should start instantly and avoid config file clutter.
 - **Unix I/O Conventions**:
   - Write primary results, machine-readable payloads, and success messages to `System.out`.
   - Write errors, warnings, and diagnostic information to `System.err`.
 - **Verbose / Debug Mode**: When diagnostic or debug tracing is needed, provide a `-v` / `--verbose` flag and log conditionally to `System.err`:
+
   ```java
   @Option(names = {"-v", "--verbose"}, description = "Enable verbose debug output.")
   private boolean verbose;
@@ -157,11 +178,14 @@ package <app-name>;
 All utilities **MUST** be fully functional across Windows, macOS, and Linux by default.
 
 ### Pathing & Environment
+
 - Never hardcode `/` or `\` path separators in strings. Always use `Path.of()` or `File.separator`.
 - Resolve home directories portably via `System.getProperty("user.home")`.
 - Account for OS binary extensions (e.g., appending `.exe` on Windows vs extensionless binaries on Linux/macOS).
 - **Directory Target Resolution**: When an option accepts an output file path (`-o`, `--output`) and the user passes an existing directory path (or a path ending in `/` or `\`), resolve the target file name inside that directory and ensure parent directories are created via `Files.createDirectories()`.
+
 ### GUI, AWT & Desktop Environments
+
 - For utilities interacting with screen/keyboard/mouse (`java.awt.Robot`, `java.awt.MouseInfo`):
   - Check `GraphicsEnvironment.isHeadless()` early to display clear error messages if executed in headless environments.
   - Add explicit delays (`robot.delay(50)`, `robot.setAutoDelay(40)`) to account for OS window manager event loop processing.
@@ -170,6 +194,7 @@ All utilities **MUST** be fully functional across Windows, macOS, and Linux by d
     - **Linux**: Detect Wayland display servers (`WAYLAND_DISPLAY` or `XDG_SESSION_TYPE=wayland`) and warn about compositor restrictions, suggesting X11 or fallback modes.
 
 ### Error Handling & Graceful Shutdown
+
 - Catch exceptions at the boundary, printing user-friendly error messages to `System.err` without dumping raw stack traces unless debug mode is enabled.
 - For long-running processes or background loops (e.g. `keep-presence`, `serve`), register a shutdown hook (`Runtime.getRuntime().addShutdownHook(...)`) to clean up sockets, threads, or resources on `SIGINT` / `Ctrl+C`.
 
@@ -178,8 +203,10 @@ All utilities **MUST** be fully functional across Windows, macOS, and Linux by d
 ## 5. Catalog Registration & Documentation Standards
 
 ### 1. Repository Directory Structure & Catalog Manifest (`jbang-catalog.json`)
+
 Applications live in dedicated subdirectories under `apps/`: `apps/<app-name>/<app-name>.java`.
 Every new utility must be registered under `"aliases"` in `jbang-catalog.json`:
+
 ```json
 {
   "aliases": {
@@ -192,12 +219,16 @@ Every new utility must be registered under `"aliases"` in `jbang-catalog.json`:
 ```
 
 ### 2. Documentation (`README.md`)
+
 - **Header**: Maintain the centered logo image at the top of `README.md`.
 - **Execution Syntax**: Use `@alaurie` shorthand notation in all usage examples:
+
   ```bash
   jbang <alias>@alaurie
   ```
+
 - **Section Structure**: Each tool must have a dedicated section formatted as:
+
   ```markdown
   ## <alias>
 
@@ -216,6 +247,7 @@ Every new utility must be registered under `"aliases"` in `jbang-catalog.json`:
   ```
   <Exact verbatim output of `jbang <script>.java --help`>
   ```
+
   ```
 - **Visual Dividers**: Use horizontal rule bar separators (`---`) between every top-level program section in `README.md`.
 
@@ -226,15 +258,21 @@ Every new utility must be registered under `"aliases"` in `jbang-catalog.json`:
 Before committing any change:
 
 1. **Verify Execution & Help Output**:
+
    ```bash
    jbang <script>.java --help
    ```
+
 2. **Format Source Code**:
+
    ```bash
    jbang-fmt --style=google *.java
    ```
+
 3. **Verify Git Pre-Commit Hook**:
+
    ```bash
    git config core.hooksPath .githooks
    ```
+
 4. **Check Git Status**: Ensure working tree is clean and all changes are formatted properly.

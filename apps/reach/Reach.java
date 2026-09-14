@@ -113,23 +113,23 @@ class Reach implements Callable<Integer> {
   private static final DateTimeFormatter DATE_FORMATTER =
       DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z").withZone(ZoneId.systemDefault());
 
-  /** Record carrying extended TLS inspection results. */
+  /// Record carrying extended TLS inspection results.
   record TlsInfo(String subject, String issuer, Instant notAfter, long daysRemaining,
       String protocol, String cipherSuite, String pubKeyDetails, String sigAlg, String serialNumber,
       List<String> sans, String error) {}
 
-  /** Record carrying HTTP probe results. */
+  /// Record carrying HTTP probe results.
   record HttpInfo(int statusCode, double ttfbMs, String serverHeader, String error) {}
 
-  /** Record carrying DNS records lookup results. */
+  /// Record carrying DNS records lookup results.
   record DnsInfo(List<String> aRecords, List<String> aaaaRecords, List<String> mxRecords,
       List<String> nsRecords, List<String> cnameRecords, List<String> txtRecords, String error) {}
 
-  /** Record carrying WHOIS domain lookup results. */
+  /// Record carrying WHOIS domain lookup results.
   record WhoisInfo(String registrar, String creationDate, String expiryDate, String updatedDate,
       String error) {}
 
-  /** Record carrying overall single-port probe results. */
+  /// Record carrying overall single-port probe results.
   record PortResult(int port, boolean isSsl, TlsInfo tls, HttpInfo http, int transmitted,
       int received, double lossPercent, double minRtt, double avgRtt, double maxRtt) {}
 
@@ -320,8 +320,8 @@ class Reach implements Callable<Integer> {
 
         if (i < attempts - 1) {
           try {
-            Thread.sleep(interval);
-          } catch (InterruptedException e) {
+            Thread.sleep(Duration.ofMillis(interval));
+          } catch (InterruptedException _) {
             Thread.currentThread().interrupt();
             break;
           }
@@ -406,7 +406,7 @@ class Reach implements Callable<Integer> {
           results.add(String.valueOf(attr.get(i)));
         }
       }
-    } catch (Exception ignored) {
+    } catch (Exception _) {
     }
     return results;
   }
@@ -486,12 +486,12 @@ class Reach implements Callable<Integer> {
           for (var p = Math.min(start, end); p <= Math.max(start, end); p++) {
             ports.add(p);
           }
-        } catch (NumberFormatException ignored) {
+        } catch (NumberFormatException _) {
         }
       } else {
         try {
           ports.add(Integer.parseInt(trimmed));
-        } catch (NumberFormatException ignored) {
+        } catch (NumberFormatException _) {
         }
       }
     }
@@ -542,7 +542,7 @@ class Reach implements Callable<Integer> {
                 }
               }
             }
-          } catch (Exception ignored) {
+          } catch (Exception _) {
           }
 
           return new TlsInfo(cert.getSubjectX500Principal().getName(),
