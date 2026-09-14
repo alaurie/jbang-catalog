@@ -36,9 +36,13 @@ import picocli.CommandLine.Option;
 ///
 /// Designed for remote sessions, VDIs (Citrix, VMware Horizon, RDP), and virtual machines where
 /// copy-paste is blocked by security policy, but keyboard input events are accepted.
-@Command(name = "typeit", mixinStandardHelpOptions = true, version = "typeit 1.2",
+@Command(name = "typeit", mixinStandardHelpOptions = true, version = "typeit 2.0",
     description = "Simulates typing clipboard text (or specified string) into the active window after a"
-        + " countdown delay.")
+        + " countdown delay.",
+    footer = {"", "Linux Wayland Note:",
+        "  Direct kernel virtual input (/dev/uinput via FFM) requires membership in the",
+        "  'input' group: sudo usermod -aG input $USER (requires re-login).",
+        "  Alternatively, install wtype or ydotool: sudo apt install wtype ydotool"})
 @SuppressWarnings("unused")
 class Typeit implements Callable<Integer> {
 

@@ -35,7 +35,7 @@ import picocli.CommandLine.Parameters;
 /// Lightweight HTTP file server utility inspired by `python -m http.server`.
 ///
 /// Built using Java's built-in `SimpleFileServer` and `HttpServer` APIs.
-@Command(name = "serve", mixinStandardHelpOptions = true, version = "serve 1.2",
+@Command(name = "serve", mixinStandardHelpOptions = true, version = "serve 2.0",
     description = "Simple HTTP file server inspired by python -m http.server")
 @SuppressWarnings("unused")
 class Serve implements Callable<Integer> {

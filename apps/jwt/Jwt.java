@@ -37,7 +37,7 @@ import picocli.CommandLine.Parameters;
 /// prints JSON structures, checks expiration/timestamp claims, verifies HMAC signatures, and
 /// exports
 /// claims to shell environment variables.
-@Command(name = "jwt", mixinStandardHelpOptions = true, version = "jwt 1.1",
+@Command(name = "jwt", mixinStandardHelpOptions = true, version = "jwt 2.0",
     description = "Inspect and decode JSON Web Tokens (JWT) without sending tokens to third parties.")
 @SuppressWarnings("unused")
 class Jwt implements Callable<Integer> {

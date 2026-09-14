@@ -33,9 +33,9 @@ package <app-name>;
 - **Native Image Support (`jbang --native`)**:
   - **Host Architecture Optimization (`-march=native`)**: All CLI scripts include `//NATIVE_OPTIONS -O2 -march=native --no-fallback` to instruct GraalVM to compile with host-specific CPU SIMD vectorization and hardware cryptographic instructions (e.g. SHA-NI, AVX2, AVX-512, ARM Neon).
   - **Picocli Reflection Metadata**: Include `//DEPS info.picocli:picocli-codegen:4.7.7` and `//JAVAC_OPTIONS -proc:full` on every CLI script so the annotation processor generates `reflect-config.json` at compile-time for GraalVM ahead-of-time (AOT) compilation.
-  - **Pure-Java vs Native C-Bindings (JNA/FFM)**: Pure-Java utilities (e.g. `digest`, `jwt`, `killport`, `reach`, `serve`, `fetch`) compile cleanly with `jbang --native`. Tools that depend on dynamic C/JNI bindings (such as `OSHI` / `JNA` in `slowfetch`) require external C dynamic link libraries (`libjnidispatch`) and are intended to run on the standard JVM (`jbang script.java`).
+- **Pure-Java vs Native C-Bindings (JNA/FFM)**: All CLI tools in this catalog (`digest`, `jwt`, `killport`, `reach`, `serve`, `fetch`, `nudge`, `typeit`, `jellyfin-backup`, `install-native`) are pure-Java (or standard FFM) and compile cleanly with GraalVM native image (`jbang --native`).
 - **JVM Memory & Startup Optimization**:
-  - **Tier 1 (Ultra-Compact for Stateless/Short-Lived Micro-CLIs)** (`jwt`, `killport`, `nudge`, `typeit`, `reach`, `slowfetch`):
+- **Tier 1 (Ultra-Compact for Stateless/Short-Lived Micro-CLIs)** (`jwt`, `killport`, `nudge`, `typeit`, `reach`):
     ```java
     //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms4m -Xmx32m -XX:TieredStopAtLevel=1 -XX:CompressedClassSpaceSize=32m -XX:ReservedCodeCacheSize=16m -XX:-UsePerfData
     ```

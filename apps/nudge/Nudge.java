@@ -38,9 +38,13 @@ import picocli.CommandLine.Option;
 /// Supports Linux Wayland natively via direct kernel virtual input (`/dev/uinput` via FFM),
 /// CLI tools (`ydotool`, `wtype`, `dotool`), D-Bus idle inhibition, and standard `java.awt.Robot`
 /// on X11, macOS, and Windows.
-@Command(name = "nudge", mixinStandardHelpOptions = true, version = "nudge 1.3",
+@Command(name = "nudge", mixinStandardHelpOptions = true, version = "nudge 2.0",
     description = "Simulates user activity (mouse movement, key press, scrolling) when idle to keep your"
-        + " presence status active.")
+        + " presence status active.",
+    footer = {"", "Linux Wayland Note:",
+        "  Direct kernel virtual input (/dev/uinput via FFM) requires membership in the",
+        "  'input' group: sudo usermod -aG input $USER (requires re-login).",
+        "  Alternatively, install ydotool: sudo apt install ydotool"})
 @SuppressWarnings("unused")
 class Nudge implements Callable<Integer> {
 

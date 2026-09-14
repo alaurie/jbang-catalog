@@ -51,7 +51,7 @@ import picocli.CommandLine.Parameters;
 /// Captures configurations (/etc/jellyfin), live databases (jellyfin.db, library.db),
 /// installed plugins, and metadata, while safely stopping the systemd service and excluding
 /// temporary cache bloat and previous internal backups.
-@Command(name = "jellyfin-backup", mixinStandardHelpOptions = true, version = "jellyfin-backup 1.0",
+@Command(name = "jellyfin-backup", mixinStandardHelpOptions = true, version = "jellyfin-backup 2.0",
     description = "Complete backup, restore, and disaster recovery utility for Jellyfin media server.",
     subcommands = {JellyfinBackup.BackupCmd.class, JellyfinBackup.RestoreCmd.class,
         JellyfinBackup.InspectCmd.class})

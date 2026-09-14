@@ -27,7 +27,7 @@ import picocli.CommandLine.Parameters;
 ///
 /// Supports dry-run inspection, interactive prompts, custom signals, force killing, and multi-port
 /// batch termination across Windows, macOS, and Linux.
-@Command(name = "killport", mixinStandardHelpOptions = true, version = "killport 1.1",
+@Command(name = "killport", mixinStandardHelpOptions = true, version = "killport 2.0",
     description = "Find and terminate processes listening on specified network ports.")
 @SuppressWarnings("unused")
 class Killport implements Callable<Integer> {

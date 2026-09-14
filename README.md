@@ -107,6 +107,12 @@ keep your presence status active.
                               checks. Default: 300.
   -V, --version             Print version information and exit.
 
+Linux Wayland Note:
+  Direct kernel virtual input (/dev/uinput via FFM) requires membership in the
+  'input' group: sudo usermod -aG input $USER (requires re-login).
+  Alternatively, install ydotool: sudo apt install ydotool
+```
+
 ---
 
 ## typeit
@@ -155,6 +161,11 @@ after a countdown delay.
                               system clipboard.
   -v, --verbose             Print characters as they are typed.
   -V, --version             Print version information and exit.
+
+Linux Wayland Note:
+  Direct kernel virtual input (/dev/uinput via FFM) requires membership in the
+  'input' group: sudo usermod -aG input $USER (requires re-login).
+  Alternatively, install wtype or ydotool: sudo apt install wtype ydotool
 ```
 
 ---
@@ -490,61 +501,6 @@ verification
   -o, --output=<outputPath>
                       Target file output path
   -V, --version       Print version information and exit.
-```
-
----
-
-## slowfetch
-
-`slowfetch` is a thorough, beautiful system information tool written in modern Java, inspired by fastfetch and neofetch. Powered by OSHI (Operating System and Hardware Information), it displays system metrics, hardware specs, memory/swap, disk usage, IP info, and ASCII logos cross-platform across Linux, macOS, and Windows.
-
-### Usage
-
-To run it via jbang from this catalog repository:
-
-```bash
-jbang slowfetch@alaurie
-```
-
-Or display all mounted physical disks:
-
-```bash
-jbang slowfetch@alaurie --disks
-```
-
-Or inspect top consuming processes:
-
-```bash
-jbang slowfetch@alaurie --top
-```
-
-Or force a specific OS logo (e.g. `java`, `debian`, `ubuntu`, `arch`, `fedora`, `macos`, `windows`, `linux`):
-
-```bash
-jbang slowfetch@alaurie --logo=java
-```
-
-Or, if you clone the repository locally:
-
-```bash
-jbang slowfetch
-```
-
-### Options
-
-```
-Usage: slowfetch [-hV] [--disks] [--no-bars] [--no-logo] [--top]
-                 [--logo=<forceLogo>]
-A thorough, beautiful system information tool written in modern Java.
-      --disks              Show all mounted physical disks instead of just root.
-  -h, --help               Show this help message and exit.
-      --logo=<forceLogo>   Force a specific logo: debian, ubuntu, arch, fedora,
-                             macos, windows, linux, java.
-      --no-bars            Disable visual progress bar gauges for
-                             memory/disk/battery.
-      --no-logo            Hide OS ASCII art logo.
-      --top                Show top 3 processes by CPU and Memory consumption.
-  -V, --version            Print version information and exit.
 ```
 
 ---

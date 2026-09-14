@@ -36,7 +36,7 @@ import picocli.CommandLine.Parameters;
 /// Supports checking files, recursive directory manifests, string inputs, benchmark mode, stdin,
 /// and
 /// verification files.
-@Command(name = "digest", mixinStandardHelpOptions = true, version = "digest 1.0",
+@Command(name = "digest", mixinStandardHelpOptions = true, version = "digest 2.0",
     description = "Compute and verify cryptographic checksums for files or text input.")
 @SuppressWarnings("unused")
 class Digest implements Callable<Integer> {

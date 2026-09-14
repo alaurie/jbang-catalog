@@ -4,8 +4,6 @@
 //DEPS org.junit.platform:junit-platform-launcher:1.11.4
 //DEPS org.junit.platform:junit-platform-console-standalone:1.11.4
 //DEPS info.picocli:picocli:4.7.7
-//DEPS com.github.oshi:oshi-core:6.6.5
-//DEPS org.slf4j:slf4j-nop:2.0.16
 //DEPS org.apache.commons:commons-compress:1.27.1
 //SOURCES ../apps/digest/Digest.java
 //SOURCES ../apps/digest/DigestTest.java
@@ -25,8 +23,6 @@
 //SOURCES ../apps/reach/ReachTest.java
 //SOURCES ../apps/serve/Serve.java
 //SOURCES ../apps/serve/ServeTest.java
-//SOURCES ../apps/slowfetch/Slowfetch.java
-//SOURCES ../apps/slowfetch/SlowfetchTest.java
 //SOURCES ../apps/typeit/Typeit.java
 //SOURCES ../apps/typeit/TypeitTest.java
 
@@ -47,7 +43,6 @@ import org.junit.platform.launcher.core.LauncherFactory;
 import org.junit.platform.launcher.listeners.SummaryGeneratingListener;
 import reach.ReachTest;
 import serve.ServeTest;
-import slowfetch.SlowfetchTest;
 import typeit.TypeitTest;
 
 /// Centralized test suite runner executing all catalog application unit and integration tests.
@@ -55,7 +50,7 @@ public class RunAllTests {
 
   private static final List<Class<?>> TEST_CLASSES = List.of(DigestTest.class, FetchTest.class,
       InstallNativeTest.class, JellyfinBackupTest.class, JwtTest.class, KillportTest.class,
-      NudgeTest.class, ReachTest.class, ServeTest.class, SlowfetchTest.class, TypeitTest.class);
+      NudgeTest.class, ReachTest.class, ServeTest.class, TypeitTest.class);
 
   public static void main(String... args) {
     System.out.println("===============================================================");

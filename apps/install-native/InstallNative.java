@@ -36,7 +36,7 @@ import picocli.CommandLine.Parameters;
 ///
 /// Supports compiling/exporting native binaries directly to `~/.local/bin` (or custom directory),
 /// listing native compatibility, and cleaning/uninstalling exported binaries.
-@Command(name = "install-native", mixinStandardHelpOptions = true, version = "install-native 1.2",
+@Command(name = "install-native", mixinStandardHelpOptions = true, version = "install-native 2.0",
     description = "Compile, export, and manage standalone zero-overhead native executables.")
 @SuppressWarnings("unused")
 class InstallNative implements Callable<Integer> {
