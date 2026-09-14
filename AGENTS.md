@@ -53,16 +53,16 @@ package <app-name>;
 
 ### Code Style & Formatting
 
-- **Style Guide**: **Google Java Style Guide**.
-- **Formatter**: `jbang-fmt --style=google`.
-- **Indentation**: Exactly **2 spaces** (never use tab `\t` characters).
-- **Line Length**: **100 characters** maximum.
+- **Style Guide**: Standard **JBang Style** (Eclipse formatter).
+- **Formatter**: `jbang-fmt`.
+- **Indentation**: Standard tabs / 4 spaces per JBang formatter defaults.
+- **Line Length**: **120 characters** maximum.
 - **Imports**: Group static imports first, followed by alphabetical standard Java packages and third-party packages. No wildcard star imports (`import java.util.*`).
 - **Javadoc Documentation**:
   - **Markdown Javadoc (`///`)**: Prefer Markdown-formatted doc comments (`/// ...`, JEP 467 / Java 23+) over legacy HTML-based `/** ... */` block tags (`<p>`, `<code>`, `<ul>`).
   - Class-level Javadoc describing the utility's purpose, background, and platform/OS notes.
   - Method-level Javadoc for helper methods describing behavior, parameters (`@param`), return values (`@return`), and exceptions (`@throws`).
-- **Automated Formatting Hook**: Pre-commit hook at `.githooks/pre-commit` enforces `jbang-fmt --style=google` on all staged Java files. Enable via:
+- **Automated Formatting Hook**: Pre-commit hook at `.githooks/pre-commit` enforces `jbang-fmt` on all staged Java files. Enable via:
 
   ```bash
   git config core.hooksPath .githooks

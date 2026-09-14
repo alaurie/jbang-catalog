@@ -3,7 +3,7 @@
 //DEPS info.picocli:picocli:4.7.7
 //DEPS info.picocli:picocli-codegen:4.7.7
 //JAVAC_OPTIONS -proc:full
-//JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms16m -Xmx64m
+//JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms16m -Xmx64m -XX:CICompilerCount=2 -XX:CompressedClassSpaceSize=32m -XX:ReservedCodeCacheSize=16m -XX:-UsePerfData
 //NATIVE_OPTIONS -O2 -march=native --no-fallback
 
 package fetch;
@@ -39,537 +39,625 @@ import picocli.CommandLine.Parameters;
 /// High-performance multi-threaded CLI file downloader with auto-checksum verification.
 ///
 /// Supports concurrent chunked range requests and automatic remote manifest probing.
-@Command(name = "fetch", mixinStandardHelpOptions = true, version = "fetch 2.0",
-    description = "High-performance multi-threaded CLI file downloader with auto-checksum verification")
+@Command(name = "fetch", mixinStandardHelpOptions = true, version = "fetch 2.0", description = "High-performance multi-threaded CLI file downloader with auto-checksum verification")
 @SuppressWarnings("unused")
 class Fetch implements Callable<Integer> {
 
-  @Parameters(index = "0", description = "Target URL to download")
-  private URI uri;
+	@Parameters(index = "0", description = "Target URL to download")
+	private URI uri;
 
-  @Option(names = {"-o", "--output"}, description = "Target file output path")
-  private Path outputPath;
+	@Option(names = { "-o", "--output" }, description = "Target file output path")
+	private Path outputPath;
 
-  @Option(names = {"-c", "--connections"}, defaultValue = "4",
-      description = "Concurrent chunk download connections")
-  private int connections;
-  @Option(names = {"--no-resume"},
-      description = "Disable automatic download resumption and start fresh")
-  private boolean noResume;
+	@Option(names = { "-c",
+			"--connections" }, defaultValue = "4", description = "Concurrent chunk download connections")
+	private int connections = 4;
 
-  @Option(names = {"--no-checksum"},
-      description = "Skip automatic checksum probing and verification")
-  private boolean skipChecksum;
+	@Option(names = { "-q", "--quiet" }, description = "Quiet mode: disable progress bar and non-essential logs")
+	private boolean quiet;
 
-  @Option(names = {"--expected-hash"},
-      description = "Explicitly verify against this hash (auto-detects algorithm by length). Bypasses server probe.")
-  private String explicitHash;
+	@Option(names = { "-H",
+			"--header" }, description = "Custom HTTP header(s) to send (e.g. -H 'Authorization: Bearer token')")
+	private List<String> headers = new ArrayList<>();
 
-  private static final List<String> CANDIDATE_MANIFESTS =
-      List.of("SHA512SUMS", "SHA256SUMS", "SHA512", "SHA256", "MD5SUMS", "MD5", "CHECKSUMS",
-          "CHECKSUM", "sha512sums.txt", "sha256sums.txt", "sha512sum.txt", "sha256sum.txt");
+	@Option(names = { "-A", "--user-agent" }, description = "Custom User-Agent string")
+	private String customUserAgent;
 
-  private final HttpClient client = HttpClient.newBuilder()
-      .followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(Duration.ofSeconds(15)).build();
+	@Option(names = { "--no-resume" }, description = "Disable automatic download resumption and start fresh")
+	private boolean noResume;
 
-  static void main(String... args) {
-    int exitCode = new CommandLine(new Fetch()).execute(args);
-    System.exit(exitCode);
-  }
+	@Option(names = { "--no-checksum" }, description = "Skip automatic checksum probing and verification")
+	private boolean skipChecksum;
 
-  @Override
-  public Integer call() throws Exception {
-    String pathStr = uri.getPath();
-    String defaultFileName =
-        (pathStr == null || pathStr.isBlank() || pathStr.endsWith("/")) ? "downloaded_file"
-            : Path.of(pathStr).getFileName().toString();
+	@Option(names = {
+			"--expected-hash" }, description = "Explicitly verify against this hash (auto-detects algorithm by length). Bypasses server probe.")
+	private String explicitHash;
 
-    if (outputPath == null) {
-      outputPath = Path.of(defaultFileName);
-    } else if (Files.isDirectory(outputPath) || outputPath.toString().endsWith("/")
-        || outputPath.toString().endsWith("\\")) {
-      outputPath = outputPath.resolve(defaultFileName);
-    }
-    if (outputPath.getParent() != null) {
-      Files.createDirectories(outputPath.getParent());
-    }
+	private static final List<String> CANDIDATE_MANIFESTS = List.of("SHA512SUMS", "SHA256SUMS", "SHA512", "SHA256",
+			"MD5SUMS", "MD5", "CHECKSUMS",
+			"CHECKSUM", "sha512sums.txt", "sha256sums.txt", "sha512sum.txt", "sha256sum.txt");
 
-    String localFilename = outputPath.getFileName().toString();
-    String remoteFilename = defaultFileName;
-    ExpectedHash expectedHash = null;
-    if (explicitHash != null && !explicitHash.isBlank()) {
-      String rawHash = explicitHash.trim();
-      if (rawHash.contains(":")) {
-        rawHash = rawHash.substring(rawHash.indexOf(':') + 1).trim();
-      }
-      String algo = switch (rawHash.length()) {
-        case 32 -> "MD5";
-        case 40 -> "SHA-1";
-        case 128 -> "SHA-512";
-        default -> "SHA-256";
-      };
-      expectedHash = new ExpectedHash(algo, rawHash, "user-provided");
-    } else if (!skipChecksum) {
-      expectedHash = findExpectedHash(remoteFilename, localFilename);
-    }
-    if (Files.isRegularFile(outputPath)) {
-      if (expectedHash != null) {
-        System.out.printf("Found manifest: %s (Algorithm: %s)%n", expectedHash.candidate(),
-            expectedHash.algorithm());
-        System.out.print("Local file exists. Verifying checksum... ");
-        String actualHash = computeFileHash(outputPath, expectedHash.algorithm());
-        if (expectedHash.hash().equalsIgnoreCase(actualHash)) {
-          System.out.println("OK");
-          System.out.println("File already downloaded and verified. Skipping download.");
-          return 0;
-        } else {
-          System.out.println("FAILED (Hash mismatch). Re-downloading...");
-        }
-      } else {
-        System.out.println("Local file exists. Re-downloading...");
-      }
-    }
+	private final HttpClient client = HttpClient.newBuilder()
+		.followRedirects(HttpClient.Redirect.NORMAL)
+		.connectTimeout(Duration.ofSeconds(15))
+		.build();
 
-    HttpRequest headReq =
-        HttpRequest.newBuilder(uri).method("HEAD", HttpRequest.BodyPublishers.noBody()).build();
-    HttpResponse<Void> headRes = client.send(headReq, HttpResponse.BodyHandlers.discarding());
+	private static final String DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) JBangFetch/2.0";
 
-    int headStatus = headRes.statusCode();
-    if (headStatus >= 400) {
-      System.err.println("Error: Server returned HTTP " + headStatus + " for " + uri);
-      return 1;
-    }
+	private HttpRequest.Builder applyHeaders(HttpRequest.Builder builder) {
+		builder.header("User-Agent", customUserAgent != null ? customUserAgent : DEFAULT_USER_AGENT);
+		if (headers != null) {
+			for (String h : headers) {
+				int colon = h.indexOf(':');
+				if (colon > 0) {
+					builder.header(h.substring(0, colon).trim(), h.substring(colon + 1).trim());
+				}
+			}
+		}
+		return builder;
+	}
 
-    long contentLength = headRes.headers().firstValueAsLong("content-length").orElse(-1L);
-    boolean acceptsRanges = headRes.headers().firstValue("accept-ranges")
-        .map(v -> v.equalsIgnoreCase("bytes")).orElse(false);
-    Path partPath = Path.of(outputPath.toString() + ".part");
-    long existingPartSize = 0L;
-    if (!noResume && Files.isRegularFile(partPath)) {
-      existingPartSize = Files.size(partPath);
-      if (contentLength > 0 && existingPartSize > contentLength) {
-        Files.deleteIfExists(partPath);
-        existingPartSize = 0L;
-      }
-    } else if (noResume) {
-      Files.deleteIfExists(partPath);
-    }
-    String streamedHash = null;
-    MessageDigest onTheFlyDigest = null;
-    if (expectedHash != null && existingPartSize == 0L) {
-      try {
-        onTheFlyDigest = MessageDigest.getInstance(expectedHash.algorithm());
-      } catch (Exception _) {
-        onTheFlyDigest = null;
-      }
-    }
+	static void main(String... args) {
+		int exitCode = new CommandLine(new Fetch()).execute(args);
+		System.exit(exitCode);
+	}
 
-    if (existingPartSize > 0 && acceptsRanges
-        && (contentLength <= 0 || existingPartSize < contentLength)) {
-      System.out.printf("Resuming download from byte %d (%.2f / %.2f MB)...%n", existingPartSize,
-          existingPartSize / 1_048_576.0,
-          (contentLength > 0 ? contentLength : existingPartSize) / 1_048_576.0);
-      downloadResumedStream(partPath, existingPartSize, contentLength);
-    } else if (contentLength <= 0 || !acceptsRanges || connections <= 1) {
-      streamedHash = downloadSingleStream(partPath, onTheFlyDigest);
-    } else {
-      // For multithreaded downloads into a single .part file, if interrupted, subsequent runs
-      // cleanly resume. To guarantee 100% byte integrity without corrupted holes on arbitrary Ctrl+C,
-      // single-file multi-connection downloads use contiguous range workers or clean single-file resume.
-      streamedHash = downloadSingleStream(partPath, onTheFlyDigest);
-    }
+	@Override
+	public Integer call() throws Exception {
+		String pathStr = uri.getPath();
+		String defaultFileName = (pathStr == null || pathStr.isBlank() || pathStr.endsWith("/")) ? "downloaded_file"
+				: Path.of(pathStr).getFileName().toString();
 
-    // Atomically promote .part to final outputPath
-    try {
-      Files.move(partPath, outputPath, StandardCopyOption.REPLACE_EXISTING,
-          StandardCopyOption.ATOMIC_MOVE);
-    } catch (AtomicMoveNotSupportedException _) {
-      Files.move(partPath, outputPath, StandardCopyOption.REPLACE_EXISTING);
-    }
+		if (outputPath == null) {
+			outputPath = Path.of(defaultFileName);
+		} else if (Files.isDirectory(outputPath) || outputPath.toString().endsWith("/")
+				|| outputPath.toString().endsWith("\\")) {
+			outputPath = outputPath.resolve(defaultFileName);
+		}
+		if (outputPath.getParent() != null) {
+			Files.createDirectories(outputPath.getParent());
+		}
 
-    System.out.println("Saved: " + outputPath.toAbsolutePath());
+		String localFilename = outputPath.getFileName().toString();
+		String remoteFilename = defaultFileName;
+		ExpectedHash expectedHash = null;
+		if (explicitHash != null && !explicitHash.isBlank()) {
+			String rawHash = explicitHash.trim();
+			if (rawHash.contains(":")) {
+				rawHash = rawHash.substring(rawHash.indexOf(':') + 1).trim();
+			}
+			String algo = switch (rawHash.length()) {
+			case 32 -> "MD5";
+			case 40 -> "SHA-1";
+			case 128 -> "SHA-512";
+			default -> "SHA-256";
+			};
+			expectedHash = new ExpectedHash(algo, rawHash, "user-provided");
+		} else if (!skipChecksum) {
+			expectedHash = findExpectedHash(remoteFilename, localFilename);
+		}
+		if (Files.isRegularFile(outputPath)) {
+			if (expectedHash != null) {
+				System.out.printf("Found manifest: %s (Algorithm: %s)%n", expectedHash.candidate(),
+						expectedHash.algorithm());
+				System.out.print("Local file exists. Verifying checksum... ");
+				String actualHash = computeFileHash(outputPath, expectedHash.algorithm());
+				if (expectedHash.hash().equalsIgnoreCase(actualHash)) {
+					System.out.println("OK");
+					System.out.println("File already downloaded and verified. Skipping download.");
+					return 0;
+				} else {
+					System.out.println("FAILED (Hash mismatch). Re-downloading...");
+				}
+			} else {
+				System.out.println("Local file exists. Re-downloading...");
+			}
+		}
 
-    if (expectedHash != null || !skipChecksum) {
-      boolean verified = verifyAutoChecksum(expectedHash, streamedHash);
-      if (!verified) {
-        return 1;
-      }
-    }
+		HttpRequest headReq = applyHeaders(HttpRequest.newBuilder(uri))
+			.method("HEAD", HttpRequest.BodyPublishers.noBody())
+			.build();
+		HttpResponse<Void> headRes = client.send(headReq, HttpResponse.BodyHandlers.discarding());
 
-    return 0;
-  }
+		int headStatus = headRes.statusCode();
+		if (headStatus >= 400) {
+			System.err.println("Error: Server returned HTTP " + headStatus + " for " + uri);
+			return 1;
+		}
 
-  private record ExpectedHash(String algorithm, String hash, String candidate) {}
+		// Content-Disposition filename resolution if output path wasn't an explicit custom file
+		String disposition = headRes.headers().firstValue("content-disposition").orElse(null);
+		if (disposition != null && (outputPath == null || Files.isDirectory(outputPath))) {
+			String extractedFilename = parseContentDispositionFilename(disposition);
+			if (extractedFilename != null && !extractedFilename.isBlank()) {
+				outputPath = outputPath != null ? outputPath.resolve(extractedFilename) : Path.of(extractedFilename);
+			}
+		}
 
-  private ExpectedHash findExpectedHash(String remoteFilename, String localFilename) {
-    URI baseUri = uri.resolve("./");
+		long contentLength = headRes.headers().firstValueAsLong("content-length").orElse(-1L);
+		boolean acceptsRanges = headRes.headers()
+			.firstValue("accept-ranges")
+			.map(v -> v.equalsIgnoreCase("bytes"))
+			.orElse(false);
+		Path partPath = Path.of(outputPath.toString() + ".part");
+		long existingPartSize = 0L;
+		if (!noResume && Files.isRegularFile(partPath)) {
+			existingPartSize = Files.size(partPath);
+			if (contentLength > 0 && existingPartSize > contentLength) {
+				Files.deleteIfExists(partPath);
+				existingPartSize = 0L;
+			}
+		} else if (noResume) {
+			Files.deleteIfExists(partPath);
+		}
+		String streamedHash = null;
+		MessageDigest onTheFlyDigest = null;
+		if (expectedHash != null && existingPartSize == 0L) {
+			try {
+				onTheFlyDigest = MessageDigest.getInstance(expectedHash.algorithm());
+			} catch (Exception _) {
+				onTheFlyDigest = null;
+			}
+		}
 
-    List<String> candidates = new ArrayList<>(CANDIDATE_MANIFESTS);
-    candidates.add(remoteFilename + ".sha256");
-    candidates.add(remoteFilename + ".sha512");
-    if (!localFilename.equals(remoteFilename)) {
-      candidates.add(localFilename + ".sha256");
-      candidates.add(localFilename + ".sha512");
-    }
+		if (existingPartSize > 0 && acceptsRanges
+				&& (contentLength <= 0 || existingPartSize < contentLength)) {
+			if (!quiet) {
+				System.out.printf("Resuming download from byte %d (%.2f / %.2f MB)...%n", existingPartSize,
+						existingPartSize / 1_048_576.0,
+						(contentLength > 0 ? contentLength : existingPartSize) / 1_048_576.0);
+			}
+			downloadResumedStream(partPath, existingPartSize, contentLength);
+		} else if (contentLength <= 0 || !acceptsRanges || connections <= 1) {
+			streamedHash = downloadSingleStream(partPath, onTheFlyDigest);
+		} else {
+			if (!quiet) {
+				System.out.printf("Connecting with %d concurrent range workers (%.2f MB)...%n", connections,
+						contentLength / 1_048_576.0);
+			}
+			downloadMultiThreaded(partPath, contentLength);
+		}
 
-    for (String candidate : candidates) {
-      URI manifestUri = baseUri.resolve(candidate);
-      HttpRequest req = HttpRequest.newBuilder(manifestUri).GET().build();
+		// Atomically promote .part to final outputPath
+		try {
+			Files.move(partPath, outputPath, StandardCopyOption.REPLACE_EXISTING,
+					StandardCopyOption.ATOMIC_MOVE);
+		} catch (AtomicMoveNotSupportedException _) {
+			Files.move(partPath, outputPath, StandardCopyOption.REPLACE_EXISTING);
+		}
 
-      try {
-        HttpResponse<String> res = client.send(req, HttpResponse.BodyHandlers.ofString());
-        if (res.statusCode() == 200) {
-          String algorithm = determineAlgorithm(candidate);
-          String expectedHash = extractHash(res.body(), remoteFilename);
-          if (expectedHash == null && !localFilename.equals(remoteFilename)) {
-            expectedHash = extractHash(res.body(), localFilename);
-          }
+		if (!quiet) {
+			System.out.println("Saved: " + outputPath.toAbsolutePath());
+		}
 
-          if (expectedHash != null) {
-            return new ExpectedHash(algorithm, expectedHash, candidate);
-          }
-        }
-      } catch (Exception _) {
-        // Continue scanning candidates if request or parsing fails
-      }
-    }
-    return null;
-  }
+		if (expectedHash != null || !skipChecksum) {
+			boolean verified = verifyAutoChecksum(expectedHash, streamedHash);
+			if (!verified) {
+				return 1;
+			}
+		}
 
-  private boolean verifyAutoChecksum(ExpectedHash expectedHash, String streamedHash) {
-    if (expectedHash == null) {
-      System.out.println("No matching checksum manifest detected on remote server.");
-      return true;
-    }
+		return 0;
+	}
 
-    System.out.printf("Found manifest: %s (Algorithm: %s)%n", expectedHash.candidate(),
-        expectedHash.algorithm());
-    System.out.print("Verifying checksum... ");
+	private record ExpectedHash(String algorithm, String hash, String candidate) {
+	}
 
-    try {
-      String actualHash = streamedHash;
-      if (actualHash == null) {
-        actualHash = computeFileHash(outputPath, expectedHash.algorithm());
-      }
-      if (expectedHash.hash().equalsIgnoreCase(actualHash)) {
-        System.out.println("OK");
-        System.out.println("Hash: " + actualHash);
-        return true;
-      } else {
-        System.out.println("FAILED");
-        System.err.println("Expected: " + expectedHash.hash());
-        System.err.println("Actual:   " + actualHash);
-        return false;
-      }
-    } catch (Exception e) {
-      System.out.println("FAILED (Error reading file)");
-      return false;
-    }
-  }
+	private ExpectedHash findExpectedHash(String remoteFilename, String localFilename) {
+		URI baseUri = uri.resolve("./");
 
-  private String downloadSingleStream(Path partPath, MessageDigest digest) throws Exception {
-    HttpRequest req = HttpRequest.newBuilder(uri).GET().build();
-    HttpResponse<InputStream> res = client.send(req, HttpResponse.BodyHandlers.ofInputStream());
+		List<String> candidates = new ArrayList<>(CANDIDATE_MANIFESTS);
+		candidates.add(remoteFilename + ".sha256");
+		candidates.add(remoteFilename + ".sha512");
+		if (!localFilename.equals(remoteFilename)) {
+			candidates.add(localFilename + ".sha256");
+			candidates.add(localFilename + ".sha512");
+		}
 
-    long total = res.headers().firstValueAsLong("content-length").orElse(-1L);
-    try (ProgressBar pb = createProgressBar(total, 0L);
-        InputStream in = res.body();
-        FileChannel out = FileChannel.open(partPath, StandardOpenOption.CREATE,
-            StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+		for (String candidate : candidates) {
+			URI manifestUri = baseUri.resolve(candidate);
+			HttpRequest req = HttpRequest.newBuilder(manifestUri).GET().build();
 
-      byte[] buf = new byte[128 * 1024];
-      int read;
-      while ((read = in.read(buf)) != -1) {
-        out.write(ByteBuffer.wrap(buf, 0, read));
-        if (digest != null) {
-          digest.update(buf, 0, read);
-        }
-        pb.stepBy(read);
-      }
-    }
-    return digest != null ? HexFormat.of().formatHex(digest.digest()) : null;
-  }
+			try {
+				HttpResponse<String> res = client.send(req, HttpResponse.BodyHandlers.ofString());
+				if (res.statusCode() == 200) {
+					String algorithm = determineAlgorithm(candidate);
+					String expectedHash = extractHash(res.body(), remoteFilename);
+					if (expectedHash == null && !localFilename.equals(remoteFilename)) {
+						expectedHash = extractHash(res.body(), localFilename);
+					}
 
-  private void downloadResumedStream(Path partPath, long startOffset, long totalSize)
-      throws Exception {
-    HttpRequest req =
-        HttpRequest.newBuilder(uri).header("Range", "bytes=" + startOffset + "-").GET().build();
-    HttpResponse<InputStream> res = client.send(req, HttpResponse.BodyHandlers.ofInputStream());
+					if (expectedHash != null) {
+						return new ExpectedHash(algorithm, expectedHash, candidate);
+					}
+				}
+			} catch (Exception _) {
+				// Continue scanning candidates if request or parsing fails
+			}
+		}
+		return null;
+	}
 
-    int status = res.statusCode();
-    if (status != 206 && status != 200) {
-      System.err.println("Warning: Server rejected range request (HTTP " + status
-          + "). Starting from beginning...");
-      downloadSingleStream(partPath, null);
-      return;
-    }
+	private boolean verifyAutoChecksum(ExpectedHash expectedHash, String streamedHash) {
+		if (expectedHash == null) {
+			if (!quiet) {
+				System.out.println("No matching checksum manifest detected on remote server.");
+			}
+			return true;
+		}
 
-    // If server sent 200 OK instead of 206 Partial Content, it doesn't support resume for this request
-    if (status == 200) {
-      long total = res.headers().firstValueAsLong("content-length").orElse(totalSize);
-      try (ProgressBar pb = createProgressBar(total, 0L);
-          InputStream in = res.body();
-          FileChannel out = FileChannel.open(partPath, StandardOpenOption.CREATE,
-              StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
-        byte[] buf = new byte[128 * 1024];
-        int read;
-        while ((read = in.read(buf)) != -1) {
-          out.write(ByteBuffer.wrap(buf, 0, read));
-          pb.stepBy(read);
-        }
-      }
-      return;
-    }
+		if (!quiet) {
+			System.out.printf("Found manifest: %s (Algorithm: %s)%n", expectedHash.candidate(),
+					expectedHash.algorithm());
+			System.out.print("Verifying checksum... ");
+		}
 
-    try (ProgressBar pb = createProgressBar(totalSize, startOffset);
-        InputStream in = res.body();
-        FileChannel out = FileChannel.open(partPath, StandardOpenOption.CREATE,
-            StandardOpenOption.WRITE, StandardOpenOption.APPEND)) {
+		try {
+			String actualHash = streamedHash;
+			if (actualHash == null) {
+				actualHash = computeFileHash(outputPath, expectedHash.algorithm());
+			}
+			if (expectedHash.hash().equalsIgnoreCase(actualHash)) {
+				if (!quiet) {
+					System.out.println("OK");
+					System.out.println("Hash: " + actualHash);
+				}
+				return true;
+			} else {
+				if (!quiet) {
+					System.out.println("FAILED");
+				}
+				System.err.println("Expected: " + expectedHash.hash());
+				System.err.println("Actual:   " + actualHash);
+				return false;
+			}
+		} catch (Exception e) {
+			if (!quiet) {
+				System.out.println("FAILED (Error reading file)");
+			}
+			return false;
+		}
+	}
 
-      byte[] buf = new byte[128 * 1024];
-      int read;
-      while ((read = in.read(buf)) != -1) {
-        out.write(ByteBuffer.wrap(buf, 0, read));
-        pb.stepBy(read);
-      }
-    }
-  }
+	private String downloadSingleStream(Path partPath, MessageDigest digest) throws Exception {
+		HttpRequest req = applyHeaders(HttpRequest.newBuilder(uri)).GET().build();
+		HttpResponse<InputStream> res = client.send(req, HttpResponse.BodyHandlers.ofInputStream());
 
-  private void downloadMultiThreaded(Path partPath, long totalSize) throws Exception {
-    long chunkSize = (long) Math.ceil((double) totalSize / connections);
+		long total = res.headers().firstValueAsLong("content-length").orElse(-1L);
+		try (ProgressBar pb = createProgressBar(total, 0L);
+				InputStream in = res.body();
+				FileChannel out = FileChannel.open(partPath, StandardOpenOption.CREATE,
+						StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
 
-    try (
-        FileChannel fileChannel = FileChannel.open(partPath, StandardOpenOption.CREATE,
-            StandardOpenOption.WRITE, StandardOpenOption.READ);
-        ProgressBar pb = createProgressBar(totalSize, 0L);
-        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+			byte[] buf = new byte[128 * 1024];
+			int read;
+			while ((read = in.read(buf)) != -1) {
+				out.write(ByteBuffer.wrap(buf, 0, read));
+				if (digest != null) {
+					digest.update(buf, 0, read);
+				}
+				if (pb != null) {
+					pb.stepBy(read);
+				}
+			}
+		}
+		return digest != null ? HexFormat.of().formatHex(digest.digest()) : null;
+	}
 
-      fileChannel.truncate(totalSize);
-      List<CompletableFuture<Void>> futures = new ArrayList<>();
+	private void downloadResumedStream(Path partPath, long startOffset, long totalSize)
+			throws Exception {
+		HttpRequest req = applyHeaders(HttpRequest.newBuilder(uri))
+			.header("Range", "bytes=" + startOffset + "-")
+			.GET()
+			.build();
+		HttpResponse<InputStream> res = client.send(req, HttpResponse.BodyHandlers.ofInputStream());
 
-      for (int i = 0; i < connections; i++) {
-        long start = i * chunkSize;
-        long end = Math.min(start + chunkSize - 1, totalSize - 1);
-        if (start > end) {
-          break;
-        }
+		int status = res.statusCode();
+		if (status != 206 && status != 200) {
+			System.err.println("Warning: Server rejected range request (HTTP " + status
+					+ "). Starting from beginning...");
+			downloadSingleStream(partPath, null);
+			return;
+		}
 
-        futures.add(CompletableFuture.runAsync(() -> {
-          try {
-            HttpRequest req = HttpRequest.newBuilder(uri)
-                .header("Range", "bytes=" + start + "-" + end).GET().build();
+		// If server sent 200 OK instead of 206 Partial Content, it doesn't support resume for this request
+		if (status == 200) {
+			long total = res.headers().firstValueAsLong("content-length").orElse(totalSize);
+			try (ProgressBar pb = createProgressBar(total, 0L);
+					InputStream in = res.body();
+					FileChannel out = FileChannel.open(partPath, StandardOpenOption.CREATE,
+							StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+				byte[] buf = new byte[128 * 1024];
+				int read;
+				while ((read = in.read(buf)) != -1) {
+					out.write(ByteBuffer.wrap(buf, 0, read));
+					if (pb != null) {
+						pb.stepBy(read);
+					}
+				}
+			}
+			return;
+		}
 
-            HttpResponse<InputStream> response =
-                client.send(req, HttpResponse.BodyHandlers.ofInputStream());
-            try (InputStream in = response.body()) {
-              byte[] buf = new byte[64 * 1024];
-              int bytesRead;
-              long currentOffset = start;
-              while ((bytesRead = in.read(buf)) != -1) {
-                fileChannel.write(ByteBuffer.wrap(buf, 0, bytesRead), currentOffset);
-                currentOffset += bytesRead;
-                pb.stepBy(bytesRead);
-              }
-            }
-          } catch (Exception e) {
-            throw new RuntimeException(e);
-          }
-        }, executor));
-      }
+		try (ProgressBar pb = createProgressBar(totalSize, startOffset);
+				InputStream in = res.body();
+				FileChannel out = FileChannel.open(partPath, StandardOpenOption.CREATE,
+						StandardOpenOption.WRITE, StandardOpenOption.APPEND)) {
 
-      CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-    }
-  }
+			byte[] buf = new byte[128 * 1024];
+			int read;
+			while ((read = in.read(buf)) != -1) {
+				out.write(ByteBuffer.wrap(buf, 0, read));
+				if (pb != null) {
+					pb.stepBy(read);
+				}
+			}
+		}
+	}
 
+	private void downloadMultiThreaded(Path partPath, long totalSize) throws Exception {
+		long chunkSize = (long) Math.ceil((double) totalSize / connections);
 
-  private String determineAlgorithm(String manifestName) {
-    String lower = manifestName.toLowerCase();
-    if (lower.contains("sha512") || lower.contains("sha-512")) {
-      return "SHA-512";
-    }
-    if (lower.contains("sha384") || lower.contains("sha-384")) {
-      return "SHA-384";
-    }
-    if (lower.contains("sha1") || lower.contains("sha-1")) {
-      return "SHA-1";
-    }
-    if (lower.contains("md5")) {
-      return "MD5";
-    }
-    return "SHA-256";
-  }
+		try (
+				FileChannel fileChannel = FileChannel.open(partPath, StandardOpenOption.CREATE,
+						StandardOpenOption.WRITE, StandardOpenOption.READ);
+				ProgressBar pb = createProgressBar(totalSize, 0L);
+				ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
 
-  private String extractHash(String manifestBody, String filename) {
-    for (String line : manifestBody.lines().map(String::trim).toList()) {
-      if (line.isBlank() || line.startsWith("#")) {
-        continue;
-      }
-      // Format 1: BSD style -> "SHA256 (filename) = hash" or "MD5(filename)= hash"
-      if (line.contains("(") && line.contains(")") && line.contains("=")) {
-        int openParen = line.indexOf('(');
-        int closeParen = line.lastIndexOf(')');
-        int equals = line.lastIndexOf('=');
-        if (openParen < closeParen && closeParen < equals) {
-          String target = line.substring(openParen + 1, closeParen).trim();
-          // Strip potential directory prefixes in the manifest target path
-          if (target.endsWith("/" + filename) || target.equals(filename)) {
-            return line.substring(equals + 1).trim();
-          }
-        }
-      }
+			fileChannel.truncate(totalSize);
+			List<CompletableFuture<Void>> futures = new ArrayList<>();
 
-      // Format 2: GNU/coreutils style -> "<hash> [* ]<filename>" or "<hash>  <path/to/filename>"
-      String[] tokens = line.split("\\s+");
-      if (tokens.length >= 2) {
-        String hashToken = tokens[0];
-        String pathToken = line.substring(hashToken.length()).trim();
-        if (pathToken.startsWith("*")) {
-          pathToken = pathToken.substring(1).trim();
-        }
-        if (pathToken.equals(filename) || pathToken.endsWith("/" + filename)) {
-          return hashToken;
-        }
-      } else if (tokens.length == 1 && isValidHexHash(tokens[0])) {
-        // Single hash in file (e.g. filename.sha256 containing just the hash)
-        return tokens[0];
-      }
-    }
-    return null;
-  }
+			for (int i = 0; i < connections; i++) {
+				long start = i * chunkSize;
+				long end = Math.min(start + chunkSize - 1, totalSize - 1);
+				if (start > end) {
+					break;
+				}
 
-  private static boolean isValidHexHash(String s) {
-    int len = s.length();
-    if (len != 32 && len != 40 && len != 64 && len != 96 && len != 128) {
-      return false;
-    }
-    for (int i = 0; i < len; i++) {
-      char c = s.charAt(i);
-      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
-        return false;
-      }
-    }
-    return true;
-  }
+				futures.add(CompletableFuture.runAsync(() -> {
+					try {
+						HttpRequest req = applyHeaders(HttpRequest.newBuilder(uri))
+							.header("Range", "bytes=" + start + "-" + end)
+							.GET()
+							.build();
 
-  private String computeFileHash(Path file, String algorithm) throws Exception {
-    long totalBytes = Files.size(file);
-    MessageDigest digest = MessageDigest.getInstance(algorithm);
-    int bufferSize = 8 * 1024 * 1024; // 8 MB high-throughput direct buffer
-    ByteBuffer buffer = ByteBuffer.allocateDirect(bufferSize);
+						HttpResponse<InputStream> response = client.send(req,
+								HttpResponse.BodyHandlers.ofInputStream());
+						try (InputStream in = response.body()) {
+							byte[] buf = new byte[64 * 1024];
+							int bytesRead;
+							long currentOffset = start;
+							while ((bytesRead = in.read(buf)) != -1) {
+								fileChannel.write(ByteBuffer.wrap(buf, 0, bytesRead), currentOffset);
+								currentOffset += bytesRead;
+								if (pb != null) {
+									pb.stepBy(bytesRead);
+								}
+							}
+						}
+					} catch (Exception e) {
+						throw new RuntimeException(e);
+					}
+				}, executor));
+			}
 
-    String taskName = "Verifying " + algorithm;
-    try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ);
-        ProgressBar pb = new ProgressBar(taskName, totalBytes, 0L)) {
-      while (channel.read(buffer) > 0) {
-        buffer.flip();
-        int remaining = buffer.remaining();
-        digest.update(buffer);
-        buffer.clear();
-        pb.stepBy(remaining);
-      }
-    }
-    return HexFormat.of().formatHex(digest.digest());
-  }
+			CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+		}
+	}
 
-  private ProgressBar createProgressBar(long total, long initialOffset) {
-    return new ProgressBar(outputPath.getFileName().toString(), total, initialOffset);
-  }
+	private String determineAlgorithm(String manifestName) {
+		String lower = manifestName.toLowerCase();
+		if (lower.contains("sha512") || lower.contains("sha-512")) {
+			return "SHA-512";
+		}
+		if (lower.contains("sha384") || lower.contains("sha-384")) {
+			return "SHA-384";
+		}
+		if (lower.contains("sha1") || lower.contains("sha-1")) {
+			return "SHA-1";
+		}
+		if (lower.contains("md5")) {
+			return "MD5";
+		}
+		return "SHA-256";
+	}
 
-  /// Pure-Java lightweight progress bar with transfer rate and ETA calculations.
-  static class ProgressBar implements AutoCloseable {
-    private static final String HIDE_CURSOR = "\u001B[?25l";
-    private static final String SHOW_CURSOR = "\u001B[?25h";
-    private static final String ERASE_TO_EOL = "\u001B[K";
+	private String extractHash(String manifestBody, String filename) {
+		for (String line : manifestBody.lines().map(String::trim).toList()) {
+			if (line.isBlank() || line.startsWith("#")) {
+				continue;
+			}
+			// Format 1: BSD style -> "SHA256 (filename) = hash" or "MD5(filename)= hash"
+			if (line.contains("(") && line.contains(")") && line.contains("=")) {
+				int openParen = line.indexOf('(');
+				int closeParen = line.lastIndexOf(')');
+				int equals = line.lastIndexOf('=');
+				if (openParen < closeParen && closeParen < equals) {
+					String target = line.substring(openParen + 1, closeParen).trim();
+					// Strip potential directory prefixes in the manifest target path
+					if (target.endsWith("/" + filename) || target.equals(filename)) {
+						return line.substring(equals + 1).trim();
+					}
+				}
+			}
 
-    private final String taskName;
-    private final long totalBytes;
-    private final LongAdder downloaded = new LongAdder();
-    private final long startTime = System.nanoTime();
-    private final Thread shutdownHook;
-    private final Thread renderThread;
-    private volatile boolean closed = false;
+			// Format 2: GNU/coreutils style -> "<hash> [* ]<filename>" or "<hash>  <path/to/filename>"
+			String[] tokens = line.split("\\s+");
+			if (tokens.length >= 2) {
+				String hashToken = tokens[0];
+				String pathToken = line.substring(hashToken.length()).trim();
+				if (pathToken.startsWith("*")) {
+					pathToken = pathToken.substring(1).trim();
+				}
+				if (pathToken.equals(filename) || pathToken.endsWith("/" + filename)) {
+					return hashToken;
+				}
+			} else if (tokens.length == 1 && isValidHexHash(tokens[0])) {
+				// Single hash in file (e.g. filename.sha256 containing just the hash)
+				return tokens[0];
+			}
+		}
+		return null;
+	}
 
-    ProgressBar(String taskName, long totalBytes, long initialOffset) {
-      this.taskName = taskName;
-      this.totalBytes = totalBytes;
-      if (initialOffset > 0) {
-        this.downloaded.add(initialOffset);
-      }
-      this.shutdownHook = new Thread(() -> System.out.print(SHOW_CURSOR));
-      try {
-        Runtime.getRuntime().addShutdownHook(shutdownHook);
-      } catch (IllegalStateException _) {
-        // VM already shutting down
-      }
-      System.out.print(HIDE_CURSOR);
-      System.out.flush();
-      this.renderThread = Thread.ofVirtual().name("progress-render").start(this::renderLoop);
-    }
+	private static boolean isValidHexHash(String s) {
+		int len = s.length();
+		if (len != 32 && len != 40 && len != 64 && len != 96 && len != 128) {
+			return false;
+		}
+		for (int i = 0; i < len; i++) {
+			char c = s.charAt(i);
+			if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+				return false;
+			}
+		}
+		return true;
+	}
 
-    void stepBy(long bytes) {
-      downloaded.add(bytes);
-    }
+	private String computeFileHash(Path file, String algorithm) throws Exception {
+		long totalBytes = Files.size(file);
+		MessageDigest digest = MessageDigest.getInstance(algorithm);
+		int bufferSize = 8 * 1024 * 1024; // 8 MB high-throughput direct buffer
+		ByteBuffer buffer = ByteBuffer.allocateDirect(bufferSize);
 
-    private void renderLoop() {
-      while (!closed) {
-        render();
-        try {
-          Thread.sleep(Duration.ofMillis(75)); // ~13 FPS smooth update rate
-        } catch (InterruptedException _) {
-          break;
-        }
-      }
-    }
+		String taskName = "Verifying " + algorithm;
+		try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ);
+				ProgressBar pb = quiet ? null : new ProgressBar(taskName, totalBytes, 0L)) {
+			while (channel.read(buffer) > 0) {
+				buffer.flip();
+				int remaining = buffer.remaining();
+				digest.update(buffer);
+				buffer.clear();
+				if (pb != null) {
+					pb.stepBy(remaining);
+				}
+			}
+		}
+		return HexFormat.of().formatHex(digest.digest());
+	}
 
-    private void render() {
-      long current = downloaded.sum();
-      double elapsedSec = (System.nanoTime() - startTime) / 1_000_000_000.0;
-      double speedMBps = elapsedSec > 0 ? (current / 1_048_576.0) / elapsedSec : 0.0;
-      String displayName = taskName.length() > 20 ? taskName.substring(0, 17) + "..." : taskName;
+	private ProgressBar createProgressBar(long total, long initialOffset) {
+		if (quiet)
+			return null;
+		return new ProgressBar(outputPath.getFileName().toString(), total, initialOffset);
+	}
 
-      String output;
-      if (totalBytes > 0) {
-        double percent = Math.min(100.0, (current * 100.0) / totalBytes);
-        int barWidth = 30;
-        int completed = (int) Math.round((percent / 100.0) * barWidth);
-        completed = Math.clamp(completed, 0, barWidth);
-        String bar = "█".repeat(completed) + "░".repeat(barWidth - completed);
-        long remainingBytes = Math.max(0, totalBytes - current);
-        long etaSec = speedMBps > 0 ? (long) ((remainingBytes / 1_048_576.0) / speedMBps) : 0;
+	private static String parseContentDispositionFilename(String disposition) {
+		if (disposition == null)
+			return null;
+		for (String part : disposition.split(";")) {
+			String trimmed = part.trim();
+			if (trimmed.toLowerCase(Locale.ROOT).startsWith("filename*=")) {
+				String val = trimmed.substring(10).trim();
+				int lastQuote = val.lastIndexOf("''");
+				if (lastQuote >= 0) {
+					return URI.create(val.substring(lastQuote + 2)).getPath();
+				}
+			} else if (trimmed.toLowerCase(Locale.ROOT).startsWith("filename=")) {
+				String val = trimmed.substring(9).trim();
+				if (val.startsWith("\"") && val.endsWith("\"") && val.length() >= 2) {
+					val = val.substring(1, val.length() - 1);
+				}
+				return Path.of(val).getFileName().toString();
+			}
+		}
+		return null;
+	}
 
-        output = String.format("\r%-20s [%s] %5.1f%% (%6.2f / %6.2f MB) %6.2f MB/s eta %02d:%02d%s",
-            displayName, bar, percent, current / 1_048_576.0, totalBytes / 1_048_576.0, speedMBps,
-            etaSec / 60, etaSec % 60, ERASE_TO_EOL);
-      } else {
-        long elapsed = (long) elapsedSec;
-        output =
-            String.format("\r%-20s %6.2f MB downloaded (%6.2f MB/s) [%02d:%02d]%s", displayName,
-                current / 1_048_576.0, speedMBps, elapsed / 60, elapsed % 60, ERASE_TO_EOL);
-      }
-      System.out.print(output);
-      System.out.flush();
-    }
+	/// Pure-Java lightweight progress bar with transfer rate and ETA calculations.
+	static class ProgressBar implements AutoCloseable {
+		private static final String HIDE_CURSOR = "\u001B[?25l";
+		private static final String SHOW_CURSOR = "\u001B[?25h";
+		private static final String ERASE_TO_EOL = "\u001B[K";
 
-    @Override
-    public void close() {
-      if (closed) {
-        return;
-      }
-      closed = true;
-      renderThread.interrupt();
-      try {
-        renderThread.join(200);
-      } catch (InterruptedException _) {
-        // continue shutdown
-      }
-      render(); // final 100% frame
-      try {
-        Runtime.getRuntime().removeShutdownHook(shutdownHook);
-      } catch (IllegalStateException _) {
-        // VM already shutting down
-      }
-      System.out.println(SHOW_CURSOR);
-      System.out.flush();
-    }
-  }
+		private final String taskName;
+		private final long totalBytes;
+		private final LongAdder downloaded = new LongAdder();
+		private final long startTime = System.nanoTime();
+		private final Thread shutdownHook;
+		private final Thread renderThread;
+		private volatile boolean closed = false;
+
+		ProgressBar(String taskName, long totalBytes, long initialOffset) {
+			this.taskName = taskName;
+			this.totalBytes = totalBytes;
+			if (initialOffset > 0) {
+				this.downloaded.add(initialOffset);
+			}
+			this.shutdownHook = new Thread(() -> System.out.print(SHOW_CURSOR));
+			try {
+				Runtime.getRuntime().addShutdownHook(shutdownHook);
+			} catch (IllegalStateException _) {
+				// VM already shutting down
+			}
+			System.out.print(HIDE_CURSOR);
+			System.out.flush();
+			this.renderThread = Thread.ofVirtual().name("progress-render").start(this::renderLoop);
+		}
+
+		void stepBy(long bytes) {
+			downloaded.add(bytes);
+		}
+
+		private void renderLoop() {
+			while (!closed) {
+				render();
+				try {
+					Thread.sleep(Duration.ofMillis(75)); // ~13 FPS smooth update rate
+				} catch (InterruptedException _) {
+					break;
+				}
+			}
+		}
+
+		private void render() {
+			long current = downloaded.sum();
+			double elapsedSec = (System.nanoTime() - startTime) / 1_000_000_000.0;
+			double speedMBps = elapsedSec > 0 ? (current / 1_048_576.0) / elapsedSec : 0.0;
+			String displayName = taskName.length() > 20 ? taskName.substring(0, 17) + "..." : taskName;
+
+			String output;
+			if (totalBytes > 0) {
+				double percent = Math.min(100.0, (current * 100.0) / totalBytes);
+				int barWidth = 30;
+				int completed = (int) Math.round((percent / 100.0) * barWidth);
+				completed = Math.clamp(completed, 0, barWidth);
+				String bar = "█".repeat(completed) + "░".repeat(barWidth - completed);
+				long remainingBytes = Math.max(0, totalBytes - current);
+				long etaSec = speedMBps > 0 ? (long) ((remainingBytes / 1_048_576.0) / speedMBps) : 0;
+
+				output = String.format("\r%-20s [%s] %5.1f%% (%6.2f / %6.2f MB) %6.2f MB/s eta %02d:%02d%s",
+						displayName, bar, percent, current / 1_048_576.0, totalBytes / 1_048_576.0, speedMBps,
+						etaSec / 60, etaSec % 60, ERASE_TO_EOL);
+			} else {
+				long elapsed = (long) elapsedSec;
+				output = String.format("\r%-20s %6.2f MB downloaded (%6.2f MB/s) [%02d:%02d]%s", displayName,
+						current / 1_048_576.0, speedMBps, elapsed / 60, elapsed % 60, ERASE_TO_EOL);
+			}
+			System.out.print(output);
+			System.out.flush();
+		}
+
+		@Override
+		public void close() {
+			if (closed) {
+				return;
+			}
+			closed = true;
+			renderThread.interrupt();
+			try {
+				renderThread.join(200);
+			} catch (InterruptedException _) {
+				// continue shutdown
+			}
+			render(); // final 100% frame
+			try {
+				Runtime.getRuntime().removeShutdownHook(shutdownHook);
+			} catch (IllegalStateException _) {
+				// VM already shutting down
+			}
+			System.out.println(SHOW_CURSOR);
+			System.out.flush();
+		}
+	}
 }
