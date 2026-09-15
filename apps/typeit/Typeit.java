@@ -3,6 +3,7 @@
 //DEPS info.picocli:picocli:4.7.7
 //DEPS info.picocli:picocli-codegen:4.7.7
 //JAVAC_OPTIONS -proc:full
+//FILES META-INF/native-image/typeit/reachability-metadata.json=META-INF/native-image/typeit/reachability-metadata.json
 //JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms4m -Xmx32m -XX:TieredStopAtLevel=1 -XX:CompressedClassSpaceSize=32m -XX:ReservedCodeCacheSize=16m -XX:-UsePerfData
 //NATIVE_OPTIONS -O2 -march=native --no-fallback --enable-native-access=ALL-UNNAMED
 
@@ -115,7 +116,7 @@ class Typeit implements Callable<Integer> {
 		KeyboardDriver driver;
 		try {
 			driver = createKeyboardDriver();
-		} catch (Exception e) {
+		} catch (Throwable e) {
 			System.err.printf("Error initializing keyboard driver: %s%n", e.getMessage());
 			printDriverHelpHints();
 			return 1;
@@ -212,7 +213,7 @@ class Typeit implements Callable<Integer> {
   ///
   /// @return Active keyboard simulation driver.
   /// @throws Exception If initialization fails.
-	private KeyboardDriver createKeyboardDriver() throws Exception {
+	private KeyboardDriver createKeyboardDriver() throws Throwable {
 		String osName = System.getProperty("os.name", "").toLowerCase();
 		boolean isLinux = osName.contains("linux");
 		boolean isWayland = isLinux && isWaylandSession();
@@ -235,7 +236,7 @@ class Typeit implements Callable<Integer> {
 			if (UInputKeyboardDriver.isAvailable()) {
 				try {
 					return new UInputKeyboardDriver(speed);
-				} catch (Exception e) {
+				} catch (Throwable e) {
 					if (verbose) {
 						System.err.printf("[debug] uinput driver init failed: %s%n", e.getMessage());
 					}
@@ -245,13 +246,13 @@ class Typeit implements Callable<Integer> {
 				if (WTypeKeyboardDriver.isAvailable()) {
 					try {
 						return new WTypeKeyboardDriver(speed);
-					} catch (Exception _) {
+					} catch (Throwable _) {
 					}
 				}
 				if (YDoToolKeyboardDriver.isAvailable()) {
 					try {
 						return new YDoToolKeyboardDriver(speed);
-					} catch (Exception _) {
+					} catch (Throwable _) {
 					}
 				}
 			}
@@ -320,6 +321,16 @@ class Typeit implements Callable<Integer> {
 				return text;
 			}
 			text = runCommandCaptureOutput("xsel", "--clipboard", "--output");
+			if (text != null && !text.isEmpty()) {
+				return text;
+			}
+		} else if (osName.contains("mac")) {
+			String text = runCommandCaptureOutput("pbpaste");
+			if (text != null && !text.isEmpty()) {
+				return text;
+			}
+		} else if (osName.contains("win")) {
+			String text = runCommandCaptureOutput("powershell", "-NoProfile", "-Command", "Get-Clipboard");
 			if (text != null && !text.isEmpty()) {
 				return text;
 			}
@@ -429,7 +440,7 @@ class Typeit implements Callable<Integer> {
 			this.closeHandle = linker.downcallHandle(lookup.find("close").orElseThrow(),
 					FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
 
-			this.arena = Arena.ofShared();
+			this.arena = Arena.ofConfined();
 			int O_WRONLY = 1;
 			int O_NONBLOCK = 04000;
 			var pathSegment = arena.allocateFrom("/dev/uinput");

@@ -9,6 +9,7 @@
 package fetch;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.sun.net.httpserver.HttpServer;
@@ -165,14 +166,268 @@ public class FetchTest {
 		Path destFile = tempDir.resolve("quiet.dat");
 
 		try {
-			var result = runCommand("http://127.0.0.1:" + port + "/quiet.dat", "-o", destFile.toString(), "-q",
-					"--no-checksum");
+			var result = runCommand("http://127.0.0.1:" + port + "/quiet.dat", "-o", destFile.toString(),
+					"-q", "--no-checksum");
 			assertEquals(0, result.exitCode());
 			assertTrue(Files.exists(destFile));
 			assertEquals("Quiet download payload", Files.readString(destFile));
 			assertEquals("", result.stdout().trim());
 		} finally {
 			server.stop(0);
+		}
+	}
+
+	@Test
+	void testConcurrentChunkDownloadWithRangeSupport(@TempDir Path tempDir) throws Exception {
+		byte[] testData = new byte[256 * 1024];
+		for (int i = 0; i < testData.length; i++) {
+			testData[i] = (byte) (i % 251);
+		}
+		var md = MessageDigest.getInstance("SHA-256");
+		String sha256Hex = HexFormat.of().formatHex(md.digest(testData));
+
+		var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		server.createContext("/chunks.dat", new RangeHttpHandler(testData, 0));
+		server.start();
+
+		int port = server.getAddress().getPort();
+		Path destFile = tempDir.resolve("chunks.dat");
+
+		try {
+			var result = runCommand("http://127.0.0.1:" + port + "/chunks.dat", "-o", destFile.toString(),
+					"-c", "4", "--expected-hash", sha256Hex);
+			assertEquals(0, result.exitCode());
+			assertTrue(Files.exists(destFile));
+			assertEquals(testData.length, Files.size(destFile));
+			var actualMd = MessageDigest.getInstance("SHA-256");
+			String actualHex = HexFormat.of().formatHex(actualMd.digest(Files.readAllBytes(destFile)));
+			assertEquals(sha256Hex, actualHex);
+		} finally {
+			server.stop(0);
+		}
+	}
+
+	@Test
+	void testResumeInterruptedConcurrentDownload(@TempDir Path tempDir) throws Exception {
+		byte[] testData = new byte[1024 * 1024];
+		for (int i = 0; i < testData.length; i++) {
+			testData[i] = (byte) (i % 241);
+		}
+		var md = MessageDigest.getInstance("SHA-256");
+		String sha256Hex = HexFormat.of().formatHex(md.digest(testData));
+
+		Path destFile = tempDir.resolve("resumable.dat");
+		Path partFile = Path.of(destFile.toString() + ".part");
+		Path metaFile = Path.of(destFile.toString() + ".part.meta");
+
+		// Run 1: Server aborts on request #3 (one of the workers)
+		var failServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		failServer.createContext("/resumable.dat", new RangeHttpHandler(testData, 3));
+		failServer.start();
+		int port1 = failServer.getAddress().getPort();
+
+		try {
+			var result1 = runCommand("http://127.0.0.1:" + port1 + "/resumable.dat", "-o",
+					destFile.toString(), "-c", "4", "--expected-hash", sha256Hex);
+			assertTrue(result1.exitCode() != 0, "First attempt should fail/interrupt");
+			assertTrue(Files.exists(partFile), ".part file must exist after interruption");
+			assertTrue(Files.exists(metaFile), ".part.meta file must exist after interruption");
+		} finally {
+			failServer.stop(0);
+		}
+
+		// Run 2: Server succeeds on all requests -> should resume and verify successfully
+		var goodServer = HttpServer.create(new InetSocketAddress("127.0.0.1", port1), 0);
+		goodServer.createContext("/resumable.dat", new RangeHttpHandler(testData, 0));
+		goodServer.start();
+
+		try {
+			var result2 = runCommand("http://127.0.0.1:" + port1 + "/resumable.dat", "-o",
+					destFile.toString(), "-c", "4", "--expected-hash", sha256Hex);
+			assertEquals(0, result2.exitCode(), "Resumed download should succeed: " + result2.stderr());
+			assertTrue(result2.stdout().contains("Resuming download"),
+					"Output should indicate resumption: " + result2.stdout());
+			assertTrue(Files.exists(destFile), "Target file should exist");
+			assertFalse(Files.exists(partFile), ".part should be removed after completion");
+			assertFalse(Files.exists(metaFile), ".part.meta should be removed after completion");
+
+			assertEquals(sha256Hex, sha256Of(destFile), "Final file checksum must match after resumption");
+		} finally {
+			goodServer.stop(0);
+		}
+	}
+
+	@Test
+	void testMultiInterruptedConcurrentDownload(@TempDir Path tempDir) throws Exception {
+		byte[] testData = new byte[1024 * 1024];
+		for (int i = 0; i < testData.length; i++) {
+			testData[i] = (byte) (i % 239);
+		}
+		var md = MessageDigest.getInstance("SHA-256");
+		String sha256Hex = HexFormat.of().formatHex(md.digest(testData));
+
+		Path destFile = tempDir.resolve("multi-resumable.dat");
+		Path partFile = Path.of(destFile.toString() + ".part");
+		Path metaFile = Path.of(destFile.toString() + ".part.meta");
+
+		// Run 1: Fails on request #2
+		var server1 = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		server1.createContext("/multi.dat", new RangeHttpHandler(testData, 2));
+		server1.start();
+		int port = server1.getAddress().getPort();
+
+		try {
+			var result1 = runCommand("http://127.0.0.1:" + port + "/multi.dat", "-o",
+					destFile.toString(), "-c", "4", "--expected-hash", sha256Hex);
+			assertTrue(result1.exitCode() != 0, "Run 1 should fail");
+			assertTrue(Files.exists(partFile));
+			assertTrue(Files.exists(metaFile));
+		} finally {
+			server1.stop(0);
+		}
+
+		// Run 2: Fails on request #2 (the resumed incomplete worker)
+		var server2 = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
+		server2.createContext("/multi.dat", new RangeHttpHandler(testData, 2));
+		server2.start();
+
+		try {
+			var result2 = runCommand("http://127.0.0.1:" + port + "/multi.dat", "-o",
+					destFile.toString(), "-c", "4", "--expected-hash", sha256Hex);
+			assertTrue(result2.exitCode() != 0, "Run 2 should fail");
+			assertTrue(Files.exists(partFile));
+			assertTrue(Files.exists(metaFile));
+		} finally {
+			server2.stop(0);
+		}
+
+		// Run 3: Finishes cleanly
+		var server3 = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
+		server3.createContext("/multi.dat", new RangeHttpHandler(testData, 0));
+		server3.start();
+
+		try {
+			var result3 = runCommand("http://127.0.0.1:" + port + "/multi.dat", "-o",
+					destFile.toString(), "-c", "4", "--expected-hash", sha256Hex);
+			assertEquals(0, result3.exitCode(), "Run 3 should complete: " + result3.stderr());
+			assertTrue(result3.stdout().contains("Resuming download"));
+			assertTrue(Files.exists(destFile));
+			assertFalse(Files.exists(partFile));
+			assertFalse(Files.exists(metaFile));
+
+			assertEquals(sha256Hex, sha256Of(destFile), "Final hash must match perfectly after multiple interruptions");
+		} finally {
+			server3.stop(0);
+		}
+	}
+
+	@Test
+	void testStalePartWithoutMetaRestartsFresh(@TempDir Path tempDir) throws Exception {
+		byte[] testData = new byte[64 * 1024];
+		for (int i = 0; i < testData.length; i++) {
+			testData[i] = (byte) (i % 199);
+		}
+		var md = MessageDigest.getInstance("SHA-256");
+		String sha256Hex = HexFormat.of().formatHex(md.digest(testData));
+
+		Path destFile = tempDir.resolve("orphan.dat");
+		Path partFile = Path.of(destFile.toString() + ".part");
+		// Create corrupted orphan .part with junk data and no .meta
+		Files.write(partFile, new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 });
+
+		var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		server.createContext("/orphan.dat", new RangeHttpHandler(testData, 0));
+		server.start();
+		int port = server.getAddress().getPort();
+
+		try {
+			var result = runCommand("http://127.0.0.1:" + port + "/orphan.dat", "-o", destFile.toString(),
+					"-c", "2", "--expected-hash", sha256Hex);
+			assertEquals(0, result.exitCode());
+			assertTrue(result.stdout().contains("lacks resume metadata. Starting fresh"),
+					"Should detect missing metadata and restart: " + result.stdout());
+			assertTrue(Files.exists(destFile));
+			var actualMd = MessageDigest.getInstance("SHA-256");
+			String actualHex = HexFormat.of().formatHex(actualMd.digest(Files.readAllBytes(destFile)));
+			assertEquals(sha256Hex, actualHex);
+		} finally {
+			server.stop(0);
+		}
+	}
+
+	private static String sha256Of(Path file) throws Exception {
+		var md = MessageDigest.getInstance("SHA-256");
+		try (var in = Files.newInputStream(file)) {
+			byte[] buf = new byte[64 * 1024];
+			int read;
+			while ((read = in.read(buf)) != -1) {
+				md.update(buf, 0, read);
+			}
+		}
+		return HexFormat.of().formatHex(md.digest());
+	}
+
+	static class RangeHttpHandler implements com.sun.net.httpserver.HttpHandler {
+		private final byte[] data;
+		private final java.util.concurrent.atomic.AtomicInteger requestCount = new java.util.concurrent.atomic.AtomicInteger();
+		private final int failOnRequestNumber;
+
+		RangeHttpHandler(byte[] data, int failOnRequestNumber) {
+			this.data = data;
+			this.failOnRequestNumber = failOnRequestNumber;
+		}
+
+		@Override
+		public void handle(com.sun.net.httpserver.HttpExchange exchange) throws java.io.IOException {
+			int count = requestCount.incrementAndGet();
+			if ("HEAD".equalsIgnoreCase(exchange.getRequestMethod())) {
+				exchange.getResponseHeaders().set("Accept-Ranges", "bytes");
+				exchange.getResponseHeaders().set("Content-Length", String.valueOf(data.length));
+				exchange.getResponseHeaders().set("ETag", "\"test-etag-123\"");
+				exchange.sendResponseHeaders(200, -1);
+				exchange.close();
+				return;
+			}
+
+			String range = exchange.getRequestHeaders().getFirst("Range");
+			if (range != null && range.startsWith("bytes=")) {
+				String[] parts = range.substring(6).split("-");
+				int start = Integer.parseInt(parts[0]);
+				int end = parts.length > 1 && !parts[1].isBlank() ? Integer.parseInt(parts[1]) : data.length - 1;
+				end = Math.min(end, data.length - 1);
+				int length = end - start + 1;
+
+				if (failOnRequestNumber > 0 && count == failOnRequestNumber) {
+					int partial = Math.max(1, length / 4);
+					exchange.getResponseHeaders()
+						.set("Content-Range",
+								"bytes " + start + "-" + end + "/" + data.length);
+					exchange.getResponseHeaders().set("Content-Type", "application/octet-stream");
+					exchange.sendResponseHeaders(206, length);
+					try (var os = exchange.getResponseBody()) {
+						os.write(data, start, partial);
+						os.flush();
+					}
+					return;
+				}
+
+				exchange.getResponseHeaders()
+					.set("Content-Range",
+							"bytes " + start + "-" + end + "/" + data.length);
+				exchange.getResponseHeaders().set("Content-Type", "application/octet-stream");
+				exchange.sendResponseHeaders(206, length);
+				try (var os = exchange.getResponseBody()) {
+					os.write(data, start, length);
+				}
+				return;
+			}
+
+			exchange.getResponseHeaders().set("Accept-Ranges", "bytes");
+			exchange.getResponseHeaders().set("Content-Type", "application/octet-stream");
+			exchange.sendResponseHeaders(200, data.length);
+			try (var os = exchange.getResponseBody()) {
+				os.write(data);
+			}
 		}
 	}
 

@@ -8,6 +8,7 @@
 
 package fetch;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -179,44 +180,92 @@ class Fetch implements Callable<Integer> {
 			.firstValue("accept-ranges")
 			.map(v -> v.equalsIgnoreCase("bytes"))
 			.orElse(false);
+		String etag = headRes.headers().firstValue("etag").orElse(null);
+		String lastModified = headRes.headers().firstValue("last-modified").orElse(null);
+
 		Path partPath = Path.of(outputPath.toString() + ".part");
-		long existingPartSize = 0L;
-		if (!noResume && Files.isRegularFile(partPath)) {
-			existingPartSize = Files.size(partPath);
-			if (contentLength > 0 && existingPartSize > contentLength) {
+		Path metaPath = Path.of(partPath.toString() + ".meta");
+
+		if (noResume) {
+			Files.deleteIfExists(partPath);
+			Files.deleteIfExists(metaPath);
+		}
+
+		DownloadMeta meta = null;
+		if (!noResume && Files.isRegularFile(partPath) && Files.isRegularFile(metaPath)) {
+			meta = DownloadMeta.load(metaPath);
+			if (!isResumeValid(meta, uri, contentLength, etag, lastModified)) {
+				if (!quiet) {
+					System.out.println(
+							"Previous download metadata mismatch or remote file changed. Starting fresh...");
+				}
 				Files.deleteIfExists(partPath);
-				existingPartSize = 0L;
+				Files.deleteIfExists(metaPath);
+				meta = null;
 			}
-		} else if (noResume) {
+		} else if (!noResume && Files.isRegularFile(partPath) && !Files.isRegularFile(metaPath)) {
+			if (!quiet) {
+				System.out.println(
+						"Incomplete download lacks resume metadata. Starting fresh to prevent file corruption...");
+			}
 			Files.deleteIfExists(partPath);
 		}
+
 		String streamedHash = null;
-		MessageDigest onTheFlyDigest = null;
-		if (expectedHash != null && existingPartSize == 0L) {
-			try {
-				onTheFlyDigest = MessageDigest.getInstance(expectedHash.algorithm());
-			} catch (Exception _) {
-				onTheFlyDigest = null;
+		if (acceptsRanges && contentLength > 0) {
+			List<DownloadChunk> chunks;
+			if (meta != null && !meta.chunks().isEmpty()) {
+				chunks = meta.chunks();
+				long resumedBytes = chunks.stream().mapToLong(DownloadChunk::getDownloaded).sum();
+				if (!quiet) {
+					System.out.printf(
+							"Resuming download with %d concurrent range workers (%.2f / %.2f MB, %.1f%%)...%n",
+							chunks.size(), resumedBytes / 1_048_576.0, contentLength / 1_048_576.0,
+							(resumedBytes * 100.0) / contentLength);
+				}
+			} else {
+				int workers = Math.clamp(connections, 1, 64);
+				chunks = createChunks(contentLength, workers);
+				if (!quiet) {
+					if (chunks.size() > 1) {
+						System.out.printf("Connecting with %d concurrent range workers (%.2f MB)...%n",
+								chunks.size(), contentLength / 1_048_576.0);
+					} else {
+						System.out.printf("Connecting (%.2f MB)...%n", contentLength / 1_048_576.0);
+					}
+				}
+			}
+			boolean success = downloadChunks(partPath, metaPath, chunks, contentLength, etag, lastModified);
+			if (!success) {
+				return 1;
+			}
+		} else {
+			if (!quiet) {
+				if (contentLength > 0) {
+					System.out.printf("Connecting (%.2f MB)...%n", contentLength / 1_048_576.0);
+				} else {
+					System.out.println("Connecting (unknown size)...");
+				}
+			}
+			MessageDigest onTheFlyDigest = null;
+			if (expectedHash != null) {
+				try {
+					onTheFlyDigest = MessageDigest.getInstance(expectedHash.algorithm());
+				} catch (Exception _) {
+					onTheFlyDigest = null;
+				}
+			}
+			boolean success = downloadSingleStream(partPath, onTheFlyDigest);
+			if (!success) {
+				return 1;
+			}
+			if (onTheFlyDigest != null) {
+				streamedHash = HexFormat.of().formatHex(onTheFlyDigest.digest());
 			}
 		}
 
-		if (existingPartSize > 0 && acceptsRanges
-				&& (contentLength <= 0 || existingPartSize < contentLength)) {
-			if (!quiet) {
-				System.out.printf("Resuming download from byte %d (%.2f / %.2f MB)...%n", existingPartSize,
-						existingPartSize / 1_048_576.0,
-						(contentLength > 0 ? contentLength : existingPartSize) / 1_048_576.0);
-			}
-			downloadResumedStream(partPath, existingPartSize, contentLength);
-		} else if (contentLength <= 0 || !acceptsRanges || connections <= 1) {
-			streamedHash = downloadSingleStream(partPath, onTheFlyDigest);
-		} else {
-			if (!quiet) {
-				System.out.printf("Connecting with %d concurrent range workers (%.2f MB)...%n", connections,
-						contentLength / 1_048_576.0);
-			}
-			downloadMultiThreaded(partPath, contentLength);
-		}
+		Files.deleteIfExists(metaPath);
+		Files.deleteIfExists(Path.of(metaPath.toString() + ".tmp"));
 
 		// Atomically promote .part to final outputPath
 		try {
@@ -319,120 +368,124 @@ class Fetch implements Callable<Integer> {
 		}
 	}
 
-	private String downloadSingleStream(Path partPath, MessageDigest digest) throws Exception {
-		HttpRequest req = applyHeaders(HttpRequest.newBuilder(uri)).GET().build();
-		HttpResponse<InputStream> res = client.send(req, HttpResponse.BodyHandlers.ofInputStream());
+	private boolean downloadSingleStream(Path partPath, MessageDigest digest) {
+		try {
+			HttpRequest req = applyHeaders(HttpRequest.newBuilder(uri)).GET().build();
+			HttpResponse<InputStream> res = client.send(req, HttpResponse.BodyHandlers.ofInputStream());
 
-		long total = res.headers().firstValueAsLong("content-length").orElse(-1L);
-		try (ProgressBar pb = createProgressBar(total, 0L);
-				InputStream in = res.body();
-				FileChannel out = FileChannel.open(partPath, StandardOpenOption.CREATE,
-						StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
-
-			byte[] buf = new byte[128 * 1024];
-			int read;
-			while ((read = in.read(buf)) != -1) {
-				out.write(ByteBuffer.wrap(buf, 0, read));
-				if (digest != null) {
-					digest.update(buf, 0, read);
-				}
-				if (pb != null) {
-					pb.stepBy(read);
-				}
+			int status = res.statusCode();
+			if (status >= 400) {
+				System.err.println("Error: Server returned HTTP " + status);
+				return false;
 			}
-		}
-		return digest != null ? HexFormat.of().formatHex(digest.digest()) : null;
-	}
 
-	private void downloadResumedStream(Path partPath, long startOffset, long totalSize)
-			throws Exception {
-		HttpRequest req = applyHeaders(HttpRequest.newBuilder(uri))
-			.header("Range", "bytes=" + startOffset + "-")
-			.GET()
-			.build();
-		HttpResponse<InputStream> res = client.send(req, HttpResponse.BodyHandlers.ofInputStream());
-
-		int status = res.statusCode();
-		if (status != 206 && status != 200) {
-			System.err.println("Warning: Server rejected range request (HTTP " + status
-					+ "). Starting from beginning...");
-			downloadSingleStream(partPath, null);
-			return;
-		}
-
-		// If server sent 200 OK instead of 206 Partial Content, it doesn't support resume for this request
-		if (status == 200) {
-			long total = res.headers().firstValueAsLong("content-length").orElse(totalSize);
+			long total = res.headers().firstValueAsLong("content-length").orElse(-1L);
 			try (ProgressBar pb = createProgressBar(total, 0L);
 					InputStream in = res.body();
 					FileChannel out = FileChannel.open(partPath, StandardOpenOption.CREATE,
 							StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+
 				byte[] buf = new byte[128 * 1024];
 				int read;
 				while ((read = in.read(buf)) != -1) {
 					out.write(ByteBuffer.wrap(buf, 0, read));
+					if (digest != null) {
+						digest.update(buf, 0, read);
+					}
 					if (pb != null) {
 						pb.stepBy(read);
 					}
 				}
 			}
-			return;
-		}
-
-		try (ProgressBar pb = createProgressBar(totalSize, startOffset);
-				InputStream in = res.body();
-				FileChannel out = FileChannel.open(partPath, StandardOpenOption.CREATE,
-						StandardOpenOption.WRITE, StandardOpenOption.APPEND)) {
-
-			byte[] buf = new byte[128 * 1024];
-			int read;
-			while ((read = in.read(buf)) != -1) {
-				out.write(ByteBuffer.wrap(buf, 0, read));
-				if (pb != null) {
-					pb.stepBy(read);
-				}
-			}
+			return true;
+		} catch (Exception e) {
+			Throwable cause = e.getCause() != null ? e.getCause() : e;
+			System.err.println("Download failed: " + cause.getMessage());
+			return false;
 		}
 	}
 
-	private void downloadMultiThreaded(Path partPath, long totalSize) throws Exception {
-		long chunkSize = (long) Math.ceil((double) totalSize / connections);
+	private boolean downloadChunks(Path partPath, Path metaPath, List<DownloadChunk> chunks,
+			long totalSize, String etag, String lastModified) {
+		long totalDownloaded = chunks.stream().mapToLong(DownloadChunk::getDownloaded).sum();
+
+		if (totalDownloaded >= totalSize && chunks.stream().allMatch(DownloadChunk::isComplete)) {
+			return true;
+		}
+
+		Thread metaSaverThread = Thread.ofVirtual().name("meta-saver").start(() -> {
+			while (!Thread.currentThread().isInterrupted()) {
+				try {
+					Thread.sleep(Duration.ofMillis(500));
+					saveMeta(metaPath, chunks, totalSize, etag, lastModified);
+				} catch (InterruptedException _) {
+					break;
+				}
+			}
+		});
+
+		Thread shutdownHook = new Thread(() -> saveMeta(metaPath, chunks, totalSize, etag, lastModified));
+		try {
+			Runtime.getRuntime().addShutdownHook(shutdownHook);
+		} catch (IllegalStateException _) {
+		}
 
 		try (
 				FileChannel fileChannel = FileChannel.open(partPath, StandardOpenOption.CREATE,
 						StandardOpenOption.WRITE, StandardOpenOption.READ);
-				ProgressBar pb = createProgressBar(totalSize, 0L);
+				ProgressBar pb = createProgressBar(totalSize, totalDownloaded);
 				ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
 
-			fileChannel.truncate(totalSize);
 			List<CompletableFuture<Void>> futures = new ArrayList<>();
-
-			for (int i = 0; i < connections; i++) {
-				long start = i * chunkSize;
-				long end = Math.min(start + chunkSize - 1, totalSize - 1);
-				if (start > end) {
-					break;
+			for (DownloadChunk chunk : chunks) {
+				if (chunk.isComplete()) {
+					continue;
 				}
 
 				futures.add(CompletableFuture.runAsync(() -> {
 					try {
+						long initialDownloaded = chunk.getDownloaded();
+						long startOffset = chunk.start + initialDownloaded;
+						long endOffset = chunk.end;
+						if (startOffset > endOffset) {
+							return;
+						}
+
 						HttpRequest req = applyHeaders(HttpRequest.newBuilder(uri))
-							.header("Range", "bytes=" + start + "-" + end)
+							.header("Range", "bytes=" + startOffset + "-" + endOffset)
 							.GET()
 							.build();
 
 						HttpResponse<InputStream> response = client.send(req,
 								HttpResponse.BodyHandlers.ofInputStream());
+
+						int statusCode = response.statusCode();
+						if (statusCode != 206) {
+							throw new IOException("Server returned HTTP " + statusCode + " for range bytes="
+									+ startOffset + "-" + endOffset);
+						}
+
 						try (InputStream in = response.body()) {
-							byte[] buf = new byte[64 * 1024];
-							int bytesRead;
-							long currentOffset = start;
-							while ((bytesRead = in.read(buf)) != -1) {
+							byte[] buf = new byte[128 * 1024];
+							long bytesRemaining = endOffset - startOffset + 1;
+							long currentOffset = startOffset;
+							while (bytesRemaining > 0) {
+								int toRead = (int) Math.min(buf.length, bytesRemaining);
+								int bytesRead = in.read(buf, 0, toRead);
+								if (bytesRead == -1) {
+									break;
+								}
 								fileChannel.write(ByteBuffer.wrap(buf, 0, bytesRead), currentOffset);
 								currentOffset += bytesRead;
+								chunk.downloaded.add(bytesRead);
+								bytesRemaining -= bytesRead;
 								if (pb != null) {
 									pb.stepBy(bytesRead);
 								}
+							}
+							if (bytesRemaining > 0) {
+								throw new IOException("Connection closed prematurely (" + bytesRemaining
+										+ " bytes unread in chunk " + chunk.index + ")");
 							}
 						}
 					} catch (Exception e) {
@@ -442,6 +495,176 @@ class Fetch implements Callable<Integer> {
 			}
 
 			CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+			return true;
+		} catch (Exception e) {
+			Throwable cause = e.getCause() != null ? e.getCause() : e;
+			System.err.println("Download interrupted: " + cause.getMessage());
+			return false;
+		} finally {
+			metaSaverThread.interrupt();
+			try {
+				Runtime.getRuntime().removeShutdownHook(shutdownHook);
+			} catch (IllegalStateException _) {
+			}
+			saveMeta(metaPath, chunks, totalSize, etag, lastModified);
+		}
+	}
+
+	private static List<DownloadChunk> createChunks(long totalSize, int count) {
+		int numChunks = Math.clamp(count, 1, 64);
+		long chunkSize = (long) Math.ceil((double) totalSize / numChunks);
+		List<DownloadChunk> chunks = new ArrayList<>();
+		for (int i = 0; i < numChunks; i++) {
+			long start = i * chunkSize;
+			long end = Math.min(start + chunkSize - 1, totalSize - 1);
+			if (start <= end) {
+				chunks.add(new DownloadChunk(i, start, end, 0L));
+			}
+		}
+		return chunks;
+	}
+
+	private synchronized void saveMeta(Path metaPath, List<DownloadChunk> chunks, long contentLength,
+			String etag, String lastModified) {
+		try {
+			Path tmp = Path.of(metaPath.toString() + ".tmp");
+			var sb = new StringBuilder();
+			sb.append("version=1\n");
+			sb.append("uri=").append(uri).append("\n");
+			sb.append("contentLength=").append(contentLength).append("\n");
+			if (etag != null) {
+				sb.append("etag=").append(etag).append("\n");
+			}
+			if (lastModified != null) {
+				sb.append("lastModified=").append(lastModified).append("\n");
+			}
+			sb.append("chunks=").append(chunks.size()).append("\n");
+			for (var c : chunks) {
+				sb.append("chunk=")
+					.append(c.index)
+					.append(",")
+					.append(c.start)
+					.append(",")
+					.append(c.end)
+					.append(",")
+					.append(c.getDownloaded())
+					.append("\n");
+			}
+			Files.writeString(tmp, sb.toString(), StandardOpenOption.CREATE,
+					StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+			try {
+				Files.move(tmp, metaPath, StandardCopyOption.REPLACE_EXISTING,
+						StandardCopyOption.ATOMIC_MOVE);
+			} catch (AtomicMoveNotSupportedException _) {
+				Files.move(tmp, metaPath, StandardCopyOption.REPLACE_EXISTING);
+			}
+		} catch (Exception _) {
+			// Suppress during process exit / interrupted state
+		}
+	}
+
+	private boolean isResumeValid(DownloadMeta meta, URI currentUri, long currentLength,
+			String currentEtag, String currentLastModified) {
+		if (meta == null) {
+			return false;
+		}
+		if (meta.contentLength() != currentLength) {
+			return false;
+		}
+		if (meta.uri() != null && !meta.uri().equals(currentUri.toString())) {
+			return false;
+		}
+		if (currentEtag != null && meta.etag() != null && !currentEtag.equals(meta.etag())) {
+			return false;
+		}
+		if (currentLastModified != null && meta.lastModified() != null
+				&& !currentLastModified.equals(meta.lastModified())) {
+			return false;
+		}
+		return true;
+	}
+
+	private record DownloadMeta(int version, String uri, long contentLength, String etag, String lastModified,
+			List<DownloadChunk> chunks) {
+		static DownloadMeta load(Path metaPath) {
+			try {
+				if (!Files.isRegularFile(metaPath)) {
+					return null;
+				}
+				List<String> lines = Files.readAllLines(metaPath);
+				int version = 1;
+				String uriStr = null;
+				long contentLength = -1;
+				String etag = null;
+				String lastModified = null;
+				List<DownloadChunk> chunks = new ArrayList<>();
+
+				for (String line : lines) {
+					line = line.trim();
+					if (line.isBlank() || line.startsWith("#")) {
+						continue;
+					}
+					int eq = line.indexOf('=');
+					if (eq < 0) {
+						continue;
+					}
+					String key = line.substring(0, eq).trim();
+					String val = line.substring(eq + 1).trim();
+					switch (key) {
+					case "version" -> version = Integer.parseInt(val);
+					case "uri" -> uriStr = val;
+					case "contentLength" -> contentLength = Long.parseLong(val);
+					case "etag" -> etag = val;
+					case "lastModified" -> lastModified = val;
+					case "chunk" -> {
+						String[] parts = val.split(",");
+						if (parts.length >= 4) {
+							int idx = Integer.parseInt(parts[0].trim());
+							long start = Long.parseLong(parts[1].trim());
+							long end = Long.parseLong(parts[2].trim());
+							long downloaded = Long.parseLong(parts[3].trim());
+							chunks.add(new DownloadChunk(idx, start, end, downloaded));
+						}
+					}
+					default -> {
+					}
+					}
+				}
+				if (chunks.isEmpty() || contentLength <= 0) {
+					return null;
+				}
+				return new DownloadMeta(version, uriStr, contentLength, etag, lastModified, chunks);
+			} catch (Exception _) {
+				return null;
+			}
+		}
+	}
+
+	static class DownloadChunk {
+		final int index;
+		final long start;
+		final long end;
+		final LongAdder downloaded = new LongAdder();
+
+		DownloadChunk(int index, long start, long end, long initialDownloaded) {
+			this.index = index;
+			this.start = start;
+			this.end = end;
+			if (initialDownloaded > 0) {
+				this.downloaded.add(initialDownloaded);
+			}
+		}
+
+		long totalBytes() {
+			return end - start + 1;
+		}
+
+		long getDownloaded() {
+			return downloaded.sum();
+		}
+
+		boolean isComplete() {
+			return getDownloaded() >= totalBytes();
 		}
 	}
 
@@ -572,7 +795,8 @@ class Fetch implements Callable<Integer> {
 
 		private final String taskName;
 		private final long totalBytes;
-		private final LongAdder downloaded = new LongAdder();
+		private final long initialOffset;
+		private final LongAdder sessionDownloaded = new LongAdder();
 		private final long startTime = System.nanoTime();
 		private final Thread shutdownHook;
 		private final Thread renderThread;
@@ -581,9 +805,7 @@ class Fetch implements Callable<Integer> {
 		ProgressBar(String taskName, long totalBytes, long initialOffset) {
 			this.taskName = taskName;
 			this.totalBytes = totalBytes;
-			if (initialOffset > 0) {
-				this.downloaded.add(initialOffset);
-			}
+			this.initialOffset = Math.max(0L, initialOffset);
 			this.shutdownHook = new Thread(() -> System.out.print(SHOW_CURSOR));
 			try {
 				Runtime.getRuntime().addShutdownHook(shutdownHook);
@@ -596,7 +818,7 @@ class Fetch implements Callable<Integer> {
 		}
 
 		void stepBy(long bytes) {
-			downloaded.add(bytes);
+			sessionDownloaded.add(bytes);
 		}
 
 		private void renderLoop() {
@@ -611,9 +833,10 @@ class Fetch implements Callable<Integer> {
 		}
 
 		private void render() {
-			long current = downloaded.sum();
+			long inSession = sessionDownloaded.sum();
+			long current = initialOffset + inSession;
 			double elapsedSec = (System.nanoTime() - startTime) / 1_000_000_000.0;
-			double speedMBps = elapsedSec > 0 ? (current / 1_048_576.0) / elapsedSec : 0.0;
+			double speedMBps = elapsedSec > 0 ? (inSession / 1_048_576.0) / elapsedSec : 0.0;
 			String displayName = taskName.length() > 20 ? taskName.substring(0, 17) + "..." : taskName;
 
 			String output;
