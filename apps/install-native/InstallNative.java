@@ -80,6 +80,12 @@ class InstallNative implements Callable<Integer> {
 	@Option(names = { "-v", "--verbose" }, description = "Enable verbose output during native-image compilation.")
 	private boolean verbose;
 
+	@Option(names = {
+			"--graalvm-home" }, description = "Explicit path to GraalVM JDK directory (overrides auto-detection).")
+	private Path explicitGraalVmHome;
+
+	private Path graalVmHome;
+
 	@Override
 	public Integer call() throws Exception {
 		Map<String, AppMetadata> catalogApps = discoverCatalogApps();
@@ -110,10 +116,17 @@ class InstallNative implements Callable<Integer> {
 			return 1;
 		}
 
+		this.graalVmHome = resolveGraalVmHome();
+
 		System.out.println("===============================================================");
 		System.out.println("  jbang-catalog native exporter");
 		System.out.println("===============================================================");
 		System.out.printf("Destination: %s%n", destination.toAbsolutePath());
+		if (graalVmHome != null) {
+			System.out.printf("GraalVM:     %s%n", graalVmHome);
+		} else {
+			System.out.println("GraalVM:     Using default environment (none auto-detected)");
+		}
 		System.out.printf("Applications to export (%d): %s%n%n", targets.size(),
 				String.join(", ", targets.stream().map(AppMetadata::alias).toList()));
 
@@ -680,6 +693,17 @@ class InstallNative implements Callable<Integer> {
 			var processBuilder = new ProcessBuilder(command);
 			processBuilder.redirectErrorStream(true);
 
+			if (graalVmHome != null) {
+				var env = processBuilder.environment();
+				String homeStr = graalVmHome.toAbsolutePath().toString();
+				env.put("GRAALVM_HOME", homeStr);
+				env.put("JAVA_HOME", homeStr);
+
+				String binDir = graalVmHome.resolve("bin").toAbsolutePath().toString();
+				String currentPath = env.getOrDefault("PATH", "");
+				env.put("PATH", binDir + File.pathSeparator + currentPath);
+			}
+
 			var process = processBuilder.start();
 			List<String> outputLines = new ArrayList<>();
 			try (var reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
@@ -714,6 +738,10 @@ class InstallNative implements Callable<Integer> {
 					errorLines.add(outputLines.get(i));
 				}
 			}
+			if (graalVmHome == null) {
+				errorLines.add(
+						"Hint: GraalVM was not detected. Install via mise ('mise install java@oracle-graalvm-25'), sdkman, or set GRAALVM_HOME.");
+			}
 
 			return new ExportResult(false, false, "jbang export exited with code " + exitCode,
 					errorLines);
@@ -731,6 +759,14 @@ class InstallNative implements Callable<Integer> {
 		for (var app : catalogApps.values()) {
 			String status = app.nativeSupported() ? "Supported" : "JVM Only (JNA)";
 			System.out.printf("  %-12s %-26s %s%n", app.alias(), status, app.description());
+		}
+		System.out.println();
+		var detected = resolveGraalVmHome();
+		if (detected != null) {
+			System.out.printf("Detected GraalVM: %s%n", detected);
+		} else {
+			System.out.println(
+					"Detected GraalVM: None (install via 'mise install java@oracle-graalvm-25' or set GRAALVM_HOME)");
 		}
 		System.out.println();
 		System.out.println("Usage:");
@@ -769,6 +805,143 @@ class InstallNative implements Callable<Integer> {
 		} catch (Exception _) {
 			return "unknown size";
 		}
+	}
+
+	/// Resolves the home directory of a GraalVM installation containing `bin/native-image`.
+	/// Checks explicit option, GRAALVM_HOME, current runtime, JAVA_HOME, PATH, mise, JBang JDK cache, SDKMAN, and ASDF.
+	private Path resolveGraalVmHome() {
+		if (explicitGraalVmHome != null && hasNativeImage(explicitGraalVmHome)) {
+			return canonicalize(explicitGraalVmHome);
+		}
+
+		String graalEnv = System.getenv("GRAALVM_HOME");
+		if (graalEnv != null && !graalEnv.isBlank()) {
+			Path p = Path.of(graalEnv);
+			if (hasNativeImage(p)) {
+				return canonicalize(p);
+			}
+		}
+
+		String currentJavaHome = System.getProperty("java.home");
+		if (currentJavaHome != null && !currentJavaHome.isBlank()) {
+			Path p = Path.of(currentJavaHome);
+			if (hasNativeImage(p)) {
+				return canonicalize(p);
+			}
+		}
+
+		String javaHomeEnv = System.getenv("JAVA_HOME");
+		if (javaHomeEnv != null && !javaHomeEnv.isBlank()) {
+			Path p = Path.of(javaHomeEnv);
+			if (hasNativeImage(p)) {
+				return canonicalize(p);
+			}
+		}
+
+		Path pathBinary = findExecutableOnPath(IS_WINDOWS ? "native-image.cmd" : "native-image");
+		if (pathBinary == null && IS_WINDOWS) {
+			pathBinary = findExecutableOnPath("native-image.exe");
+		}
+		if (pathBinary != null) {
+			Path binDir = pathBinary.getParent();
+			if (binDir != null && binDir.getParent() != null && hasNativeImage(binDir.getParent())) {
+				return canonicalize(binDir.getParent());
+			}
+		}
+
+		String userHome = System.getProperty("user.home");
+		String xdgData = System.getenv("XDG_DATA_HOME");
+		Path miseJava = (xdgData != null && !xdgData.isBlank())
+				? Path.of(xdgData, "mise", "installs", "java")
+				: Path.of(userHome, ".local", "share", "mise", "installs", "java");
+		Path fromMise = scanForGraalVm(miseJava);
+		if (fromMise != null) {
+			return fromMise;
+		}
+
+		Path jbangJdks = Path.of(userHome, ".jbang", "cache", "jdks");
+		Path fromJbang = scanForGraalVm(jbangJdks);
+		if (fromJbang != null) {
+			return fromJbang;
+		}
+
+		Path sdkmanJava = Path.of(userHome, ".sdkman", "candidates", "java");
+		Path fromSdkman = scanForGraalVm(sdkmanJava);
+		if (fromSdkman != null) {
+			return fromSdkman;
+		}
+
+		Path asdfJava = Path.of(userHome, ".asdf", "installs", "java");
+		Path fromAsdf = scanForGraalVm(asdfJava);
+		if (fromAsdf != null) {
+			return fromAsdf;
+		}
+
+		return null;
+	}
+
+	private boolean hasNativeImage(Path javaHome) {
+		if (javaHome == null || !Files.isDirectory(javaHome)) {
+			return false;
+		}
+		String execName = IS_WINDOWS ? "native-image.cmd" : "native-image";
+		Path binExec = javaHome.resolve("bin").resolve(execName);
+		if (Files.exists(binExec)) {
+			return true;
+		}
+		if (IS_WINDOWS && Files.exists(javaHome.resolve("bin").resolve("native-image.exe"))) {
+			return true;
+		}
+		return false;
+	}
+
+	private Path scanForGraalVm(Path parentDir) {
+		if (parentDir == null || !Files.isDirectory(parentDir)) {
+			return null;
+		}
+		try (var stream = Files.list(parentDir)) {
+			var matching = stream
+				.filter(Files::isDirectory)
+				.filter(this::hasNativeImage)
+				.sorted((a, b) -> b.getFileName().toString().compareToIgnoreCase(a.getFileName().toString()))
+				.toList();
+			if (!matching.isEmpty()) {
+				return canonicalize(matching.getFirst());
+			}
+		} catch (Exception _) {
+		}
+		return null;
+	}
+
+	private Path canonicalize(Path path) {
+		if (path == null) {
+			return null;
+		}
+		try {
+			return path.toRealPath();
+		} catch (Exception _) {
+			return path.toAbsolutePath();
+		}
+	}
+
+	private Path findExecutableOnPath(String binaryName) {
+		String pathEnv = System.getenv("PATH");
+		if (pathEnv == null || pathEnv.isBlank()) {
+			return null;
+		}
+		for (String segment : pathEnv.split(File.pathSeparator)) {
+			if (segment.isBlank()) {
+				continue;
+			}
+			try {
+				Path candidate = Path.of(segment, binaryName);
+				if (Files.isRegularFile(candidate) && Files.isExecutable(candidate)) {
+					return candidate;
+				}
+			} catch (Exception _) {
+			}
+		}
+		return null;
 	}
 
 	void main(String... args) {

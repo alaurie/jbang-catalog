@@ -144,6 +144,14 @@ public class InstallNativeTest {
 		var result = runCommand("--help");
 		assertEquals(0, result.exitCode());
 		assertTrue(result.stdout().contains("-j, --jobs"));
+		assertTrue(result.stdout().contains("--graalvm-home"));
+	}
+
+	@Test
+	void testListDisplaysDetectedGraalVm() {
+		var result = runCommand("-l");
+		assertEquals(0, result.exitCode());
+		assertTrue(result.stdout().contains("Detected GraalVM:"));
 	}
 
 	public static void main(String... args) {

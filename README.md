@@ -551,7 +551,9 @@ jbang install-native@alaurie --list
 ### Options
 
 ```
-Usage: install-native [-cfhlvV] [-d=<targetDir>] [-j=<jobs>] [<apps>...]
+Usage: install-native [-cfhlpvV] [-d=<targetDir>]
+                      [--graalvm-home=<explicitGraalVmHome>] [-j=<jobs>]
+                      [<apps>...]
 Compile, export, and manage standalone zero-overhead native executables.
       [<apps>...]            Specific application aliases to export or clean (e.
                                g. fetch digest jwt). Defaults to all
@@ -562,11 +564,17 @@ Compile, export, and manage standalone zero-overhead native executables.
                                Default: ~/.local/bin (~/.jbang/bin on Windows)
   -f, --force                Overwrite existing binaries in the target
                                directory.
+      --graalvm-home=<explicitGraalVmHome>
+                             Explicit path to GraalVM JDK directory (overrides
+                               auto-detection).
   -h, --help                 Show this help message and exit.
   -j, --jobs=<jobs>          Number of concurrent native compilation jobs.
                                Default: 1
   -l, --list                 List all available catalog applications and
                                dynamic native compatibility.
+  -p, --portable             Build portable binary with compatibility baseline
+                               (-march=compatibility) instead of host CPU
+                               native (-march=native).
   -v, --verbose              Enable verbose output during native-image
                                compilation.
   -V, --version              Print version information and exit.
