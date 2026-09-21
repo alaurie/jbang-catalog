@@ -47,10 +47,11 @@ import picocli.CommandLine.Parameters;
 
 /// CLI utility to backup, restore, and inspect complete Jellyfin installations.
 ///
-/// Designed for full disaster recovery and OS migrations across Linux distributions.
-/// Captures configurations (/etc/jellyfin), live databases (jellyfin.db, library.db),
-/// installed plugins, and metadata, while safely stopping the systemd service and excluding
-/// temporary cache bloat and previous internal backups.
+/// Designed for full disaster recovery and OS migrations across Linux
+/// distributions. Captures configurations (/etc/jellyfin), live databases
+/// (jellyfin.db, library.db), installed plugins, and metadata, while safely
+/// stopping the systemd service and excluding temporary cache bloat and previous
+/// internal backups.
 @Command(name = "jellyfin-backup", mixinStandardHelpOptions = true, version = "jellyfin-backup 2.0", description = "Complete backup, restore, and disaster recovery utility for Jellyfin media server.", subcommands = {
 		JellyfinBackup.BackupCmd.class, JellyfinBackup.RestoreCmd.class,
 		JellyfinBackup.InspectCmd.class })
@@ -622,38 +623,90 @@ class JellyfinBackup implements Callable<Integer> {
 		if (args == null || args.length == 0) {
 			return false;
 		}
-		String first = args[0].toLowerCase(Locale.ROOT);
-		if (first.equals("-h") || first.equals("--help") || first.equals("-v") || first.equalsIgnoreCase("-V")
-				|| first.equals("--version")) {
-			return false;
+		for (String arg : args) {
+			if (arg.equals("-h") || arg.equals("--help") || arg.equals("-v") || arg.equalsIgnoreCase("-V")
+					|| arg.equals("--version")) {
+				return false;
+			}
 		}
+		String first = args[0].toLowerCase(Locale.ROOT);
 		return first.equals("backup") || first.equals("restore");
+	}
+
+	static List<String> buildSudoCommand(String selfCommand, String[] jvmArgs, String... args) {
+		boolean isJava = selfCommand != null && (selfCommand.endsWith("/java") || selfCommand.equals("java")
+				|| selfCommand.endsWith("/java.exe") || selfCommand.endsWith("java"));
+
+		List<String> sudoCmd = new ArrayList<>();
+		sudoCmd.add("sudo");
+
+		if (isJava) {
+			if (jvmArgs != null && jvmArgs.length > 0) {
+				sudoCmd.add(selfCommand);
+				Collections.addAll(sudoCmd, jvmArgs);
+			} else {
+				String classPath = System.getProperty("java.class.path");
+				if (classPath != null && !classPath.isBlank()) {
+					sudoCmd.add(selfCommand);
+					sudoCmd.add("-cp");
+					sudoCmd.add(classPath);
+					sudoCmd.add("jellyfinbackup.JellyfinBackup");
+					if (args != null) {
+						Collections.addAll(sudoCmd, args);
+					}
+				} else {
+					String userHome = System.getProperty("user.home", "");
+					Path binaryPath = Path.of(userHome, ".local", "bin", "jellyfin-backup");
+					if (!Files.isExecutable(binaryPath)) {
+						binaryPath = Path.of(userHome, ".jbang", "bin", "jellyfin-backup");
+					}
+					if (Files.isExecutable(binaryPath)) {
+						sudoCmd.add(binaryPath.toAbsolutePath().toString());
+						if (args != null) {
+							Collections.addAll(sudoCmd, args);
+						}
+					}
+				}
+			}
+		} else if (selfCommand != null && Files.isExecutable(Path.of(selfCommand))) {
+			sudoCmd.add(selfCommand);
+			if (args != null) {
+				Collections.addAll(sudoCmd, args);
+			}
+		} else {
+			String userHome = System.getProperty("user.home", "");
+			Path binaryPath = Path.of(userHome, ".local", "bin", "jellyfin-backup");
+			if (!Files.isExecutable(binaryPath)) {
+				binaryPath = Path.of(userHome, ".jbang", "bin", "jellyfin-backup");
+			}
+			if (Files.isExecutable(binaryPath)) {
+				sudoCmd.add(binaryPath.toAbsolutePath().toString());
+				if (args != null) {
+					Collections.addAll(sudoCmd, args);
+				}
+			}
+		}
+
+		return sudoCmd.size() > 1 ? sudoCmd : null;
 	}
 
 	static int reexecWithSudo(String... args) {
 		String selfCommand = ProcessHandle.current().info().command().orElse(null);
-		if (selfCommand == null || selfCommand.isBlank() || selfCommand.endsWith("java")) {
-			String userHome = System.getProperty("user.home", "");
-			Path binaryPath = Path.of(userHome, ".jbang", "bin", "jellyfin-backup");
-			if (Files.isExecutable(binaryPath)) {
-				selfCommand = binaryPath.toAbsolutePath().toString();
-			}
+		String[] jvmArgs = ProcessHandle.current().info().arguments().orElse(null);
+		List<String> sudoCmd = buildSudoCommand(selfCommand, jvmArgs, args);
+		if (sudoCmd == null) {
+			System.err.println("Error: 'jellyfin-backup' requires root privileges for backup and restore.");
+			System.err.println("Please run with sudo: sudo jbang jellyfin-backup@alaurie " + String.join(" ", args));
+			return 1;
 		}
 
-		if (selfCommand != null && Files.isExecutable(Path.of(selfCommand))) {
-			List<String> sudoCmd = new ArrayList<>();
-			sudoCmd.add("sudo");
-			sudoCmd.add(selfCommand);
-			Collections.addAll(sudoCmd, args);
-			try {
-				Process process = new ProcessBuilder(sudoCmd).inheritIO().start();
-				return process.waitFor();
-			} catch (Exception e) {
-				System.err.println("Error executing sudo: " + e.getMessage());
-				return 1;
-			}
+		try {
+			Process process = new ProcessBuilder(sudoCmd).inheritIO().start();
+			return process.waitFor();
+		} catch (Exception e) {
+			System.err.println("Error executing sudo: " + e.getMessage());
+			return 1;
 		}
-		return 1;
 	}
 
 	static String verifyArchiveChecksum(Path archiveFile) {

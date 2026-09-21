@@ -10,8 +10,9 @@
 package jellyfinbackup;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
@@ -152,6 +153,46 @@ public class JellyfinBackupTest {
 		var result = runCommand("inspect", "/nonexistent/jellyfin-backup-fake.tar.gz");
 		assertEquals(1, result.exitCode());
 		assertTrue(result.stderr().contains("does not exist"));
+	}
+
+	@Test
+	void testNeedsElevation() {
+		assertFalse(JellyfinBackup.needsElevation());
+		assertFalse(JellyfinBackup.needsElevation("--help"));
+		assertFalse(JellyfinBackup.needsElevation("-h"));
+		assertFalse(JellyfinBackup.needsElevation("-v"));
+		assertFalse(JellyfinBackup.needsElevation("-V"));
+		assertFalse(JellyfinBackup.needsElevation("--version"));
+		assertFalse(JellyfinBackup.needsElevation("inspect", "archive.tar.gz"));
+		assertFalse(JellyfinBackup.needsElevation("backup", "--help"));
+		assertFalse(JellyfinBackup.needsElevation("backup", "-h"));
+		assertFalse(JellyfinBackup.needsElevation("restore", "--help"));
+		assertFalse(JellyfinBackup.needsElevation("restore", "-h"));
+
+		assertTrue(JellyfinBackup.needsElevation("backup"));
+		assertTrue(JellyfinBackup.needsElevation("backup", "-o", "/tmp"));
+		assertTrue(JellyfinBackup.needsElevation("restore", "archive.tar.gz"));
+	}
+
+	@Test
+	void testBuildSudoCommand() {
+		var javaCmd = JellyfinBackup.buildSudoCommand("/usr/bin/java",
+				new String[] { "-cp", "app.jar", "jellyfinbackup.JellyfinBackup", "backup" }, "backup");
+		assertNotNull(javaCmd);
+		assertEquals("sudo", javaCmd.get(0));
+		assertEquals("/usr/bin/java", javaCmd.get(1));
+		assertEquals("-cp", javaCmd.get(2));
+		assertEquals("app.jar", javaCmd.get(3));
+		assertEquals("jellyfinbackup.JellyfinBackup", javaCmd.get(4));
+		assertEquals("backup", javaCmd.get(5));
+
+		var nativeCmd = JellyfinBackup.buildSudoCommand("/bin/sh", null, "backup", "-o", "/tmp");
+		assertNotNull(nativeCmd);
+		assertEquals("sudo", nativeCmd.get(0));
+		assertEquals("/bin/sh", nativeCmd.get(1));
+		assertEquals("backup", nativeCmd.get(2));
+		assertEquals("-o", nativeCmd.get(3));
+		assertEquals("/tmp", nativeCmd.get(4));
 	}
 
 	public static void main(String... args) {
