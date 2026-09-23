@@ -156,6 +156,69 @@ public class JellyfinBackupTest {
 	}
 
 	@Test
+	void testRestoreOverExistingFiles(@TempDir Path tempDir) throws Exception {
+		Path archiveFile = tempDir.resolve("backup.tar.gz");
+		try (var fos = Files.newOutputStream(archiveFile);
+				var bos = new BufferedOutputStream(fos);
+				var gzos = new GZIPOutputStream(bos);
+				var tarOut = new TarArchiveOutputStream(gzos)) {
+
+			byte[] manifestBytes = "{\"version\":\"1.0\"}".getBytes(StandardCharsets.UTF_8);
+			var manifestEntry = new TarArchiveEntry("jellyfin-manifest.json");
+			manifestEntry.setSize(manifestBytes.length);
+			tarOut.putArchiveEntry(manifestEntry);
+			tarOut.write(manifestBytes);
+			tarOut.closeArchiveEntry();
+
+			byte[] configBytes = "<Config>Restored</Config>".getBytes(StandardCharsets.UTF_8);
+			var configEntry = new TarArchiveEntry("etc/jellyfin/system.xml");
+			configEntry.setSize(configBytes.length);
+			tarOut.putArchiveEntry(configEntry);
+			tarOut.write(configBytes);
+			tarOut.closeArchiveEntry();
+
+			byte[] dataBytes = "DATABASE_DATA".getBytes(StandardCharsets.UTF_8);
+			var dataEntry = new TarArchiveEntry("var/lib/jellyfin/data/jellyfin.db");
+			dataEntry.setSize(dataBytes.length);
+			tarOut.putArchiveEntry(dataEntry);
+			tarOut.write(dataBytes);
+			tarOut.closeArchiveEntry();
+
+			tarOut.finish();
+		}
+
+		byte[] archiveBytes = Files.readAllBytes(archiveFile);
+		var md = MessageDigest.getInstance("SHA-256");
+		String hashHex = HexFormat.of().formatHex(md.digest(archiveBytes));
+		Files.writeString(Path.of(archiveFile + ".sha256"),
+				hashHex + "  " + archiveFile.getFileName() + "\n");
+
+		Path targetConfig = tempDir.resolve("target_etc");
+		Path targetData = tempDir.resolve("target_var");
+		Files.createDirectories(targetConfig);
+		Files.createDirectories(targetData.resolve("data"));
+
+		// Pre-create existing files that should be overwritten cleanly
+		Files.writeString(targetConfig.resolve("system.xml"), "<Config>Old</Config>");
+		// Pre-create a symlink where the database file will be written
+		Path oldTarget = tempDir.resolve("dummy_old_target");
+		Files.writeString(oldTarget, "DUMMY");
+		Files.createSymbolicLink(targetData.resolve("data/jellyfin.db"), oldTarget);
+
+		var result = runCommand("restore", "--yes", "--no-stop", "--no-chown",
+				"-c", targetConfig.toString(), "-d", targetData.toString(), archiveFile.toString());
+
+		assertEquals(0, result.exitCode(), "Restore should succeed with 0. stderr: " + result.stderr());
+		assertTrue(result.stdout().contains("Restore Complete"), "stdout should indicate completion");
+		assertEquals("<Config>Restored</Config>", Files.readString(targetConfig.resolve("system.xml")));
+		assertEquals("DATABASE_DATA", Files.readString(targetData.resolve("data/jellyfin.db")));
+		assertFalse(Files.isSymbolicLink(targetData.resolve("data/jellyfin.db")),
+				"Restored file should be a regular file, not a symlink");
+		assertEquals("DUMMY", Files.readString(oldTarget),
+				"Original symlink target should not be overwritten");
+	}
+
+	@Test
 	void testNeedsElevation() {
 		assertFalse(JellyfinBackup.needsElevation());
 		assertFalse(JellyfinBackup.needsElevation("--help"));

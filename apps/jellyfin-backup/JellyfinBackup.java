@@ -20,6 +20,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
@@ -108,7 +109,8 @@ class JellyfinBackup implements Callable<Integer> {
 
 		@Override
 		public Integer call() throws Exception {
-			if (!isRunningAsRoot()) {
+			if (!isRunningAsRoot() && (configDir.toString().startsWith("/etc")
+					|| dataDir.toString().startsWith("/var"))) {
 				System.err.println(
 						"Error: 'jellyfin-backup backup' requires root privileges to read /var/lib/jellyfin and stop services.");
 				return 1;
@@ -150,8 +152,12 @@ class JellyfinBackup implements Callable<Integer> {
 			}
 
 			long startTime = System.currentTimeMillis();
+			int exitCode = 0;
 			try {
 				createBackupArchive(finalArchiveFile);
+			} catch (Exception e) {
+				System.err.println("Error: Failed to create backup archive: " + e.getMessage());
+				exitCode = 1;
 			} finally {
 				if (serviceWasRunning) {
 					System.out.print("Restarting 'jellyfin' service... ");
@@ -159,10 +165,16 @@ class JellyfinBackup implements Callable<Integer> {
 						System.out.println("OK");
 					} else {
 						System.err.println("FAILED (Please check 'systemctl status jellyfin')");
+						if (exitCode == 0) {
+							exitCode = 1;
+						}
 					}
 				}
 			}
 
+			if (exitCode != 0) {
+				return exitCode;
+			}
 			long durationMs = System.currentTimeMillis() - startTime;
 			long archiveSize = Files.size(finalArchiveFile);
 
@@ -290,6 +302,22 @@ class JellyfinBackup implements Callable<Integer> {
 
 					String entryName = prefix + "/" + relPath.replace('\\', '/');
 					try {
+						if (attrs.isSymbolicLink()) {
+							Path target = Files.readSymbolicLink(file);
+							TarArchiveEntry entry = new TarArchiveEntry(entryName, TarArchiveEntry.LF_SYMLINK);
+							entry.setLinkName(target.toString());
+							entry.setSize(0);
+							entry.setModTime(attrs.lastModifiedTime().toMillis());
+							tarOut.putArchiveEntry(entry);
+							tarOut.closeArchiveEntry();
+							return java.nio.file.FileVisitResult.CONTINUE;
+						}
+
+						if (attrs.isOther()) {
+							// Skip character devices, block devices, FIFOs, sockets
+							return java.nio.file.FileVisitResult.CONTINUE;
+						}
+
 						long actualSize = Files.size(file);
 						TarArchiveEntry entry = new TarArchiveEntry(file.toFile(), entryName);
 						entry.setSize(actualSize);
@@ -331,7 +359,8 @@ class JellyfinBackup implements Callable<Integer> {
 		private static boolean isCachePath(String relPath) {
 			return relPath.startsWith("transcodes") || relPath.contains("/transcodes")
 					|| relPath.startsWith("cache") || relPath.contains("/cache") || relPath.startsWith("log")
-					|| relPath.contains("/log") || relPath.startsWith(".cache");
+					|| relPath.contains("/log") || relPath.startsWith(".cache")
+					|| relPath.startsWith(".local/share/containers") || relPath.contains("/containers/storage");
 		}
 
 		private static boolean isBackupPath(String relPath) {
@@ -377,7 +406,8 @@ class JellyfinBackup implements Callable<Integer> {
 				return 1;
 			}
 
-			if (!isRunningAsRoot()) {
+			if (!isRunningAsRoot() && (configDir.toString().startsWith("/etc")
+					|| dataDir.toString().startsWith("/var"))) {
 				System.err.println(
 						"Error: 'jellyfin-backup restore' requires root privileges to write /var/lib/jellyfin and /etc/jellyfin.");
 				return 1;
@@ -430,8 +460,12 @@ class JellyfinBackup implements Callable<Integer> {
 			}
 
 			long startTime = System.currentTimeMillis();
+			int exitCode = 0;
 			try {
 				unpackArchive();
+			} catch (Exception e) {
+				System.err.println("Error: Failed to restore backup archive: " + e.getMessage());
+				exitCode = 1;
 			} finally {
 				if (!noChown && isLinux()) {
 					fixJellyfinPermissions();
@@ -443,8 +477,15 @@ class JellyfinBackup implements Callable<Integer> {
 						System.out.println("OK");
 					} else {
 						System.err.println("FAILED (Please check 'systemctl status jellyfin')");
+						if (exitCode == 0) {
+							exitCode = 1;
+						}
 					}
 				}
+			}
+
+			if (exitCode != 0) {
+				return exitCode;
 			}
 
 			long durationMs = System.currentTimeMillis() - startTime;
@@ -474,34 +515,67 @@ class JellyfinBackup implements Callable<Integer> {
 						continue;
 					}
 
-					Path targetPath = null;
+					Path baseDir = null;
+					String sub = null;
 					if (name.startsWith("etc/jellyfin/")) {
-						String sub = name.substring("etc/jellyfin/".length());
-						targetPath = configDir.resolve(sub);
+						baseDir = configDir;
+						sub = name.substring("etc/jellyfin/".length());
 					} else if (name.startsWith("var/lib/jellyfin/")) {
-						String sub = name.substring("var/lib/jellyfin/".length());
-						targetPath = dataDir.resolve(sub);
+						baseDir = dataDir;
+						sub = name.substring("var/lib/jellyfin/".length());
 					}
 
-					if (targetPath != null) {
+					if (baseDir != null && sub != null) {
+						Path targetPath = baseDir.resolve(sub).normalize();
+						if (!targetPath.startsWith(baseDir.normalize())) {
+							continue; // Path traversal protection
+						}
+
 						if (entry.isDirectory()) {
-							Files.createDirectories(targetPath);
-						} else {
-							if (targetPath.getParent() != null) {
-								Files.createDirectories(targetPath.getParent());
+							if (!Files.isDirectory(targetPath, LinkOption.NOFOLLOW_LINKS)) {
+								Files.deleteIfExists(targetPath);
 							}
-							try (var out = Files.newOutputStream(targetPath)) {
+							Files.createDirectories(targetPath);
+						} else if (entry.isSymbolicLink()) {
+							prepareTargetFile(targetPath);
+							try {
+								Files.createSymbolicLink(targetPath, Path.of(entry.getLinkName()));
+								restoredFiles++;
+							} catch (Exception e) {
+								System.err.printf("Warning: Could not restore symlink %s -> %s: %s%n",
+										targetPath, entry.getLinkName(), e.getMessage());
+							}
+						} else if (entry.isCharacterDevice() || entry.isBlockDevice() || entry.isFIFO()) {
+							if (!Files.isDirectory(targetPath, LinkOption.NOFOLLOW_LINKS)) {
+								Files.deleteIfExists(targetPath);
+							}
+						} else {
+							prepareTargetFile(targetPath);
+							try (var out = Files.newOutputStream(targetPath, StandardOpenOption.CREATE,
+									StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
 								byte[] buf = new byte[64 * 1024];
 								int read;
 								while ((read = tarIn.read(buf)) != -1) {
 									out.write(buf, 0, read);
 								}
+								restoredFiles++;
+							} catch (Exception e) {
+								System.err.printf("Warning: Could not restore file %s: %s%n", targetPath,
+										e.getMessage());
 							}
-							restoredFiles++;
 						}
 					}
 				}
 				System.out.printf("Restored %d files into %s and %s.%n", restoredFiles, configDir, dataDir);
+			}
+		}
+
+		private static void prepareTargetFile(Path targetPath) throws IOException {
+			if (targetPath.getParent() != null) {
+				Files.createDirectories(targetPath.getParent());
+			}
+			if (!Files.isDirectory(targetPath, LinkOption.NOFOLLOW_LINKS)) {
+				Files.deleteIfExists(targetPath);
 			}
 		}
 
