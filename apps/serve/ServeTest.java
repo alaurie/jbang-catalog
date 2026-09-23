@@ -209,6 +209,57 @@ public class ServeTest {
 		}
 	}
 
+	@Test
+	void testForceDownloadMode(@TempDir Path tempDir) throws Exception {
+		Path testFile = tempDir.resolve("download.pdf");
+		Files.writeString(testFile, "%PDF-mock");
+
+		int port = findFreePort();
+		var app = new Serve();
+		var executor = Executors.newSingleThreadExecutor();
+		Future<Integer> serverFuture = executor.submit(() -> {
+			var cmd = new CommandLine(app);
+			return cmd.execute("-d", tempDir.toString(), "-p", String.valueOf(port), "-b", "127.0.0.1",
+					"--download");
+		});
+
+		try {
+			var client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
+			Thread.sleep(300);
+
+			var req = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/download.pdf")).GET().build();
+			var resp = client.send(req, HttpResponse.BodyHandlers.ofString());
+			assertEquals(200, resp.statusCode());
+			var disposition = resp.headers().firstValue("Content-Disposition").orElse("");
+			assertEquals("attachment", disposition);
+		} finally {
+			app.stop();
+			serverFuture.cancel(true);
+			executor.shutdownNow();
+		}
+	}
+
+	@Test
+	void testInvalidPortBoundaries() {
+		var zero = runCommand("-p", "0");
+		assertEquals(1, zero.exitCode());
+		assertTrue(zero.stderr().contains("Invalid port"));
+
+		var tooLarge = runCommand("-p", "65536");
+		assertEquals(1, tooLarge.exitCode());
+		assertTrue(tooLarge.stderr().contains("Invalid port"));
+	}
+
+	@Test
+	void testPathIsNotDirectory(@TempDir Path tempDir) throws Exception {
+		Path file = tempDir.resolve("not_a_dir.txt");
+		Files.writeString(file, "hello");
+
+		var result = runCommand("-d", file.toString());
+		assertEquals(1, result.exitCode());
+		assertTrue(result.stderr().contains("is not a directory"));
+	}
+
 	public static void main(String... args) {
 		var launcher = LauncherFactory.create();
 		var summaryListener = new SummaryGeneratingListener();

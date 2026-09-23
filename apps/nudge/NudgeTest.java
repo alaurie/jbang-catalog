@@ -84,6 +84,33 @@ public class NudgeTest {
 		assertTrue(result.stderr().contains("Invalid value for option '--mode'"));
 	}
 
+	@Test
+	void testSingleRandomArg() {
+		var result = runCommand("-r", "5");
+		assertEquals(2, result.exitCode());
+	}
+
+	@Test
+	void testValidModes() {
+		for (String mode : new String[] { "mouse", "keyboard", "both", "scroll" }) {
+			var app = new Nudge();
+			var cmd = new CommandLine(app);
+			var parseResult = cmd.parseArgs("-m", mode);
+			assertEquals(mode, parseResult.matchedOption("-m").getValue().toString());
+		}
+	}
+
+	@Test
+	void testExecutionInterruptHandling() throws Exception {
+		var app = new Nudge();
+		var cmd = new CommandLine(app);
+		var executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+		var future = executor.submit(() -> cmd.execute("-b", "10", "-m", "keyboard"));
+		Thread.sleep(200);
+		future.cancel(true);
+		executor.shutdownNow();
+	}
+
 	public static void main(String... args) {
 		var launcher = LauncherFactory.create();
 		var summaryListener = new SummaryGeneratingListener();

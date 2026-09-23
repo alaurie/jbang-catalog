@@ -50,8 +50,9 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
-/// Reach is an advanced network diagnostic CLI tool to test TCP connectivity, measure handshake
-/// latency, inspect TLS/SSL certificates, probe HTTP/HTTPS status, and query DNS & WHOIS.
+/// Reach is an advanced network diagnostic CLI tool to test TCP connectivity,
+/// measure handshake latency, inspect TLS/SSL certificates, probe HTTP/HTTPS
+/// status, and query DNS & WHOIS.
 @Command(name = "reach", mixinStandardHelpOptions = true, version = "reach 2.0", description = "Network diagnostic CLI utility to test TCP reachability and inspect TLS certs.")
 @SuppressWarnings("unused")
 class Reach implements Callable<Integer> {

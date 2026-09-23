@@ -32,14 +32,15 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
-/// Utility to keep your desktop presence active (preventing status from changing to "Away").
+/// Utility to keep your desktop presence active (preventing status from
+/// changing to "Away").
 ///
-/// Periodically checks for user idle status. When idle, it simulates subtle mouse movements
-/// (out-and-back or circular), Shift key presses, or scrolling.
+/// Periodically checks for user idle status. When idle, it simulates subtle
+/// mouse movements (out-and-back or circular), Shift key presses, or scrolling.
 ///
-/// Supports Linux Wayland natively via direct kernel virtual input (`/dev/uinput` via FFM),
-/// CLI tools (`ydotool`, `wtype`, `dotool`), D-Bus idle inhibition, and standard `java.awt.Robot`
-/// on X11, macOS, and Windows.
+/// Supports Linux Wayland natively via direct kernel virtual input
+/// (`/dev/uinput` via FFM), CLI tools (`ydotool`, `wtype`, `dotool`), D-Bus idle
+/// inhibition, and standard `java.awt.Robot` on X11, macOS, and Windows.
 @Command(name = "nudge", mixinStandardHelpOptions = true, version = "nudge 2.0", description = "Simulates user activity (mouse movement, key press, scrolling) when idle to keep your"
 		+ " presence status active.", footer = { "", "Linux Wayland Note:",
 				"  Direct kernel virtual input (/dev/uinput via FFM) requires membership in the",
@@ -82,17 +83,17 @@ class Nudge implements Callable<Integer> {
 	private int mouseDirection = 0;
 
 	/// Main entry point for the JBang script execution.
-  ///
-  /// @param args Command-line arguments.
+	///
+	/// @param args Command-line arguments.
 	void main(String... args) {
 		int exitCode = new CommandLine(this).execute(args);
 		System.exit(exitCode);
 	}
 
-	/// Initializes the appropriate input backend, starts the initial delay buffer, and enters the idle
-  /// detection loop.
-  ///
-  /// @return Status code 0 for success, 1 for errors.
+	/// Initializes the appropriate input backend, starts the initial delay buffer,
+	/// and enters the idle detection loop.
+	///
+	/// @return Status code 0 for success, 1 for errors.
 	@Override
 	public Integer call() {
 		int randStart = 0;
@@ -228,9 +229,10 @@ class Nudge implements Callable<Integer> {
 		return 0;
 	}
 
-	/// Selects and initializes the most capable presence/input backend for the current platform.
-  ///
-  /// @return Active `InputBackend` instance.
+	/// Selects and initializes the most capable presence/input backend for the
+	/// current platform.
+	///
+	/// @return Active `InputBackend` instance.
 	private InputBackend initializeBackend() {
 		var os = System.getProperty("os.name", "").toLowerCase();
 		if (os.contains("mac")) {
@@ -280,8 +282,8 @@ class Nudge implements Callable<Integer> {
 	}
 
 	/// Determines if the current environment is running a Wayland display server.
-  ///
-  /// @return `true` if Wayland is detected.
+	///
+	/// @return `true` if Wayland is detected.
 	private static boolean isWaylandSession() {
 		var sessionType = System.getenv("XDG_SESSION_TYPE");
 		var waylandDisplay = System.getenv("WAYLAND_DISPLAY");
@@ -290,9 +292,9 @@ class Nudge implements Callable<Integer> {
 	}
 
 	/// Checks whether a system CLI executable is available in PATH.
-  ///
-  /// @param command Command name.
-  /// @return `true` if command is found.
+	///
+	/// @param command Command name.
+	/// @return `true` if command is found.
 	private static boolean hasCommand(String command) {
 		try {
 			var process = new ProcessBuilder("which", command).redirectOutput(ProcessBuilder.Redirect.DISCARD)
@@ -305,9 +307,9 @@ class Nudge implements Callable<Integer> {
 	}
 
 	/// Moves mouse cursor according to configured mode (out-and-back or circular).
-  ///
-  /// @param current The starting cursor position if known.
-  /// @return The updated cursor position after movement, or `null`.
+	///
+	/// @param current The starting cursor position if known.
+	/// @return The updated cursor position after movement, or `null`.
 	private Point moveMouse(Point current) {
 		int step = Math.max(1, pixels);
 		int deltaX;
@@ -346,14 +348,15 @@ class Nudge implements Callable<Integer> {
 	}
 
 	/// Prints timestamped log message to stdout.
-  ///
-  /// @param message Message string.
+	///
+	/// @param message Message string.
 	private void log(String message) {
 		System.out.printf("%s %s%n", LocalTime.now().format(TIME_FORMATTER), message);
 	}
 
-	/// Safely retrieves current mouse cursor location if available, or `null` if AWT
-  /// libraries or pointer tracking cannot be initialized (e.g. Wayland, GraalVM AOT).
+	/// Safely retrieves current mouse cursor location if available, or `null` if
+	/// AWT libraries or pointer tracking cannot be initialized (e.g. Wayland,
+	/// GraalVM AOT).
 	private static Point safePointerPosition() {
 		try {
 			var info = MouseInfo.getPointerInfo();
@@ -385,7 +388,8 @@ class Nudge implements Callable<Integer> {
 		}
 	}
 
-	/// Native Linux kernel virtual input backend via /dev/uinput using Foreign Function & Memory.
+	/// Native Linux kernel virtual input backend via /dev/uinput using Foreign
+	/// Function & Memory.
 	private static final class UinputBackend implements InputBackend {
 		private static final int UI_SET_EVBIT = 0x40045564;
 		private static final int UI_SET_KEYBIT = 0x40045565;
@@ -608,7 +612,8 @@ class Nudge implements Callable<Integer> {
 		}
 	}
 
-	/// Fallback Wayland backend using D-Bus ScreenSaver Inhibit alongside AWT Robot.
+	/// Fallback Wayland backend using D-Bus ScreenSaver Inhibit alongside
+	/// AWT Robot.
 	private static final class FallbackWaylandBackend implements InputBackend {
 		private final String cookie;
 		private final Process systemdProcess;

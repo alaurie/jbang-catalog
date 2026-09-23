@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.Test;
 import org.junit.platform.engine.discovery.DiscoverySelectors;
 import org.junit.platform.launcher.core.LauncherDiscoveryRequestBuilder;
@@ -158,6 +159,63 @@ public class JwtTest {
 		assertEquals(0, result.exitCode());
 		assertTrue(result.stdout().contains("NAME=\"Alex Test\"")
 				|| result.stdout().contains("NAME=Alex Test"));
+	}
+
+	@Test
+	void testBearerPrefixStripping() throws Exception {
+		long futureExp = (System.currentTimeMillis() / 1000) + 3600;
+		String jwt = createSampleJwt("secretKey123", futureExp);
+
+		var result = runCommand("Bearer " + jwt);
+		assertEquals(0, result.exitCode());
+		assertTrue(result.stdout().contains("Alex Test"));
+	}
+
+	@Test
+	void testMalformedTokens() {
+		var singlePart = runCommand("not_a_valid_jwt");
+		assertEquals(1, singlePart.exitCode());
+		assertTrue(singlePart.stderr().contains("Invalid JWT format"));
+
+		var fourParts = runCommand("a.b.c.d");
+		assertEquals(1, fourParts.exitCode());
+		assertTrue(fourParts.stderr().contains("Invalid JWT format"));
+
+		var badBase64 = runCommand("???invalid???b64.???invalid???b64.sig");
+		assertEquals(1, badBase64.exitCode());
+		assertTrue(badBase64.stderr().contains("Failed to base64-decode"));
+	}
+
+	@Test
+	void testTokenFromFile(@TempDir java.nio.file.Path tempDir) throws Exception {
+		long futureExp = (System.currentTimeMillis() / 1000) + 3600;
+		String jwt = createSampleJwt("secretKey123", futureExp);
+
+		var tokenFile = tempDir.resolve("token.jwt");
+		java.nio.file.Files.writeString(tokenFile, jwt);
+
+		var result = runCommand(tokenFile.toString());
+		assertEquals(0, result.exitCode());
+		assertTrue(result.stdout().contains("Alex Test"));
+	}
+
+	@Test
+	void testTokenWithoutExpClaim() {
+		var b64Url = Base64.getUrlEncoder().withoutPadding();
+		var headerJson = "{\"alg\":\"none\",\"typ\":\"JWT\"}";
+		var payloadJson = "{\"sub\":\"no_exp_user\",\"iss\":\"test_issuer\",\"aud\":\"test_audience\"}";
+		var token = b64Url.encodeToString(headerJson.getBytes(StandardCharsets.UTF_8)) + "."
+				+ b64Url.encodeToString(payloadJson.getBytes(StandardCharsets.UTF_8));
+
+		var checkResult = runCommand("-c", token);
+		assertEquals(0, checkResult.exitCode());
+		assertTrue(checkResult.stdout().contains("No 'exp' claim present"));
+
+		var inspectResult = runCommand(token);
+		assertEquals(0, inspectResult.exitCode());
+		assertTrue(inspectResult.stdout().contains("Issuer (iss):    test_issuer"));
+		assertTrue(inspectResult.stdout().contains("test_audience"));
+		assertTrue(inspectResult.stdout().contains("[Unsigned Token]"));
 	}
 
 	public static void main(String... args) {

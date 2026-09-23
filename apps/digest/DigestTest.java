@@ -93,6 +93,70 @@ public class DigestTest {
 	}
 
 	@Test
+	void testTextHashingMd5() {
+		var result = runCommand("-t", "hello", "-a", "MD5");
+		assertEquals(0, result.exitCode());
+		assertTrue(result.stdout().toLowerCase().contains("5d41402abc4b2a76b9719d911017c592"));
+	}
+
+	@Test
+	void testTextHashingSha1() {
+		var result = runCommand("-t", "hello", "-a", "SHA-1");
+		assertEquals(0, result.exitCode());
+		assertTrue(result.stdout().toLowerCase().contains("aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d"));
+	}
+
+	@Test
+	void testTextHashingSha3() {
+		var result = runCommand("-t", "hello", "-a", "SHA3-256");
+		assertEquals(0, result.exitCode());
+		// SHA3-256("hello") = 3338be694f50c5f338814986cdf0686453a888b84f424d792af4b9202398f392
+		assertTrue(result.stdout()
+			.toLowerCase()
+			.contains("3338be694f50c5f338814986cdf0686453a888b84f424d792af4b9202398f392"));
+	}
+
+	@Test
+	void testUnsupportedAlgorithm() {
+		var result = runCommand("-t", "hello", "-a", "FAKE_ALGORITHM");
+		assertEquals(1, result.exitCode());
+		assertTrue(result.stderr().contains("Unsupported algorithm"));
+	}
+
+	@Test
+	void testVerificationMismatchAndMissingFile(@TempDir Path tempDir) throws Exception {
+		Path testFile = tempDir.resolve("content.txt");
+		Files.writeString(testFile, "initial content");
+
+		Path checksumFile = tempDir.resolve("checksums.txt");
+		// Write a valid line, a mismatched line, and a missing file line
+		String manifest = """
+				e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  missing.txt
+				0000000000000000000000000000000000000000000000000000000000000000  content.txt
+				""";
+		Files.writeString(checksumFile, manifest);
+
+		var result = runCommand("-c", checksumFile.toString());
+		assertEquals(1, result.exitCode());
+		assertTrue(result.stdout().contains("missing.txt: FAILED (File not found)"));
+		assertTrue(result.stdout().contains("content.txt: FAILED (Hash mismatch)"));
+	}
+
+	@Test
+	void testNonExistentFile() {
+		var result = runCommand("/path/to/definitely/nonexistent/file.bin");
+		assertEquals(1, result.exitCode());
+		assertTrue(result.stderr().contains("does not exist"));
+	}
+
+	@Test
+	void testBenchmark() {
+		var result = runCommand("--benchmark");
+		assertEquals(0, result.exitCode());
+		assertTrue(result.stdout().contains("Benchmarking CPU Cryptographic Throughput"));
+	}
+
+	@Test
 	void testFileHashingAndVerification(@TempDir Path tempDir) throws Exception {
 		Path testFile = tempDir.resolve("sample.txt");
 		Files.writeString(testFile, "test content for hashing");

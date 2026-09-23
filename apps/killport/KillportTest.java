@@ -105,6 +105,39 @@ public class KillportTest {
 		assertTrue(result.stdout().contains("No active process found on port " + unusedPort));
 	}
 
+	@Test
+	void testPortBoundaries() {
+		var zeroResult = runCommand("0");
+		assertEquals(1, zeroResult.exitCode());
+		assertTrue(zeroResult.stderr().contains("Invalid port number"));
+
+		var negativeResult = runCommand("-5");
+		// Picocli might treat -5 as option or invalid port
+		assertTrue(negativeResult.exitCode() != 0);
+
+		var tooLargeResult = runCommand("65536");
+		assertEquals(1, tooLargeResult.exitCode());
+		assertTrue(tooLargeResult.stderr().contains("Invalid port number"));
+	}
+
+	@Test
+	void testSignalParsingAndMultiplePorts() throws Exception {
+		int port1;
+		int port2;
+		try (var s1 = new ServerSocket(0); var s2 = new ServerSocket(0)) {
+			port1 = s1.getLocalPort();
+			port2 = s2.getLocalPort();
+		}
+
+		var result = runCommand("-d", "-s", "KILL", String.valueOf(port1), String.valueOf(port2));
+		assertEquals(0, result.exitCode());
+		assertTrue(result.stdout().contains("Searching processes listening on port " + port1));
+		assertTrue(result.stdout().contains("Searching processes listening on port " + port2));
+
+		var sigNumResult = runCommand("-d", "-s", "9", String.valueOf(port1));
+		assertEquals(0, sigNumResult.exitCode());
+	}
+
 	public static void main(String... args) {
 		var launcher = LauncherFactory.create();
 		var summaryListener = new SummaryGeneratingListener();

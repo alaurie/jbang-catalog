@@ -114,6 +114,46 @@ public class ReachTest {
 		}
 	}
 
+	@Test
+	void testHostWithEmbeddedPort() throws Exception {
+		try (var serverSocket = new ServerSocket()) {
+			serverSocket.bind(new InetSocketAddress("127.0.0.1", 0));
+			int port = serverSocket.getLocalPort();
+
+			var result = runCommand("127.0.0.1:" + port, "-n", "1", "-t", "500");
+			assertEquals(0, result.exitCode());
+			assertTrue(result.stdout().contains("Connected to 127.0.0.1:" + port));
+		}
+	}
+
+	@Test
+	void testPortRangeAndList() throws Exception {
+		try (var s1 = new ServerSocket(); var s2 = new ServerSocket()) {
+			s1.bind(new InetSocketAddress("127.0.0.1", 0));
+			s2.bind(new InetSocketAddress("127.0.0.1", 0));
+			int p1 = s1.getLocalPort();
+			int p2 = s2.getLocalPort();
+
+			var result = runCommand("127.0.0.1", p1 + "," + p2, "-n", "1", "-t", "500");
+			assertTrue(result.stdout().contains(":" + p1 + ":"));
+			assertTrue(result.stdout().contains(":" + p2 + ":"));
+		}
+	}
+
+	@Test
+	void testUnresolvableHost() {
+		var result = runCommand("definitely.invalid.hostname.nonexistent.fake", "80");
+		assertEquals(1, result.exitCode());
+		assertTrue(result.stderr().contains("Could not resolve hostname"));
+	}
+
+	@Test
+	void testInvalidPortSpec() {
+		var result = runCommand("127.0.0.1", "invalid_not_a_port");
+		assertEquals(1, result.exitCode());
+		assertTrue(result.stderr().contains("No valid ports specified"));
+	}
+
 	public static void main(String... args) {
 		var launcher = LauncherFactory.create();
 		var summaryListener = new SummaryGeneratingListener();

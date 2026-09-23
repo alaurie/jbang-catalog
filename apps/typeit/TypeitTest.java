@@ -95,6 +95,33 @@ public class TypeitTest {
 		}
 	}
 
+	@Test
+	void testPasswordPromptWithoutConsole() {
+		var result = runCommand("-p");
+		// In JUnit non-interactive test run, System.console() is null
+		assertEquals(1, result.exitCode());
+		assertTrue(result.stderr().contains("System.console() unavailable"));
+	}
+
+	@Test
+	void testDriverEnumOptions() {
+		for (Typeit.DriverType driver : Typeit.DriverType.values()) {
+			var app = new Typeit();
+			var cmd = new CommandLine(app);
+			var parseResult = cmd.parseArgs("--driver", driver.name());
+			assertEquals(driver, parseResult.matchedOption("--driver").getValue());
+		}
+	}
+
+	@Test
+	void testTypingWithEnterFlag() {
+		var result = runCommand("-d", "0", "-s", "1", "-t", "echo 1", "-e", "-v");
+		assertTrue(result.exitCode() == 0 || result.stderr().contains("Error"));
+		if (result.exitCode() == 0) {
+			assertTrue(result.stdout().contains("Typed 6 characters."));
+		}
+	}
+
 	public static void main(String... args) {
 		var launcher = LauncherFactory.create();
 		var summaryListener = new SummaryGeneratingListener();

@@ -31,13 +31,16 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
-/// Simulates typing clipboard text (or a custom text string) into the active desktop window.
+/// Simulates typing clipboard text (or a custom text string) into the active
+/// desktop window.
 ///
-/// Supports Wayland and X11 on Linux via direct kernel `/dev/uinput` simulation and CLI helpers
-/// (`wtype`, `ydotool`), as well as macOS and Windows via `java.awt.Robot`.
+/// Supports Wayland and X11 on Linux via direct kernel `/dev/uinput` simulation
+/// and CLI helpers (`wtype`, `ydotool`), as well as macOS and Windows via
+/// `java.awt.Robot`.
 ///
-/// Designed for remote sessions, VDIs (Citrix, VMware Horizon, RDP), and virtual machines where
-/// copy-paste is blocked by security policy, but keyboard input events are accepted.
+/// Designed for remote sessions, VDIs (Citrix, VMware Horizon, RDP), and virtual
+/// machines where copy-paste is blocked by security policy, but keyboard input
+/// events are accepted.
 @Command(name = "typeit", mixinStandardHelpOptions = true, version = "typeit 2.0", description = "Simulates typing clipboard text (or specified string) into the active window after a"
 		+ " countdown delay.", footer = { "", "Linux Wayland Note:",
 				"  Direct kernel virtual input (/dev/uinput via FFM) requires membership in the",
@@ -77,16 +80,17 @@ class Typeit implements Callable<Integer> {
 	private DriverType driverType = DriverType.AUTO;
 
 	/// Main entry point for the JBang script execution.
-  ///
-  /// @param args Command-line arguments.
+	///
+	/// @param args Command-line arguments.
 	void main(String... args) {
 		int exitCode = new CommandLine(this).execute(args);
 		System.exit(exitCode);
 	}
 
-	/// Executes the countdown, reads the target text, and simulates character-by-character typing.
-  ///
-  /// @return Status code 0 for success, 1 for failure or invalid environment.
+	/// Executes the countdown, reads the target text, and simulates
+	/// character-by-character typing.
+	///
+	/// @return Status code 0 for success, 1 for failure or invalid environment.
 	@Override
 	public Integer call() {
 		checkEnvironmentWarnings();
@@ -197,7 +201,8 @@ class Typeit implements Callable<Integer> {
 		}
 	}
 
-	/// Checks for OS-specific desktop security policies (macOS Accessibility, Linux Wayland).
+	/// Checks for OS-specific desktop security policies (macOS Accessibility,
+	/// Linux Wayland).
 	private void checkEnvironmentWarnings() {
 		String osName = System.getProperty("os.name", "").toLowerCase();
 		if (osName.contains("mac")) {
@@ -209,10 +214,11 @@ class Typeit implements Callable<Integer> {
 		}
 	}
 
-	/// Creates the appropriate keyboard driver based on configuration and operating environment.
-  ///
-  /// @return Active keyboard simulation driver.
-  /// @throws Exception If initialization fails.
+	/// Creates the appropriate keyboard driver based on configuration and operating
+	/// environment.
+	///
+	/// @return Active keyboard simulation driver.
+	/// @throws Exception If initialization fails.
 	private KeyboardDriver createKeyboardDriver() throws Throwable {
 		String osName = System.getProperty("os.name", "").toLowerCase();
 		boolean isLinux = osName.contains("linux");
@@ -280,10 +286,12 @@ class Typeit implements Callable<Integer> {
 				|| (waylandDisplay != null && !waylandDisplay.isEmpty());
 	}
 
-	/// Reads plain text string content from the system clipboard, supporting Wayland CLI tools
-  /// (`wl-paste`), X11 tools (`xclip`, `xsel`), and Java AWT Clipboard.
-  ///
-  /// @return String content from clipboard, or `null` if clipboard is empty or unreadable.
+	/// Reads plain text string content from the system clipboard, supporting
+	/// Wayland CLI tools (`wl-paste`), X11 tools (`xclip`, `xsel`), and Java AWT
+	/// Clipboard.
+	///
+	/// @return String content from clipboard, or `null` if clipboard is empty
+	///         or unreadable.
 	private String readClipboardText() {
 		String osName = System.getProperty("os.name", "").toLowerCase();
 		if (osName.contains("linux")) {
@@ -365,10 +373,11 @@ class Typeit implements Callable<Integer> {
 		void close();
 	}
 
-	/// Pure-Java `/dev/uinput` Virtual Keyboard Driver for Linux (Wayland, X11, Console).
-  ///
-  /// Uses Java 25 Foreign Function and Memory (FFM) API to create a virtual input device
-  /// directly with the Linux kernel without requiring external binaries.
+	/// Pure-Java `/dev/uinput` Virtual Keyboard Driver for Linux (Wayland, X11,
+	/// Console).
+	///
+	/// Uses Java 25 Foreign Function and Memory (FFM) API to create a virtual input
+	/// device directly with the Linux kernel without requiring external binaries.
 	static class UInputKeyboardDriver implements KeyboardDriver {
 		private static final long UI_SET_EVBIT = 0x40045564L;
 		private static final long UI_SET_KEYBIT = 0x40045565L;
@@ -647,7 +656,8 @@ class Typeit implements Callable<Integer> {
 		}
 	}
 
-	/// Wayland `wtype` CLI Driver (for wlroots compositors: Sway, Hyprland, Wayfire).
+	/// Wayland `wtype` CLI Driver (for wlroots compositors: Sway,
+	/// Hyprland, Wayfire).
 	static class WTypeKeyboardDriver implements KeyboardDriver {
 		private final int speed;
 

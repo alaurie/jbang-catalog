@@ -154,6 +154,27 @@ public class InstallNativeTest {
 		assertTrue(result.stdout().contains("Detected GraalVM:"));
 	}
 
+	@Test
+	void testUnknownAppAlias(@TempDir Path tempDir) {
+		var result = runCommand("-d", tempDir.toString(), "unknown_fake_app_xyz");
+		assertEquals(1, result.exitCode());
+		assertTrue(result.stderr().contains("No matching native-supported applications selected"));
+	}
+
+	@Test
+	void testCleanNonExistentDirectory() {
+		var result = runCommand("-c", "-d", "/nonexistent_clean_dir_123");
+		assertEquals(0, result.exitCode());
+		assertTrue(result.stdout().contains("Nothing to clean"));
+	}
+
+	@Test
+	void testCleanWhenNoFilesPresent(@TempDir Path tempDir) {
+		var result = runCommand("-c", "-d", tempDir.toString(), "digest");
+		assertEquals(0, result.exitCode());
+		assertTrue(result.stdout().contains("Clean complete: 0 removed, 1 not found."));
+	}
+
 	public static void main(String... args) {
 		var launcher = LauncherFactory.create();
 		var summaryListener = new SummaryGeneratingListener();

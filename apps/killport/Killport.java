@@ -22,10 +22,11 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
-/// Cross-platform CLI utility to find and terminate processes listening on specified network ports.
+/// Cross-platform CLI utility to find and terminate processes listening on
+/// specified network ports.
 ///
-/// Supports dry-run inspection, interactive prompts, custom signals, force killing, and multi-port
-/// batch termination across Windows, macOS, and Linux.
+/// Supports dry-run inspection, interactive prompts, custom signals, force
+/// killing, and multi-port batch termination across Windows, macOS, and Linux.
 @Command(name = "killport", mixinStandardHelpOptions = true, version = "killport 2.0", description = "Find and terminate processes listening on specified network ports.")
 @SuppressWarnings("unused")
 class Killport implements Callable<Integer> {
@@ -49,16 +50,16 @@ class Killport implements Callable<Integer> {
 	private List<Integer> ports;
 
 	/// Main entry point for the JBang script execution.
-  ///
-  /// @param args Command-line arguments.
+	///
+	/// @param args Command-line arguments.
 	void main(String... args) {
 		var exitCode = new CommandLine(this).execute(args);
 		System.exit(exitCode);
 	}
 
 	/// Finds and kills processes bound to specified ports.
-  ///
-  /// @return Status code 0 for success, 1 if errors occurred.
+	///
+	/// @return Status code 0 for success, 1 if errors occurred.
 	@Override
 	public Integer call() {
 		var hasError = false;
@@ -119,9 +120,9 @@ class Killport implements Callable<Integer> {
 	}
 
 	/// Discovers Process IDs listening on specified port.
-  ///
-  /// @param port Network port to inspect.
-  /// @return Set of matching PIDs.
+	///
+	/// @param port Network port to inspect.
+	/// @return Set of matching PIDs.
 	private Set<Long> findPidsForPort(int port) {
 		Set<Long> pids = new HashSet<>();
 		if (IS_WINDOWS) {
@@ -133,9 +134,9 @@ class Killport implements Callable<Integer> {
 	}
 
 	/// Discovers PIDs listening on port using Windows netstat output.
-  ///
-  /// @param port Target port.
-  /// @param pids Output set to collect PIDs.
+	///
+	/// @param port Target port.
+	/// @param pids Output set to collect PIDs.
 	private void findPidsWindows(int port, Set<Long> pids) {
 		try {
 			var process = new ProcessBuilder("cmd.exe", "/c", "netstat -ano -p tcp | findstr :" + port).start();
@@ -163,9 +164,9 @@ class Killport implements Callable<Integer> {
 	}
 
 	/// Discovers PIDs listening on port using lsof or ss on Unix/macOS.
-  ///
-  /// @param port Target port.
-  /// @param pids Output set to collect PIDs.
+	///
+	/// @param port Target port.
+	/// @param pids Output set to collect PIDs.
 	private void findPidsUnix(int port, Set<Long> pids) {
 		try {
 			var pb = new ProcessBuilder("lsof", "-iTCP:" + port, "-sTCP:LISTEN", "-t");
@@ -213,10 +214,10 @@ class Killport implements Callable<Integer> {
 	}
 
 	/// Kills process by PID using ProcessHandle or OS command.
-  ///
-  /// @param pid Process ID to terminate.
-  /// @param force Forcefully kill if `true`.
-  /// @return `true` if successful, `false` otherwise.
+	///
+	/// @param pid   Process ID to terminate.
+	/// @param force Forcefully kill if `true`.
+	/// @return `true` if successful, `false` otherwise.
 	private boolean killProcess(long pid, boolean force) {
 		var optHandle = ProcessHandle.of(pid);
 		if (optHandle.isPresent()) {

@@ -76,9 +76,9 @@ class Serve implements Callable<Integer> {
 	}
 
 	/// Helper method checking whether a string represents a valid integer.
-  ///
-  /// @param s String to check.
-  /// @return `true` if string can be parsed as an integer, `false` otherwise.
+	///
+	/// @param s String to check.
+	/// @return `true` if string can be parsed as an integer, `false` otherwise.
 	private static boolean isInteger(String s) {
 		try {
 			Integer.parseInt(s);
@@ -89,16 +89,17 @@ class Serve implements Callable<Integer> {
 	}
 
 	/// Main entry point for the JBang script execution.
-  ///
-  /// @param args Command-line arguments.
+	///
+	/// @param args Command-line arguments.
 	void main(String... args) {
 		var exitCode = new CommandLine(this).execute(args);
 		System.exit(exitCode);
 	}
 
-	/// Resolves arguments, validates directory and port parameters, and launches the file server.
-  ///
-  /// @return Status code 0 for success, 1 for errors.
+	/// Resolves arguments, validates directory and port parameters, and launches
+	/// the file server.
+	///
+	/// @return Status code 0 for success, 1 for errors.
 	@SuppressWarnings("HttpUrlsUsage")
 	@Override
 	public Integer call() {

@@ -355,6 +355,84 @@ public class FetchTest {
 		}
 	}
 
+	@Test
+	void testCustomHeadersAndUserAgent(@TempDir Path tempDir) throws Exception {
+		byte[] testData = "Secure payload requiring custom header".getBytes(StandardCharsets.UTF_8);
+		var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		server.createContext("/auth-file.txt", exchange -> {
+			String authHeader = exchange.getRequestHeaders().getFirst("X-Custom-Auth");
+			String userAgent = exchange.getRequestHeaders().getFirst("User-Agent");
+			if ("SecretToken123".equals(authHeader) && "TestFetcher/1.0".equals(userAgent)) {
+				exchange.sendResponseHeaders(200, testData.length);
+				try (var os = exchange.getResponseBody()) {
+					os.write(testData);
+				}
+			} else {
+				exchange.sendResponseHeaders(403, -1);
+			}
+		});
+		server.start();
+
+		try {
+			int port = server.getAddress().getPort();
+			Path destFile = tempDir.resolve("auth-file.txt");
+			var result = runCommand("http://127.0.0.1:" + port + "/auth-file.txt",
+					"-o", destFile.toString(),
+					"-H", "X-Custom-Auth: SecretToken123",
+					"-A", "TestFetcher/1.0",
+					"--no-checksum");
+			assertEquals(0, result.exitCode(), "Download should succeed with valid auth headers: " + result.stderr());
+			assertEquals("Secure payload requiring custom header", Files.readString(destFile));
+		} finally {
+			server.stop(0);
+		}
+	}
+
+	@Test
+	void testExplicitHashMismatchFailure(@TempDir Path tempDir) throws Exception {
+		byte[] testData = "Payload with wrong hash verification".getBytes(StandardCharsets.UTF_8);
+		var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		server.createContext("/wrong-hash.txt", exchange -> {
+			exchange.sendResponseHeaders(200, testData.length);
+			try (var os = exchange.getResponseBody()) {
+				os.write(testData);
+			}
+		});
+		server.start();
+
+		try {
+			int port = server.getAddress().getPort();
+			Path destFile = tempDir.resolve("wrong-hash.txt");
+			String wrongHash = "0000000000000000000000000000000000000000000000000000000000000000";
+			var result = runCommand("http://127.0.0.1:" + port + "/wrong-hash.txt",
+					"-o", destFile.toString(),
+					"--expected-hash", wrongHash);
+			assertEquals(1, result.exitCode(), "Download should fail on hash mismatch");
+			assertTrue(result.stdout().contains("FAILED") || result.stderr().contains("Expected:"));
+		} finally {
+			server.stop(0);
+		}
+	}
+
+	@Test
+	void testHttp404NotFound(@TempDir Path tempDir) throws Exception {
+		var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		server.createContext("/not-found.txt", exchange -> exchange.sendResponseHeaders(404, -1));
+		server.start();
+
+		try {
+			int port = server.getAddress().getPort();
+			Path destFile = tempDir.resolve("not-found.txt");
+			var result = runCommand("http://127.0.0.1:" + port + "/not-found.txt",
+					"-o", destFile.toString(),
+					"--no-checksum");
+			assertEquals(1, result.exitCode());
+			assertTrue(result.stderr().contains("404") || result.stdout().contains("404"));
+		} finally {
+			server.stop(0);
+		}
+	}
+
 	private static String sha256Of(Path file) throws Exception {
 		var md = MessageDigest.getInstance("SHA-256");
 		try (var in = Files.newInputStream(file)) {

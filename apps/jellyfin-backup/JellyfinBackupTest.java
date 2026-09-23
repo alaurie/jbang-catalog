@@ -219,6 +219,75 @@ public class JellyfinBackupTest {
 	}
 
 	@Test
+	void testBackupAndRestoreCycle(@TempDir Path tempDir) throws Exception {
+		Path configDir = tempDir.resolve("etc");
+		Path dataDir = tempDir.resolve("var");
+		Files.createDirectories(configDir);
+		Files.createDirectories(dataDir.resolve("data"));
+		Files.createDirectories(dataDir.resolve("transcodes"));
+		Files.createDirectories(dataDir.resolve("plugins/TestPlugin_1.0.0.0"));
+
+		Files.writeString(configDir.resolve("system.xml"), "<SystemConfig>Valid</SystemConfig>");
+		Files.writeString(dataDir.resolve("data/jellyfin.db"), "JELLYFIN_DB_V2");
+		Files.writeString(dataDir.resolve("transcodes/temp.ts"), "TEMP_TRANSCODE_DATA");
+		Files.writeString(dataDir.resolve("plugins/TestPlugin_1.0.0.0/plugin.dll"), "PLUGIN_BINARY");
+
+		Path backupArchive = tempDir.resolve("full-backup.tar.gz");
+		var backupResult = runCommand("backup", "--no-stop", "-c", configDir.toString(),
+				"-d", dataDir.toString(), "-o", backupArchive.toString());
+		assertEquals(0, backupResult.exitCode(), "Backup should succeed: " + backupResult.stderr());
+		assertTrue(Files.isRegularFile(backupArchive), "Backup archive must exist");
+		assertTrue(Files.isRegularFile(Path.of(backupArchive + ".sha256")), "SHA256 sidecar must exist");
+
+		var inspectResult = runCommand("inspect", backupArchive.toString());
+		assertEquals(0, inspectResult.exitCode());
+		assertTrue(inspectResult.stdout().contains("TestPlugin"));
+
+		Path restoreConfig = tempDir.resolve("restored_etc");
+		Path restoreData = tempDir.resolve("restored_var");
+		var restoreResult = runCommand("restore", "--yes", "--no-stop", "--no-chown",
+				"-c", restoreConfig.toString(), "-d", restoreData.toString(), backupArchive.toString());
+		assertEquals(0, restoreResult.exitCode(), "Restore should succeed: " + restoreResult.stderr());
+
+		assertEquals("<SystemConfig>Valid</SystemConfig>", Files.readString(restoreConfig.resolve("system.xml")));
+		assertEquals("JELLYFIN_DB_V2", Files.readString(restoreData.resolve("data/jellyfin.db")));
+		assertEquals("PLUGIN_BINARY", Files.readString(restoreData.resolve("plugins/TestPlugin_1.0.0.0/plugin.dll")));
+		assertFalse(Files.exists(restoreData.resolve("transcodes/temp.ts")), "Cache files must be excluded");
+	}
+
+	@Test
+	void testRestoreChecksumMismatchAndOverride(@TempDir Path tempDir) throws Exception {
+		Path archiveFile = tempDir.resolve("corrupt-check.tar.gz");
+		createMockBackupArchive(archiveFile);
+
+		Path shaFile = Path.of(archiveFile + ".sha256");
+		Files.writeString(shaFile,
+				"0000000000000000000000000000000000000000000000000000000000000000  archive.tar.gz\n");
+
+		Path targetConfig = tempDir.resolve("target_etc");
+		Path targetData = tempDir.resolve("target_var");
+
+		// Without override, should fail verification
+		var failResult = runCommand("restore", "--yes", "--no-stop", "--no-chown",
+				"-c", targetConfig.toString(), "-d", targetData.toString(), archiveFile.toString());
+		assertEquals(1, failResult.exitCode(), "Should fail on hash mismatch");
+		assertTrue(failResult.stderr().contains("verification failed"));
+
+		// With --no-verify, should proceed
+		var passResult = runCommand("restore", "--yes", "--no-stop", "--no-chown", "--no-verify",
+				"-c", targetConfig.toString(), "-d", targetData.toString(), archiveFile.toString());
+		assertEquals(0, passResult.exitCode(), "Should succeed with --no-verify: " + passResult.stderr());
+	}
+
+	@Test
+	void testFormatBytesHelper() {
+		assertEquals("500 B", JellyfinBackup.formatBytes(500));
+		assertEquals("1.00 KB", JellyfinBackup.formatBytes(1024));
+		assertEquals("1.50 MB", JellyfinBackup.formatBytes((long) (1.5 * 1024 * 1024)));
+		assertEquals("2.00 GB", JellyfinBackup.formatBytes(2L * 1024 * 1024 * 1024));
+	}
+
+	@Test
 	void testNeedsElevation() {
 		assertFalse(JellyfinBackup.needsElevation());
 		assertFalse(JellyfinBackup.needsElevation("--help"));

@@ -29,12 +29,11 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
-/// CLI utility to calculate and verify cryptographic checksums (MD5, SHA-1, SHA-256, SHA-512,
-/// etc.).
+/// CLI utility to calculate and verify cryptographic checksums (MD5, SHA-1,
+/// SHA-256, SHA-512, etc.).
 ///
-/// Supports checking files, recursive directory manifests, string inputs, benchmark mode, stdin,
-/// and
-/// verification files.
+/// Supports checking files, recursive directory manifests, string inputs,
+/// benchmark mode, stdin, and verification files.
 @Command(name = "digest", mixinStandardHelpOptions = true, version = "digest 2.0", description = "Compute and verify cryptographic checksums for files or text input.")
 @SuppressWarnings("unused")
 class Digest implements Callable<Integer> {
@@ -59,16 +58,16 @@ class Digest implements Callable<Integer> {
 	private List<Path> files;
 
 	/// Main entry point for the JBang script execution.
-  ///
-  /// @param args Command-line arguments.
+	///
+	/// @param args Command-line arguments.
 	void main(String... args) {
 		var exitCode = new CommandLine(this).execute(args);
 		System.exit(exitCode);
 	}
 
 	/// Calculates or verifies hashes according to CLI options.
-  ///
-  /// @return Status code 0 for success, 1 on hash mismatch or errors.
+	///
+	/// @return Status code 0 for success, 1 on hash mismatch or errors.
 	@Override
 	public Integer call() {
 		if (benchmark) {
@@ -127,7 +126,8 @@ class Digest implements Callable<Integer> {
 		return hasError ? 1 : 0;
 	}
 
-	/// Benchmarks CPU hashing throughput across supported algorithms using a 50MB buffer.
+	/// Benchmarks CPU hashing throughput across supported algorithms using a
+	/// 50MB buffer.
 	private void runBenchmark() {
 		System.out.println("Benchmarking CPU Cryptographic Throughput (50 MB Payload)...");
 		System.out.println("------------------------------------------------------------");
@@ -154,10 +154,11 @@ class Digest implements Callable<Integer> {
 		}
 	}
 
-	/// Recursively walks a directory and computes hashes for all files in manifest format.
-  ///
-  /// @param dir Directory root path.
-  /// @return Status code 0 on success, 1 on error.
+	/// Recursively walks a directory and computes hashes for all files in manifest
+	/// format.
+	///
+	/// @param dir Directory root path.
+	/// @return Status code 0 on success, 1 on error.
 	private int hashDirectory(Path dir) {
 		var hasError = false;
 		try (var stream = Files.walk(dir)) {
@@ -179,8 +180,8 @@ class Digest implements Callable<Integer> {
 	}
 
 	/// Normalizes algorithm name to standard JCA provider string.
-  ///
-  /// @throws NoSuchAlgorithmException If algorithm is not supported.
+	///
+	/// @throws NoSuchAlgorithmException If algorithm is not supported.
 	private void normalizeAlgorithm() throws NoSuchAlgorithmException {
 		var algoUpper = algorithm.toUpperCase(Locale.ROOT).replace("-", "");
 		algorithm = switch (algoUpper) {
@@ -196,9 +197,9 @@ class Digest implements Callable<Integer> {
 	}
 
 	/// Hashes plain text string.
-  ///
-  /// @param input Raw text string.
-  /// @return Status code 0 on success, 1 on error.
+	///
+	/// @param input Raw text string.
+	/// @return Status code 0 on success, 1 on error.
 	private int hashText(String input) {
 		try {
 			var digest = MessageDigest.getInstance(algorithm);
@@ -213,9 +214,9 @@ class Digest implements Callable<Integer> {
 	}
 
 	/// Hashes a single file on disk.
-  ///
-  /// @param path File path.
-  /// @return Status code 0 on success, 1 on error.
+	///
+	/// @param path File path.
+	/// @return Status code 0 on success, 1 on error.
 	private int hashFile(Path path) {
 		var hex = computeHashForPath(path);
 		if (hex != null) {
@@ -226,9 +227,9 @@ class Digest implements Callable<Integer> {
 	}
 
 	/// Computes hash for path returning hex string.
-  ///
-  /// @param path Target path.
-  /// @return Hex string or `null` on error.
+	///
+	/// @param path Target path.
+	/// @return Hex string or `null` on error.
 	private String computeHashForPath(Path path) {
 		try {
 			long totalBytes = Files.size(path);
@@ -251,10 +252,10 @@ class Digest implements Callable<Integer> {
 	}
 
 	/// Hashes stream data (e.g. stdin).
-  ///
-  /// @param is Input stream.
-  /// @param name Display label for stream.
-  /// @return Status code 0 on success, 1 on error.
+	///
+	/// @param is   Input stream.
+	/// @param name Display label for stream.
+	/// @return Status code 0 on success, 1 on error.
 	private int hashStream(InputStream is, String name) {
 		try {
 			var digest = MessageDigest.getInstance(algorithm);
@@ -273,9 +274,9 @@ class Digest implements Callable<Integer> {
 	}
 
 	/// Verifies file checksums against specified manifest file.
-  ///
-  /// @param manifest Path to checksum manifest file.
-  /// @return Status code 0 if all verified, 1 if mismatches or errors occur.
+	///
+	/// @param manifest Path to checksum manifest file.
+	/// @return Status code 0 if all verified, 1 if mismatches or errors occur.
 	private int verifyCheckFile(Path manifest) {
 		if (!Files.exists(manifest)) {
 			System.err.printf("Error: Checksum file '%s' does not exist.%n", manifest);

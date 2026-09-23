@@ -32,10 +32,12 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
-/// Cross-platform utility to compile, export, and manage standalone GraalVM native binaries.
+/// Cross-platform utility to compile, export, and manage standalone GraalVM
+/// native binaries.
 ///
-/// Supports compiling/exporting native binaries directly to `~/.local/bin` (or custom directory),
-/// listing native compatibility, and cleaning/uninstalling exported binaries.
+/// Supports compiling/exporting native binaries directly to `~/.local/bin` (or
+/// custom directory), listing native compatibility, and cleaning/uninstalling
+/// exported binaries.
 @Command(name = "install-native", mixinStandardHelpOptions = true, version = "install-native 2.0", description = "Compile, export, and manage standalone zero-overhead native executables.")
 @SuppressWarnings("unused")
 class InstallNative implements Callable<Integer> {
@@ -281,8 +283,9 @@ class InstallNative implements Callable<Integer> {
 		return 0;
 	}
 
-	/// Discovers catalog aliases from local `jbang-catalog.json` or remote GitHub repository,
-  /// then inspects script source code to evaluate dynamic native compatibility.
+	/// Discovers catalog aliases from local `jbang-catalog.json` or remote GitHub
+	/// repository, then inspects script source code to evaluate dynamic
+	/// native compatibility.
 	private Map<String, AppMetadata> discoverCatalogApps() {
 		Map<String, AppMetadata> apps = new LinkedHashMap<>();
 		String jsonContent = loadCatalogJson();
@@ -807,8 +810,9 @@ class InstallNative implements Callable<Integer> {
 		}
 	}
 
-	/// Resolves the home directory of a GraalVM installation containing `bin/native-image`.
-	/// Checks explicit option, GRAALVM_HOME, current runtime, JAVA_HOME, PATH, mise, JBang JDK cache, SDKMAN, and ASDF.
+	/// Resolves the home directory of a GraalVM installation containing
+	/// `bin/native-image`. Checks explicit option, GRAALVM_HOME, current runtime,
+	/// JAVA_HOME, PATH, mise, JBang JDK cache, SDKMAN, and ASDF.
 	private Path resolveGraalVmHome() {
 		if (explicitGraalVmHome != null && hasNativeImage(explicitGraalVmHome)) {
 			return canonicalize(explicitGraalVmHome);
