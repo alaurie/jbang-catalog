@@ -27,6 +27,8 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -147,86 +149,95 @@ class Nudge implements Callable<Integer> {
 		log("Initial start buffer: waiting %d seconds before first check...".formatted(initialDelay));
 		System.out.println("--------");
 
-		Point lastPosition = backend.getPointerPosition();
-
-		Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-			if (backend != null) {
-				try {
-					backend.close();
-				} catch (Exception _) {
-					// Cleanup
-				}
+		var activeBackend = backend;
+		var backendClosed = new AtomicBoolean();
+		var shutdownHook = new Thread(() -> {
+			if (backendClosed.compareAndSet(false, true)) {
+				activeBackend.close();
 			}
 			System.out.println("\nBye bye ;-)\n");
-		}));
+		});
+		Runtime.getRuntime().addShutdownHook(shutdownHook);
 
 		try {
-			Thread.sleep(Duration.ofSeconds(initialDelay));
-		} catch (InterruptedException _) {
-			Thread.currentThread().interrupt();
-			return 0;
-		}
-
-		while (!Thread.currentThread().isInterrupted()) {
-			Point currentPosition = backend.getPointerPosition();
-			boolean isUserAway;
-
-			if (currentPosition != null && lastPosition != null) {
-				isUserAway = currentPosition.equals(lastPosition);
-			} else {
-				// Pointer tracking unavailable on native Wayland; execute scheduled nudge
-				isUserAway = true;
-			}
-
-			var isOutsideHours = false;
-			if (betweenHours != null && betweenHours.size() == 2) {
-				try {
-					var now = LocalTime.now();
-					var start = LocalTime.parse(betweenHours.getFirst());
-					var stop = LocalTime.parse(betweenHours.getLast());
-					if (now.isBefore(start) || now.isAfter(stop)) {
-						isOutsideHours = true;
-					}
-				} catch (Exception _) {
-					System.err.println(
-							"Warning: Invalid --between time format. Expected HH:mm (e.g. 09:00 17:00).");
-				}
-			}
-
-			if (isOutsideHours) {
-				log("Outside active hours window (" + betweenHours.getFirst() + " - "
-						+ betweenHours.getLast() + "). Skipping nudge.");
-			} else if (isUserAway) {
-				log(currentPosition != null ? "Idle detection" : "Idle check (scheduled interval)");
-				if (isMouseEnabled) {
-					currentPosition = moveMouse(currentPosition);
-				}
-				if (isScrollEnabled) {
-					scrollMouse();
-				}
-				if (isKeyboardEnabled) {
-					pressShiftKey();
-				}
-			} else {
-				log("User activity detected");
-			}
-
-			lastPosition = currentPosition != null ? currentPosition : lastPosition;
-
-			int delaySeconds = randomRange != null ? random.nextInt(randStop - randStart + 1) + randStart : seconds;
-			log("Delay: %d seconds".formatted(delaySeconds));
-			System.out.println("--------");
-
+			Point lastPosition = backend.getPointerPosition();
 			try {
-				//noinspection BusyWait
-				Thread.sleep(Duration.ofSeconds(delaySeconds));
+				Thread.sleep(Duration.ofSeconds(initialDelay));
 			} catch (InterruptedException _) {
 				Thread.currentThread().interrupt();
-				break;
+				return 0;
+			}
+
+			while (!Thread.currentThread().isInterrupted()) {
+				Point currentPosition = backend.getPointerPosition();
+				boolean isUserAway;
+
+				if (currentPosition != null && lastPosition != null) {
+					isUserAway = currentPosition.equals(lastPosition);
+				} else {
+					// Pointer tracking unavailable on native Wayland; execute scheduled nudge
+					isUserAway = true;
+				}
+
+				var isOutsideHours = false;
+				if (betweenHours != null && betweenHours.size() == 2) {
+					try {
+						var now = LocalTime.now();
+						var start = LocalTime.parse(betweenHours.getFirst());
+						var stop = LocalTime.parse(betweenHours.getLast());
+						if (now.isBefore(start) || now.isAfter(stop)) {
+							isOutsideHours = true;
+						}
+					} catch (Exception _) {
+						System.err.println(
+								"Warning: Invalid --between time format. Expected HH:mm (e.g. 09:00 17:00).");
+					}
+				}
+
+				if (isOutsideHours) {
+					log("Outside active hours window (" + betweenHours.getFirst() + " - "
+							+ betweenHours.getLast() + "). Skipping nudge.");
+				} else if (isUserAway) {
+					log(currentPosition != null ? "Idle detection" : "Idle check (scheduled interval)");
+					if (isMouseEnabled) {
+						currentPosition = moveMouse(currentPosition);
+					}
+					if (isScrollEnabled) {
+						scrollMouse();
+					}
+					if (isKeyboardEnabled) {
+						pressShiftKey();
+					}
+				} else {
+					log("User activity detected");
+				}
+
+				lastPosition = currentPosition != null ? currentPosition : lastPosition;
+
+				int delaySeconds = randomRange != null ? random.nextInt(randStop - randStart + 1) + randStart : seconds;
+				log("Delay: %d seconds".formatted(delaySeconds));
+				System.out.println("--------");
+
+				try {
+					//noinspection BusyWait
+					Thread.sleep(Duration.ofSeconds(delaySeconds));
+				} catch (InterruptedException _) {
+					Thread.currentThread().interrupt();
+					break;
+				}
+			}
+
+			return 0;
+		} finally {
+			try {
+				Runtime.getRuntime().removeShutdownHook(shutdownHook);
+			} catch (IllegalStateException _) {
+				// Shutdown is already in progress; its hook owns the backend.
+			}
+			if (backendClosed.compareAndSet(false, true)) {
+				activeBackend.close();
 			}
 		}
-
-		return 0;
 	}
 
 	/// Selects and initializes the most capable presence/input backend for the
@@ -253,7 +264,7 @@ class Nudge implements Callable<Integer> {
 			}
 
 			// 2. Try CLI simulation tools (ydotool, wtype, dotool)
-			var cliBackend = CliToolBackend.detect();
+			var cliBackend = CliToolBackend.detect(mode);
 			if (cliBackend != null) {
 				return cliBackend;
 			}
@@ -527,6 +538,16 @@ class Nudge implements Callable<Integer> {
 		}
 	}
 
+	static String selectCliTool(Mode mode, Predicate<String> available) {
+		if (available.test("ydotool")) {
+			return "ydotool";
+		}
+		if (mode == Mode.keyboard && available.test("wtype")) {
+			return "wtype";
+		}
+		return available.test("dotool") ? "dotool" : null;
+	}
+
 	/// External Wayland CLI tool simulation backend (ydotool, wtype, dotool).
 	private static final class CliToolBackend implements InputBackend {
 		private final String tool;
@@ -535,17 +556,9 @@ class Nudge implements Callable<Integer> {
 			this.tool = tool;
 		}
 
-		public static CliToolBackend detect() {
-			if (hasCommand("ydotool")) {
-				return new CliToolBackend("ydotool");
-			}
-			if (hasCommand("wtype")) {
-				return new CliToolBackend("wtype");
-			}
-			if (hasCommand("dotool")) {
-				return new CliToolBackend("dotool");
-			}
-			return null;
+		public static CliToolBackend detect(Mode mode) {
+			var tool = selectCliTool(mode, Nudge::hasCommand);
+			return tool == null ? null : new CliToolBackend(tool);
 		}
 
 		@Override
@@ -612,20 +625,40 @@ class Nudge implements Callable<Integer> {
 		}
 	}
 
+	/// Extracts the uint32 cookie from a gdbus Inhibit reply for UnInhibit.
+	///
+	/// @param output the gdbus response text.
+	/// @return The cookie, or `null` if the reply has no uint32 token.
+	static String parseGdbusCookie(String output) {
+		var matcher = Pattern.compile("\\buint32\\s+(\\d+)\\b").matcher(output);
+		return matcher.find() ? matcher.group(1) : null;
+	}
+
 	/// Fallback Wayland backend using D-Bus ScreenSaver Inhibit alongside
 	/// AWT Robot.
-	private static final class FallbackWaylandBackend implements InputBackend {
+	static final class FallbackWaylandBackend implements InputBackend {
 		private final String cookie;
 		private final Process systemdProcess;
 		private final Robot robot;
 
-		private FallbackWaylandBackend(String cookie, Process systemdProcess, Robot robot) {
+		FallbackWaylandBackend(String cookie, Process systemdProcess, Robot robot) {
 			this.cookie = cookie;
 			this.systemdProcess = systemdProcess;
 			this.robot = robot;
 		}
 
 		public static FallbackWaylandBackend create() {
+			Robot robot = null;
+			try {
+				if (!GraphicsEnvironment.isHeadless()) {
+					robot = new Robot();
+					robot.setAutoDelay(40);
+				}
+			} catch (Throwable _) {
+				// AWT Robot unavailable (e.g. native-image without libawt, pure Wayland without XWayland, or headless)
+				robot = null;
+			}
+
 			String cookie = null;
 			Process proc = null;
 
@@ -651,39 +684,36 @@ class Nudge implements Callable<Integer> {
 							"--method", "org.freedesktop.ScreenSaver.Inhibit", "nudge", "keep presence active");
 					var p = pb.start();
 					var out = new String(p.getInputStream().readAllBytes()).trim();
-					if (p.waitFor() == 0 && out.contains("uint32 ")) {
-						var matcher = Pattern.compile("\\d+").matcher(out);
-						if (matcher.find()) {
-							cookie = matcher.group();
-						}
+					if (p.waitFor() == 0) {
+						cookie = parseGdbusCookie(out);
 					}
 				} catch (Exception _) {
 					// Try systemd-inhibit
 				}
 			}
 
-			// 3. Try systemd-inhibit
-			if (cookie == null) {
+			// 3. Try persistent systemd-inhibit (blocks idle and sleep at OS level while running)
+			try {
+				var pb = new ProcessBuilder("systemd-inhibit", "--what=idle:sleep", "--who=nudge",
+						"--why=Keep presence active", "--mode=block", "sleep", "infinity");
+				var p = pb.start();
 				try {
-					proc = new ProcessBuilder("systemd-inhibit", "--what=idle:sleep", "--who=nudge",
-							"--why=Keep presence active", "--mode=block", "sleep", "infinity")
-						.start();
-				} catch (Exception _) {
-					// Fallback only
+					Thread.sleep(Duration.ofMillis(50));
+				} catch (InterruptedException _) {
+					Thread.currentThread().interrupt();
 				}
+				if (p.isAlive()) {
+					proc = p;
+				}
+			} catch (Exception _) {
+				// systemd-inhibit not available
 			}
 
-			Robot r = null;
-			if (!GraphicsEnvironment.isHeadless()) {
-				try {
-					r = new Robot();
-					r.setAutoDelay(40);
-				} catch (Exception _) {
-					// Headless or Robot init failed
-				}
+			if (cookie == null && proc == null && robot == null) {
+				return null;
 			}
 
-			return new FallbackWaylandBackend(cookie, proc, r);
+			return new FallbackWaylandBackend(cookie, proc, robot);
 		}
 
 		@Override

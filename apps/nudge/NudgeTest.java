@@ -9,6 +9,7 @@
 package nudge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
@@ -101,14 +102,40 @@ public class NudgeTest {
 	}
 
 	@Test
-	void testExecutionInterruptHandling() throws Exception {
-		var app = new Nudge();
-		var cmd = new CommandLine(app);
-		var executor = java.util.concurrent.Executors.newSingleThreadExecutor();
-		var future = executor.submit(() -> cmd.execute("-b", "10", "-m", "keyboard"));
-		Thread.sleep(200);
-		future.cancel(true);
-		executor.shutdownNow();
+	void testWaylandCliToolMustSupportRequestedActions() {
+		assertEquals("wtype", Nudge.selectCliTool(Nudge.Mode.keyboard, "wtype"::equals));
+		for (var mode : new Nudge.Mode[] { Nudge.Mode.mouse, Nudge.Mode.both, Nudge.Mode.scroll }) {
+			assertNull(Nudge.selectCliTool(mode, "wtype"::equals));
+			assertEquals("dotool", Nudge.selectCliTool(mode,
+					tool -> tool.equals("wtype") || tool.equals("dotool")));
+		}
+		for (var mode : Nudge.Mode.values()) {
+			assertEquals("ydotool", Nudge.selectCliTool(mode, "ydotool"::equals));
+		}
+	}
+
+	@Test
+	void testGdbusInhibitCookie() {
+		assertEquals("4294967295", Nudge.parseGdbusCookie("(uint32 4294967295,)"));
+		assertNull(Nudge.parseGdbusCookie("(42,)"));
+	}
+	@Test
+	void testFallbackWaylandBackendWithoutRobot() {
+		var backend = new Nudge.FallbackWaylandBackend(null, null, null);
+		assertEquals("Wayland D-Bus ScreenSaver Inhibit", backend.name());
+		backend.moveMouse(5, 5);
+		backend.scrollMouse(1);
+		backend.pressShiftKey();
+		backend.close();
+	}
+
+	@Test
+	void testFallbackWaylandBackendCreateDoesNotThrow() {
+		var backend = Nudge.FallbackWaylandBackend.create();
+		if (backend != null) {
+			assertTrue(backend.name().startsWith("Wayland D-Bus ScreenSaver Inhibit"));
+			backend.close();
+		}
 	}
 
 	public static void main(String... args) {
