@@ -256,6 +256,7 @@ class InstallNative implements Callable<Integer> {
 
 		int removed = 0;
 		int missing = 0;
+		int failed = 0;
 
 		for (var app : targets) {
 			String binaryName = IS_WINDOWS ? app.alias() + ".exe" : app.alias();
@@ -269,6 +270,7 @@ class InstallNative implements Callable<Integer> {
 				} catch (Exception e) {
 					System.err.printf("  ✗ Error removing %s: %s%n", binaryPath.getFileName(),
 							e.getMessage());
+					failed++;
 				}
 			} else {
 				missing++;
@@ -279,8 +281,9 @@ class InstallNative implements Callable<Integer> {
 		}
 
 		System.out.println("---------------------------------------------------------------");
-		System.out.printf("Clean complete: %d removed, %d not found.%n", removed, missing);
-		return 0;
+		System.out.printf("Clean complete: %d removed, %d not found, %d failed.%n", removed, missing,
+				failed);
+		return failed == 0 ? 0 : 1;
 	}
 
 	/// Discovers catalog aliases from local `jbang-catalog.json` or remote GitHub

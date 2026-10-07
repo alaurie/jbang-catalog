@@ -9,15 +9,20 @@
 package reach;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
+import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 import org.junit.platform.engine.discovery.DiscoverySelectors;
 import org.junit.platform.launcher.core.LauncherDiscoveryRequestBuilder;
@@ -115,6 +120,42 @@ public class ReachTest {
 	}
 
 	@Test
+	void testJsonNumbersAreValidInCommaDecimalLocale() throws Exception {
+		var originalLocale = Locale.getDefault();
+		try (var serverSocket = new ServerSocket(0)) {
+			Locale.setDefault(Locale.GERMANY);
+			var result = runCommand("127.0.0.1", String.valueOf(serverSocket.getLocalPort()), "-n", "1",
+					"-j", "-t", "500");
+			assertEquals(0, result.exitCode());
+			assertTrue(result.stdout().matches("(?s).*\"dns_time_ms\": [0-9]+\\.[0-9]{2},.*"));
+			assertTrue(result.stdout().matches("(?s).*\"loss_percent\": [0-9]+\\.[0-9],.*"));
+			assertFalse(result.stdout().contains("\"rtt_avg_ms\": 0,"));
+		} finally {
+			Locale.setDefault(originalLocale);
+		}
+	}
+
+	@Test
+	void testFailedTlsHandshakeDoesNotTriggerExpiryWarningOrHang() throws Exception {
+		try (var serverSocket = new ServerSocket(0)) {
+			var peer = Thread.ofVirtual().start(() -> {
+				try (var accepted = serverSocket.accept()) {
+					Thread.sleep(java.time.Duration.ofMillis(1500));
+				} catch (Exception _) {
+				}
+			});
+			var start = System.nanoTime();
+			var result = runCommand("127.0.0.1", String.valueOf(serverSocket.getLocalPort()), "-n", "1",
+					"-s", "--warn-days", "30", "-t", "200");
+			assertEquals(0, result.exitCode(), result.stderr());
+			assertTrue(result.stdout().contains("Certificate Failed"));
+			assertFalse(result.stderr().contains("certificates expire"));
+			assertTrue((System.nanoTime() - start) < 1_000_000_000L, "TLS handshake exceeded timeout");
+			peer.join();
+		}
+	}
+
+	@Test
 	void testHostWithEmbeddedPort() throws Exception {
 		try (var serverSocket = new ServerSocket()) {
 			serverSocket.bind(new InetSocketAddress("127.0.0.1", 0));
@@ -123,6 +164,34 @@ public class ReachTest {
 			var result = runCommand("127.0.0.1:" + port, "-n", "1", "-t", "500");
 			assertEquals(0, result.exitCode());
 			assertTrue(result.stdout().contains("Connected to 127.0.0.1:" + port));
+		}
+	}
+
+	@Test
+	void testIpv6LiteralAndBracketedPort() throws Exception {
+		HttpServer server;
+		try {
+			server = HttpServer.create(new InetSocketAddress(InetAddress.getByName("::1"), 0), 0);
+		} catch (java.io.IOException e) {
+			assumeTrue(false, "IPv6 loopback is unavailable: " + e.getMessage());
+			return;
+		}
+		try {
+			server.createContext("/", exchange -> {
+				exchange.sendResponseHeaders(200, -1);
+				exchange.close();
+			});
+			server.start();
+			var port = String.valueOf(server.getAddress().getPort());
+			var plain = runCommand("::1", port, "-6", "-n", "1", "-t", "500", "-H");
+			assertEquals(0, plain.exitCode(), plain.stderr());
+			assertTrue(plain.stdout().contains("HTTP: Port " + port + " -> 200"));
+
+			var bracketed = runCommand("[::1]:" + port, "-6", "-n", "1", "-t", "500");
+			assertEquals(0, bracketed.exitCode(), bracketed.stderr());
+			assertTrue(bracketed.stdout().contains("Connected to"));
+		} finally {
+			server.stop(0);
 		}
 	}
 

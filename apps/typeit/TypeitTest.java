@@ -9,9 +9,9 @@
 package typeit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.awt.GraphicsEnvironment;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.io.PrintWriter;
@@ -30,6 +30,10 @@ public class TypeitTest {
 	}
 
 	private ExecutionResult runCommand(String... args) {
+		return runCommand(new Typeit(), args);
+	}
+
+	private ExecutionResult runCommand(Typeit app, String... args) {
 		var originalOut = System.out;
 		var originalErr = System.err;
 		var outStream = new ByteArrayOutputStream();
@@ -42,7 +46,6 @@ public class TypeitTest {
 		try {
 			System.setOut(printOut);
 			System.setErr(printErr);
-			var app = new Typeit();
 			var cmd = new CommandLine(app);
 			cmd.setOut(pw);
 			cmd.setErr(pw);
@@ -87,20 +90,33 @@ public class TypeitTest {
 
 	@Test
 	void testTypingCustomText() {
-		var result = runCommand("-d", "0", "-s", "1", "-t", "Test123", "-v");
-		// Should succeed on desktop / uinput environment
-		assertTrue(result.exitCode() == 0 || result.stderr().contains("Error"));
-		if (result.exitCode() == 0) {
-			assertTrue(result.stdout().contains("Done! Typed 7 characters."));
-		}
+		var driver = new RecordingDriver();
+		var result = runCommand(new Typeit(null, driver), "-d", "0", "-s", "1", "-t", "Test123", "-v");
+		assertEquals(0, result.exitCode());
+		assertEquals("Test123", driver.typed.toString());
+		assertTrue(result.stdout().contains("Done! Typed 7 characters."));
 	}
 
 	@Test
-	void testPasswordPromptWithoutConsole() {
-		var result = runCommand("-p");
-		// In JUnit non-interactive test run, System.console() is null
+	void testEmptyPasswordNeverTypes() {
+		var driver = new RecordingDriver();
+		var result = runCommand(new Typeit(() -> new char[0], driver), "-p", "-v");
 		assertEquals(1, result.exitCode());
-		assertTrue(result.stderr().contains("System.console() unavailable"));
+		assertTrue(result.stderr().contains("Password is empty"));
+		assertEquals("", driver.typed.toString());
+	}
+
+	@Test
+	void testPasswordRejectsArgumentBasedDriversBeforeReadingSecret() {
+		for (var backend : new String[] { "WTYPE", "YDOTOOL" }) {
+			var driver = new RecordingDriver();
+			var result = runCommand(new Typeit(() -> {
+				throw new AssertionError("Rejected backend must not prompt for a password");
+			}, driver), "-p", "--driver", backend, "-d", "0");
+			assertEquals(1, result.exitCode());
+			assertTrue(result.stderr().contains("exposed in process arguments"));
+			assertEquals("", driver.typed.toString());
+		}
 	}
 
 	@Test
@@ -115,10 +131,46 @@ public class TypeitTest {
 
 	@Test
 	void testTypingWithEnterFlag() {
-		var result = runCommand("-d", "0", "-s", "1", "-t", "echo 1", "-e", "-v");
-		assertTrue(result.exitCode() == 0 || result.stderr().contains("Error"));
-		if (result.exitCode() == 0) {
-			assertTrue(result.stdout().contains("Typed 6 characters."));
+		var driver = new RecordingDriver();
+		var result = runCommand(new Typeit(null, driver), "-d", "0", "-s", "1", "-t", "echo 1", "-e", "-v");
+		assertEquals(0, result.exitCode());
+		assertEquals("echo 1\n", driver.typed.toString());
+		assertTrue(result.stdout().contains("Typed 6 characters."));
+	}
+
+	@Test
+	void testPasswordVerboseNeverEchoesCharacters() {
+		var driver = new RecordingDriver();
+		var result = runCommand(new Typeit(() -> "☃♣".toCharArray(), driver), "-d", "0", "-p", "-v");
+		assertEquals(0, result.exitCode());
+		assertEquals("☃♣", driver.typed.toString());
+		assertTrue(result.stdout().contains("hidden password"));
+		assertFalse(result.stdout().contains("☃"));
+		assertFalse(result.stdout().contains("♣"));
+		assertFalse(result.stderr().contains("☃"));
+		assertFalse(result.stderr().contains("♣"));
+	}
+
+	private static final class RecordingDriver implements Typeit.KeyboardDriver {
+		private final StringBuilder typed = new StringBuilder();
+
+		@Override
+		public String name() {
+			return "recording";
+		}
+
+		@Override
+		public void typeChar(char c) {
+			typed.append(c);
+		}
+
+		@Override
+		public void pressEnter() {
+			typed.append('\n');
+		}
+
+		@Override
+		public void close() {
 		}
 	}
 

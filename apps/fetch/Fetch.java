@@ -32,6 +32,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.regex.Pattern;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -79,6 +80,9 @@ class Fetch implements Callable<Integer> {
 	private static final List<String> CANDIDATE_MANIFESTS = List.of("SHA512SUMS", "SHA256SUMS", "SHA512", "SHA256",
 			"MD5SUMS", "MD5", "CHECKSUMS",
 			"CHECKSUM", "sha512sums.txt", "sha256sums.txt", "sha512sum.txt", "sha256sum.txt");
+	private static final int MAX_MANIFEST_BYTES = 64 * 1024;
+	private static final Duration MANIFEST_TIMEOUT = Duration.ofSeconds(3);
+	private static final Pattern CONTENT_RANGE = Pattern.compile("bytes ([0-9]+)-([0-9]+)/([0-9]+)");
 
 	private final HttpClient client = HttpClient.newBuilder()
 		.followRedirects(HttpClient.Redirect.NORMAL)
@@ -183,6 +187,7 @@ class Fetch implements Callable<Integer> {
 			.map(v -> v.equalsIgnoreCase("bytes"))
 			.orElse(false);
 		String etag = headRes.headers().firstValue("etag").orElse(null);
+		String strongEtag = isStrongEtag(etag) ? etag : null;
 		String lastModified = headRes.headers().firstValue("last-modified").orElse(null);
 
 		Path partPath = Path.of(outputPath.toString() + ".part");
@@ -196,10 +201,21 @@ class Fetch implements Callable<Integer> {
 		DownloadMeta meta = null;
 		if (!noResume && Files.isRegularFile(partPath) && Files.isRegularFile(metaPath)) {
 			meta = DownloadMeta.load(metaPath);
-			if (!isResumeValid(meta, uri, contentLength, etag, lastModified)) {
+			if (!isResumeValid(meta, uri, contentLength, strongEtag, lastModified)) {
 				if (!quiet) {
 					System.out.println(
 							"Previous download metadata mismatch or remote file changed. Starting fresh...");
+				}
+				Files.deleteIfExists(partPath);
+				Files.deleteIfExists(metaPath);
+				meta = null;
+			}
+			// A completed .part with a bad checksum cannot be repaired by resuming its chunks.
+			if (meta != null && expectedHash != null
+					&& meta.chunks().stream().allMatch(DownloadChunk::isComplete) && !expectedHash.hash()
+						.equalsIgnoreCase(computeFileHash(partPath, expectedHash.algorithm()))) {
+				if (!quiet) {
+					System.out.println("Completed partial download failed checksum. Starting fresh...");
 				}
 				Files.deleteIfExists(partPath);
 				Files.deleteIfExists(metaPath);
@@ -214,7 +230,7 @@ class Fetch implements Callable<Integer> {
 		}
 
 		String streamedHash = null;
-		if (acceptsRanges && contentLength > 0) {
+		if (acceptsRanges && contentLength > 0 && strongEtag != null) {
 			List<DownloadChunk> chunks;
 			if (meta != null && !meta.chunks().isEmpty()) {
 				chunks = meta.chunks();
@@ -237,11 +253,13 @@ class Fetch implements Callable<Integer> {
 					}
 				}
 			}
-			boolean success = downloadChunks(partPath, metaPath, chunks, contentLength, etag, lastModified);
+			boolean success = downloadChunks(partPath, metaPath, chunks, contentLength, strongEtag, lastModified);
 			if (!success) {
 				return 1;
 			}
 		} else {
+			// A streaming retry truncates the partial file; range progress no longer describes it.
+			Files.deleteIfExists(metaPath);
 			if (!quiet) {
 				if (contentLength > 0) {
 					System.out.printf("Connecting (%.2f MB)...%n", contentLength / 1_048_576.0);
@@ -266,26 +284,26 @@ class Fetch implements Callable<Integer> {
 			}
 		}
 
-		Files.deleteIfExists(metaPath);
-		Files.deleteIfExists(Path.of(metaPath.toString() + ".tmp"));
+		if (expectedHash == null && !skipChecksum && !quiet) {
+			System.out.println("No matching checksum manifest detected on remote server.");
+		}
 
-		// Atomically promote .part to final outputPath
+		if (expectedHash != null && !verifyAutoChecksum(expectedHash, streamedHash, partPath)) {
+			return 1;
+		}
+
+		// Only replace an existing destination after the downloaded bytes have passed verification.
 		try {
 			Files.move(partPath, outputPath, StandardCopyOption.REPLACE_EXISTING,
 					StandardCopyOption.ATOMIC_MOVE);
 		} catch (AtomicMoveNotSupportedException _) {
 			Files.move(partPath, outputPath, StandardCopyOption.REPLACE_EXISTING);
 		}
+		Files.deleteIfExists(metaPath);
+		Files.deleteIfExists(Path.of(metaPath.toString() + ".tmp"));
 
 		if (!quiet) {
 			System.out.println("Saved: " + outputPath.toAbsolutePath());
-		}
-
-		if (expectedHash != null || !skipChecksum) {
-			boolean verified = verifyAutoChecksum(expectedHash, streamedHash);
-			if (!verified) {
-				return 1;
-			}
 		}
 
 		return 0;
@@ -307,10 +325,11 @@ class Fetch implements Callable<Integer> {
 
 		for (String candidate : candidates) {
 			URI manifestUri = baseUri.resolve(candidate);
-			HttpRequest req = HttpRequest.newBuilder(manifestUri).GET().build();
+			HttpRequest req = HttpRequest.newBuilder(manifestUri).timeout(MANIFEST_TIMEOUT).GET().build();
 
 			try {
-				HttpResponse<String> res = client.send(req, HttpResponse.BodyHandlers.ofString());
+				HttpResponse<String> res = client.send(req, HttpResponse.BodyHandlers
+					.limiting(HttpResponse.BodyHandlers.ofString(), MAX_MANIFEST_BYTES));
 				if (res.statusCode() == 200) {
 					String algorithm = determineAlgorithm(candidate);
 					String expectedHash = extractHash(res.body(), remoteFilename);
@@ -329,13 +348,8 @@ class Fetch implements Callable<Integer> {
 		return null;
 	}
 
-	private boolean verifyAutoChecksum(ExpectedHash expectedHash, String streamedHash) {
-		if (expectedHash == null) {
-			if (!quiet) {
-				System.out.println("No matching checksum manifest detected on remote server.");
-			}
-			return true;
-		}
+	private boolean verifyAutoChecksum(ExpectedHash expectedHash, String streamedHash,
+			Path partPath) {
 
 		if (!quiet) {
 			System.out.printf("Found manifest: %s (Algorithm: %s)%n", expectedHash.candidate(),
@@ -346,7 +360,7 @@ class Fetch implements Callable<Integer> {
 		try {
 			String actualHash = streamedHash;
 			if (actualHash == null) {
-				actualHash = computeFileHash(outputPath, expectedHash.algorithm());
+				actualHash = computeFileHash(partPath, expectedHash.algorithm());
 			}
 			if (expectedHash.hash().equalsIgnoreCase(actualHash)) {
 				if (!quiet) {
@@ -388,9 +402,14 @@ class Fetch implements Callable<Integer> {
 							StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
 
 				byte[] buf = new byte[128 * 1024];
+				ByteBuffer buffer = ByteBuffer.wrap(buf);
 				int read;
 				while ((read = in.read(buf)) != -1) {
-					out.write(ByteBuffer.wrap(buf, 0, read));
+					buffer.clear();
+					buffer.limit(read);
+					while (buffer.hasRemaining()) {
+						out.write(buffer);
+					}
 					if (digest != null) {
 						digest.update(buf, 0, read);
 					}
@@ -455,20 +474,30 @@ class Fetch implements Callable<Integer> {
 
 						HttpRequest req = applyHeaders(HttpRequest.newBuilder(uri))
 							.header("Range", "bytes=" + startOffset + "-" + endOffset)
+							.header("If-Match", etag)
 							.GET()
 							.build();
 
 						HttpResponse<InputStream> response = client.send(req,
 								HttpResponse.BodyHandlers.ofInputStream());
 
-						int statusCode = response.statusCode();
-						if (statusCode != 206) {
-							throw new IOException("Server returned HTTP " + statusCode + " for range bytes="
-									+ startOffset + "-" + endOffset);
-						}
-
 						try (InputStream in = response.body()) {
+							int statusCode = response.statusCode();
+							if (statusCode != 206) {
+								throw new IOException("Server returned HTTP " + statusCode + " for range bytes="
+										+ startOffset + "-" + endOffset);
+							}
+							String responseEtag = response.headers().firstValue("etag").orElse(null);
+							if (!etag.equals(responseEtag)) {
+								throw new IOException("ETag changed during ranged download");
+							}
+							String contentRange = response.headers().firstValue("content-range").orElse("");
+							if (!matchesContentRange(contentRange, startOffset, endOffset, totalSize)) {
+								throw new IOException("Invalid Content-Range for bytes=" + startOffset + "-"
+										+ endOffset + ": " + contentRange);
+							}
 							byte[] buf = new byte[128 * 1024];
+							ByteBuffer buffer = ByteBuffer.wrap(buf);
 							long bytesRemaining = endOffset - startOffset + 1;
 							long currentOffset = startOffset;
 							while (bytesRemaining > 0) {
@@ -477,8 +506,11 @@ class Fetch implements Callable<Integer> {
 								if (bytesRead == -1) {
 									break;
 								}
-								fileChannel.write(ByteBuffer.wrap(buf, 0, bytesRead), currentOffset);
-								currentOffset += bytesRead;
+								buffer.clear();
+								buffer.limit(bytesRead);
+								while (buffer.hasRemaining()) {
+									currentOffset += fileChannel.write(buffer, currentOffset);
+								}
 								chunk.downloaded.add(bytesRead);
 								bytesRemaining -= bytesRead;
 								if (pb != null) {
@@ -509,6 +541,19 @@ class Fetch implements Callable<Integer> {
 			} catch (IllegalStateException _) {
 			}
 			saveMeta(metaPath, chunks, totalSize, etag, lastModified);
+		}
+	}
+
+	private static boolean matchesContentRange(String header, long start, long end, long total) {
+		var match = CONTENT_RANGE.matcher(header);
+		if (!match.matches()) {
+			return false;
+		}
+		try {
+			return Long.parseLong(match.group(1)) == start && Long.parseLong(match.group(2)) == end
+					&& Long.parseLong(match.group(3)) == total;
+		} catch (NumberFormatException _) {
+			return false;
 		}
 	}
 
@@ -565,25 +610,27 @@ class Fetch implements Callable<Integer> {
 		}
 	}
 
+	private static boolean isStrongEtag(String etag) {
+		return etag != null && etag.length() >= 2 && etag.charAt(0) == '"'
+				&& etag.indexOf('"', 1) == etag.length() - 1;
+	}
+
 	private boolean isResumeValid(DownloadMeta meta, URI currentUri, long currentLength,
 			String currentEtag, String currentLastModified) {
 		if (meta == null) {
 			return false;
 		}
-		if (meta.contentLength() != currentLength) {
+		if (meta.contentLength() != currentLength || currentLength <= 0) {
 			return false;
 		}
-		if (meta.uri() != null && !meta.uri().equals(currentUri.toString())) {
+		if (!currentUri.toString().equals(meta.uri())) {
 			return false;
 		}
-		if (currentEtag != null && meta.etag() != null && !currentEtag.equals(meta.etag())) {
+		if (currentEtag == null || !currentEtag.equals(meta.etag())) {
 			return false;
 		}
-		if (currentLastModified != null && meta.lastModified() != null
-				&& !currentLastModified.equals(meta.lastModified())) {
-			return false;
-		}
-		return true;
+		return currentLastModified == null || meta.lastModified() == null
+				|| currentLastModified.equals(meta.lastModified());
 	}
 
 	private record DownloadMeta(int version, String uri, long contentLength, String etag, String lastModified,

@@ -34,6 +34,7 @@ import java.util.Arrays;
 import java.util.DoubleSummaryStatistics;
 import java.util.Hashtable;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
@@ -142,14 +143,23 @@ class Reach implements Callable<Integer> {
 	@Override
 	public Integer call() {
 		String parsedHost = target;
-		String rawPortStr = null;
+		String rawPortStr = portSpec;
 
-		if (target.contains(":")) {
+		if (target.startsWith("[")) {
+			int closingBracket = target.indexOf(']');
+			if (closingBracket < 0
+					|| (closingBracket + 1 < target.length() && target.charAt(closingBracket + 1) != ':')) {
+				System.err.println("Error: Invalid bracketed host. Expected [IPv6] or [IPv6]:port.");
+				return 1;
+			}
+			parsedHost = target.substring(1, closingBracket);
+			if (closingBracket + 1 < target.length()) {
+				rawPortStr = target.substring(closingBracket + 2);
+			}
+		} else if (target.indexOf(':') == target.lastIndexOf(':') && target.contains(":")) {
 			var parts = target.split(":", 2);
 			parsedHost = parts[0];
 			rawPortStr = parts[1];
-		} else if (portSpec != null && !portSpec.isBlank()) {
-			rawPortStr = portSpec;
 		}
 		final String host = parsedHost;
 
@@ -242,7 +252,7 @@ class Reach implements Callable<Integer> {
 			TlsInfo tlsInfo = null;
 			if (isSsl) {
 				tlsInfo = inspectTls(host, port);
-				if (warnDaysThreshold != null && tlsInfo != null
+				if (warnDaysThreshold != null && tlsInfo != null && tlsInfo.error() == null
 						&& tlsInfo.daysRemaining() < warnDaysThreshold) {
 					certWarningTriggered = true;
 				}
@@ -515,6 +525,7 @@ class Reach implements Callable<Integer> {
 
 			try (var sslSocket = (SSLSocket) factory.createSocket()) {
 				sslSocket.connect(new InetSocketAddress(host, port), timeout);
+				sslSocket.setSoTimeout(timeout);
 				sslSocket.startHandshake();
 
 				var certs = sslSocket.getSession().getPeerCertificates();
@@ -565,9 +576,8 @@ class Reach implements Callable<Integer> {
 			.connectTimeout(Duration.ofMillis(timeout))
 			.build()) {
 
-			var scheme = isSsl ? "https://" : "http://";
-			var portPart = (isSsl && port == 443) || (!isSsl && port == 80) ? "" : ":" + port;
-			var uri = URI.create(scheme + host + portPart + "/");
+			var scheme = isSsl ? "https" : "http";
+			var uri = new URI(scheme, null, host, port, "/", null, null);
 
 			var request = HttpRequest.newBuilder(uri)
 				.method("HEAD", HttpRequest.BodyPublishers.noBody())
@@ -592,7 +602,7 @@ class Reach implements Callable<Integer> {
 		sb.append("{\n");
 		sb.append("  \"target\": \"").append(escapeJson(host)).append("\",\n");
 		sb.append("  \"ip\": \"").append(escapeJson(ip)).append("\",\n");
-		sb.append("  \"dns_time_ms\": ").append(String.format("%.2f", dnsTimeMs));
+		sb.append("  \"dns_time_ms\": ").append(String.format(Locale.ROOT, "%.2f", dnsTimeMs));
 
 		if (dnsInfo != null && dnsInfo.error() == null) {
 			sb.append(",\n  \"dns\": {\n");
@@ -624,11 +634,15 @@ class Reach implements Callable<Integer> {
 			sb.append("      \"transmitted\": ").append(res.transmitted()).append(",\n");
 			sb.append("      \"received\": ").append(res.received()).append(",\n");
 			sb.append("      \"loss_percent\": ")
-				.append(String.format("%.1f", res.lossPercent()))
+				.append(String.format(Locale.ROOT, "%.1f", res.lossPercent()))
 				.append(",\n");
-			sb.append("      \"rtt_min_ms\": ").append(String.format("%.2f", res.minRtt())).append(",\n");
-			sb.append("      \"rtt_avg_ms\": ").append(String.format("%.2f", res.avgRtt())).append(",\n");
-			sb.append("      \"rtt_max_ms\": ").append(String.format("%.2f", res.maxRtt()));
+			sb.append("      \"rtt_min_ms\": ")
+				.append(String.format(Locale.ROOT, "%.2f", res.minRtt()))
+				.append(",\n");
+			sb.append("      \"rtt_avg_ms\": ")
+				.append(String.format(Locale.ROOT, "%.2f", res.avgRtt()))
+				.append(",\n");
+			sb.append("      \"rtt_max_ms\": ").append(String.format(Locale.ROOT, "%.2f", res.maxRtt()));
 
 			if (res.tls() != null) {
 				sb.append(",\n      \"tls\": {\n");
@@ -662,7 +676,7 @@ class Reach implements Callable<Integer> {
 				if (res.http().error() == null) {
 					sb.append("        \"status\": ").append(res.http().statusCode()).append(",\n");
 					sb.append("        \"ttfb_ms\": ")
-						.append(String.format("%.2f", res.http().ttfbMs()))
+						.append(String.format(Locale.ROOT, "%.2f", res.http().ttfbMs()))
 						.append(",\n");
 					sb.append("        \"server\": ").append(jsonStr(res.http().serverHeader())).append("\n");
 				} else {

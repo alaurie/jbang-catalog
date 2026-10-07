@@ -150,6 +150,88 @@ public class FetchTest {
 	}
 
 	@Test
+	void testOversizedManifestFallsThroughToValidChecksum(@TempDir Path tempDir) throws Exception {
+		byte[] payload = "trusted payload".getBytes(StandardCharsets.UTF_8);
+		byte[] huge = ("#" + "x".repeat(65536) + "\n" + "0".repeat(128) + "  payload.dat\n")
+			.getBytes(StandardCharsets.UTF_8);
+		byte[] valid = (HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(payload))
+				+ "  payload.dat\n")
+			.getBytes(StandardCharsets.UTF_8);
+		var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		server.createContext("/payload.dat", exchange -> {
+			exchange.sendResponseHeaders(200, payload.length);
+			try (var out = exchange.getResponseBody()) {
+				out.write(payload);
+			}
+		});
+		server.createContext("/SHA512SUMS", exchange -> {
+			exchange.sendResponseHeaders(200, huge.length);
+			try (var out = exchange.getResponseBody()) {
+				out.write(huge);
+			}
+		});
+		server.createContext("/SHA256SUMS", exchange -> {
+			exchange.sendResponseHeaders(200, valid.length);
+			try (var out = exchange.getResponseBody()) {
+				out.write(valid);
+			}
+		});
+		server.start();
+		try {
+			Path dest = tempDir.resolve("payload.dat");
+			var result = runCommand("http://127.0.0.1:" + server.getAddress().getPort() + "/payload.dat",
+					"-o", dest.toString());
+			assertEquals(0, result.exitCode(), result.stderr());
+			assertEquals("trusted payload", Files.readString(dest));
+			assertTrue(result.stdout().contains("SHA256SUMS"));
+		} finally {
+			server.stop(0);
+		}
+	}
+
+	@Test
+	void testSlowManifestFallsThroughToValidChecksum(@TempDir Path tempDir) throws Exception {
+		byte[] payload = "trusted payload".getBytes(StandardCharsets.UTF_8);
+		byte[] bad = ("0".repeat(128) + "  payload.dat\n").getBytes(StandardCharsets.UTF_8);
+		byte[] valid = (HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(payload))
+				+ "  payload.dat\n")
+			.getBytes(StandardCharsets.UTF_8);
+		var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		server.createContext("/payload.dat", exchange -> {
+			exchange.sendResponseHeaders(200, payload.length);
+			try (var out = exchange.getResponseBody()) {
+				out.write(payload);
+			}
+		});
+		server.createContext("/SHA512SUMS", exchange -> {
+			exchange.sendResponseHeaders(200, bad.length);
+			try (var out = exchange.getResponseBody()) {
+				Thread.sleep(java.time.Duration.ofSeconds(4));
+				out.write(bad);
+			} catch (InterruptedException _) {
+				Thread.currentThread().interrupt();
+			}
+		});
+		server.createContext("/SHA256SUMS", exchange -> {
+			exchange.sendResponseHeaders(200, valid.length);
+			try (var out = exchange.getResponseBody()) {
+				out.write(valid);
+			}
+		});
+		server.start();
+		try {
+			Path dest = tempDir.resolve("payload.dat");
+			var result = runCommand("http://127.0.0.1:" + server.getAddress().getPort() + "/payload.dat",
+					"-o", dest.toString());
+			assertEquals(0, result.exitCode(), result.stderr());
+			assertEquals("trusted payload", Files.readString(dest));
+			assertTrue(result.stdout().contains("SHA256SUMS"));
+		} finally {
+			server.stop(0);
+		}
+	}
+
+	@Test
 	void testQuietMode(@TempDir Path tempDir) throws Exception {
 		byte[] testData = "Quiet download payload".getBytes(StandardCharsets.UTF_8);
 		var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -251,7 +333,8 @@ public class FetchTest {
 			assertFalse(Files.exists(partFile), ".part should be removed after completion");
 			assertFalse(Files.exists(metaFile), ".part.meta should be removed after completion");
 
-			assertEquals(sha256Hex, sha256Of(destFile), "Final file checksum must match after resumption");
+			assertEquals(sha256Hex, sha256Of(destFile),
+					"Final file checksum must match after resumption");
 		} finally {
 			goodServer.stop(0);
 		}
@@ -277,8 +360,8 @@ public class FetchTest {
 		int port = server1.getAddress().getPort();
 
 		try {
-			var result1 = runCommand("http://127.0.0.1:" + port + "/multi.dat", "-o",
-					destFile.toString(), "-c", "4", "--expected-hash", sha256Hex);
+			var result1 = runCommand("http://127.0.0.1:" + port + "/multi.dat", "-o", destFile.toString(),
+					"-c", "4", "--expected-hash", sha256Hex);
 			assertTrue(result1.exitCode() != 0, "Run 1 should fail");
 			assertTrue(Files.exists(partFile));
 			assertTrue(Files.exists(metaFile));
@@ -292,8 +375,8 @@ public class FetchTest {
 		server2.start();
 
 		try {
-			var result2 = runCommand("http://127.0.0.1:" + port + "/multi.dat", "-o",
-					destFile.toString(), "-c", "4", "--expected-hash", sha256Hex);
+			var result2 = runCommand("http://127.0.0.1:" + port + "/multi.dat", "-o", destFile.toString(),
+					"-c", "4", "--expected-hash", sha256Hex);
 			assertTrue(result2.exitCode() != 0, "Run 2 should fail");
 			assertTrue(Files.exists(partFile));
 			assertTrue(Files.exists(metaFile));
@@ -307,15 +390,16 @@ public class FetchTest {
 		server3.start();
 
 		try {
-			var result3 = runCommand("http://127.0.0.1:" + port + "/multi.dat", "-o",
-					destFile.toString(), "-c", "4", "--expected-hash", sha256Hex);
+			var result3 = runCommand("http://127.0.0.1:" + port + "/multi.dat", "-o", destFile.toString(),
+					"-c", "4", "--expected-hash", sha256Hex);
 			assertEquals(0, result3.exitCode(), "Run 3 should complete: " + result3.stderr());
 			assertTrue(result3.stdout().contains("Resuming download"));
 			assertTrue(Files.exists(destFile));
 			assertFalse(Files.exists(partFile));
 			assertFalse(Files.exists(metaFile));
 
-			assertEquals(sha256Hex, sha256Of(destFile), "Final hash must match perfectly after multiple interruptions");
+			assertEquals(sha256Hex, sha256Of(destFile),
+					"Final hash must match perfectly after multiple interruptions");
 		} finally {
 			server3.stop(0);
 		}
@@ -376,12 +460,10 @@ public class FetchTest {
 		try {
 			int port = server.getAddress().getPort();
 			Path destFile = tempDir.resolve("auth-file.txt");
-			var result = runCommand("http://127.0.0.1:" + port + "/auth-file.txt",
-					"-o", destFile.toString(),
-					"-H", "X-Custom-Auth: SecretToken123",
-					"-A", "TestFetcher/1.0",
-					"--no-checksum");
-			assertEquals(0, result.exitCode(), "Download should succeed with valid auth headers: " + result.stderr());
+			var result = runCommand("http://127.0.0.1:" + port + "/auth-file.txt", "-o", destFile.toString(), "-H",
+					"X-Custom-Auth: SecretToken123", "-A", "TestFetcher/1.0", "--no-checksum");
+			assertEquals(0, result.exitCode(),
+					"Download should succeed with valid auth headers: " + result.stderr());
 			assertEquals("Secure payload requiring custom header", Files.readString(destFile));
 		} finally {
 			server.stop(0);
@@ -404,13 +486,88 @@ public class FetchTest {
 			int port = server.getAddress().getPort();
 			Path destFile = tempDir.resolve("wrong-hash.txt");
 			String wrongHash = "0000000000000000000000000000000000000000000000000000000000000000";
-			var result = runCommand("http://127.0.0.1:" + port + "/wrong-hash.txt",
-					"-o", destFile.toString(),
-					"--expected-hash", wrongHash);
+			var result = runCommand("http://127.0.0.1:" + port + "/wrong-hash.txt", "-o",
+					destFile.toString(), "--expected-hash", wrongHash);
 			assertEquals(1, result.exitCode(), "Download should fail on hash mismatch");
 			assertTrue(result.stdout().contains("FAILED") || result.stderr().contains("Expected:"));
+			assertFalse(Files.exists(destFile), "A failed checksum must not publish the .part file");
+			assertEquals("Payload with wrong hash verification",
+					Files.readString(Path.of(destFile + ".part")));
 		} finally {
 			server.stop(0);
+		}
+	}
+
+	@Test
+	void testFailedRangedChecksumKeepsDestinationAndResumablePart(@TempDir Path tempDir)
+			throws Exception {
+		byte[] payload = "Verified new payload".getBytes(StandardCharsets.UTF_8);
+		Path destFile = tempDir.resolve("replacement.dat");
+		Path partFile = Path.of(destFile + ".part");
+		Path metaFile = Path.of(partFile + ".meta");
+		Files.writeString(destFile, "Original destination");
+		var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		server.createContext("/replacement.dat", new RangeHttpHandler(payload, 0));
+		server.start();
+
+		try {
+			String url = "http://127.0.0.1:" + server.getAddress().getPort() + "/replacement.dat";
+			var rejected = runCommand(url, "-o", destFile.toString(), "--expected-hash", "0".repeat(64));
+			assertEquals(1, rejected.exitCode());
+			assertEquals("Original destination", Files.readString(destFile));
+			assertEquals("Verified new payload", Files.readString(partFile));
+			assertTrue(Files.exists(metaFile),
+					"Completed ranged download metadata survives failed verification");
+
+			var accepted = runCommand(url, "-o", destFile.toString(), "--expected-hash",
+					HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(payload)));
+			assertEquals(0, accepted.exitCode(), accepted.stderr());
+			assertEquals("Verified new payload", Files.readString(destFile));
+			assertFalse(Files.exists(partFile));
+			assertFalse(Files.exists(metaFile));
+		} finally {
+			server.stop(0);
+		}
+	}
+
+	@Test
+	void testRejectsMismatchedContentRangesBeforeWriting(@TempDir Path tempDir) throws Exception {
+		byte[] payload = "abcdefgh".getBytes(StandardCharsets.UTF_8);
+		for (String badRange : new String[] { null, "bytes 1-7/8", "bytes 0-6/8", "bytes 0-7/9",
+				"bytes */8", "bytes 999999999999999999999-7/8" }) {
+			var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+			server.createContext("/ranges.dat", exchange -> {
+				if ("HEAD".equals(exchange.getRequestMethod())) {
+					exchange.getResponseHeaders().set("Accept-Ranges", "bytes");
+					exchange.getResponseHeaders().set("Content-Length", String.valueOf(payload.length));
+					exchange.getResponseHeaders().set("ETag", "\"range-test\"");
+					exchange.sendResponseHeaders(200, -1);
+					exchange.close();
+					return;
+				}
+				exchange.getResponseHeaders().set("ETag", "\"range-test\"");
+				if (badRange != null) {
+					exchange.getResponseHeaders().set("Content-Range", badRange);
+				}
+				exchange.sendResponseHeaders(206, payload.length);
+				try (var out = exchange.getResponseBody()) {
+					out.write(payload);
+				}
+			});
+			server.start();
+			try {
+				Path destFile = tempDir.resolve("ranges.dat");
+				Files.writeString(destFile, "original");
+				var result = runCommand("http://127.0.0.1:" + server.getAddress().getPort() + "/ranges.dat",
+						"-o", destFile.toString(), "-c", "1", "--no-checksum", "--no-resume");
+				assertEquals(1, result.exitCode(), String.valueOf(badRange));
+				assertTrue(result.stderr().contains("Invalid Content-Range"), String.valueOf(badRange));
+				assertEquals("original", Files.readString(destFile), String.valueOf(badRange));
+				assertEquals(0, Files.size(Path.of(destFile + ".part")), String.valueOf(badRange));
+				assertTrue(Files.exists(Path.of(destFile + ".part.meta")), String.valueOf(badRange));
+			} finally {
+				server.stop(0);
+			}
 		}
 	}
 
@@ -423,11 +580,160 @@ public class FetchTest {
 		try {
 			int port = server.getAddress().getPort();
 			Path destFile = tempDir.resolve("not-found.txt");
-			var result = runCommand("http://127.0.0.1:" + port + "/not-found.txt",
-					"-o", destFile.toString(),
-					"--no-checksum");
+			var result = runCommand("http://127.0.0.1:" + port + "/not-found.txt", "-o",
+					destFile.toString(), "--no-checksum");
 			assertEquals(1, result.exitCode());
 			assertTrue(result.stderr().contains("404") || result.stdout().contains("404"));
+		} finally {
+			server.stop(0);
+		}
+	}
+
+	@Test
+	void testAutoProbeReportsMissingManifest(@TempDir Path tempDir) throws Exception {
+		byte[] payload = "unverified payload".getBytes(StandardCharsets.UTF_8);
+		var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		server.createContext("/", exchange -> {
+			if (!"/payload.dat".equals(exchange.getRequestURI().getPath())) {
+				exchange.sendResponseHeaders(404, -1);
+				exchange.close();
+				return;
+			}
+			if ("HEAD".equals(exchange.getRequestMethod())) {
+				exchange.getResponseHeaders().set("Content-Length", String.valueOf(payload.length));
+				exchange.sendResponseHeaders(200, -1);
+				exchange.close();
+				return;
+			}
+			exchange.sendResponseHeaders(200, payload.length);
+			try (var out = exchange.getResponseBody()) {
+				out.write(payload);
+			}
+		});
+		server.start();
+		try {
+			Path destination = tempDir.resolve("payload.dat");
+			var result = runCommand("http://127.0.0.1:" + server.getAddress().getPort() + "/payload.dat",
+					"-o", destination.toString());
+			assertEquals(0, result.exitCode(), result.stderr());
+			assertEquals("unverified payload", Files.readString(destination));
+			assertTrue(result.stdout().contains("No matching checksum manifest detected"));
+		} finally {
+			server.stop(0);
+		}
+	}
+
+	@Test
+	void testResumeRequiresMatchingStrongEtag(@TempDir Path tempDir) throws Exception {
+		for (String headEtag : new String[] { "", "W/\"old\"", "\"new\"", "\"old\"" }) {
+			var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+			var requestedRange = new java.util.concurrent.atomic.AtomicReference<String>();
+			var ifMatch = new java.util.concurrent.atomic.AtomicReference<String>();
+			byte[] payload = "abcdefgh".getBytes(StandardCharsets.UTF_8);
+			server.createContext("/entity.dat", exchange -> {
+				exchange.getResponseHeaders().set("Accept-Ranges", "bytes");
+				exchange.getResponseHeaders().set("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT");
+				if (!headEtag.isEmpty()) {
+					exchange.getResponseHeaders().set("ETag", headEtag);
+				}
+				if ("HEAD".equals(exchange.getRequestMethod())) {
+					exchange.getResponseHeaders().set("Content-Length", String.valueOf(payload.length));
+					exchange.sendResponseHeaders(200, -1);
+					exchange.close();
+					return;
+				}
+				String range = exchange.getRequestHeaders().getFirst("Range");
+				requestedRange.set(range);
+				ifMatch.set(exchange.getRequestHeaders().getFirst("If-Match"));
+				int start = range == null ? 0 : Integer.parseInt(range.substring(6, range.indexOf('-')));
+				if (range != null) {
+					exchange.getResponseHeaders().set("Content-Range", "bytes " + start + "-7/8");
+				}
+				exchange.sendResponseHeaders(range == null ? 200 : 206, payload.length - start);
+				try (var out = exchange.getResponseBody()) {
+					out.write(payload, start, payload.length - start);
+				}
+			});
+			server.start();
+			try {
+				String url = "http://127.0.0.1:" + server.getAddress().getPort() + "/entity.dat";
+				Path destination = tempDir.resolve("entity.dat");
+				Files.writeString(Path.of(destination + ".part"), headEtag.equals("\"old\"") ? "abcd" : "OLD!");
+				Files.writeString(Path.of(destination + ".part.meta"),
+						"version=1\nuri=" + url
+								+ "\ncontentLength=8\netag=\"old\"\nlastModified=Wed, 21 Oct 2015 07:28:00 GMT"
+								+ "\nchunks=1\nchunk=0,0,7,4\n");
+				var result = runCommand(url, "-o", destination.toString(), "-c", "1", "--no-checksum");
+				assertEquals(0, result.exitCode(), headEtag + ": " + result.stderr());
+				assertEquals("abcdefgh", Files.readString(destination), headEtag);
+				if ("\"old\"".equals(headEtag)) {
+					assertTrue(result.stdout().contains("Resuming download"));
+					assertEquals("bytes=4-7", requestedRange.get());
+					assertEquals("\"old\"", ifMatch.get());
+				} else {
+					assertFalse(result.stdout().contains("Resuming download"), headEtag);
+					if ("\"new\"".equals(headEtag)) {
+						assertEquals("bytes=0-7", requestedRange.get());
+						assertEquals("\"new\"", ifMatch.get());
+					} else {
+						assertEquals(null, requestedRange.get(), headEtag);
+					}
+				}
+			} finally {
+				server.stop(0);
+			}
+		}
+	}
+
+	@Test
+	void testRangedEntityChangeIsRejectedBeforeWriting(@TempDir Path tempDir) throws Exception {
+		Path destination = tempDir.resolve("entity.dat");
+		var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		server.createContext("/entity.dat", exchange -> {
+			exchange.getResponseHeaders().set("Accept-Ranges", "bytes");
+			exchange.getResponseHeaders().set("Content-Length", "8");
+			if ("HEAD".equals(exchange.getRequestMethod())) {
+				exchange.getResponseHeaders().set("ETag", "\"before\"");
+				exchange.sendResponseHeaders(200, -1);
+				exchange.close();
+				return;
+			}
+			exchange.getResponseHeaders().set("ETag", "\"after\"");
+			exchange.getResponseHeaders().set("Content-Range", "bytes 0-7/8");
+			exchange.sendResponseHeaders(206, 8);
+			try (var out = exchange.getResponseBody()) {
+				out.write("new data".getBytes(StandardCharsets.UTF_8));
+			}
+		});
+		server.start();
+		try {
+			Files.writeString(destination, "original");
+			var result = runCommand("http://127.0.0.1:" + server.getAddress().getPort() + "/entity.dat",
+					"-o", destination.toString(), "-c", "1", "--no-checksum");
+			assertEquals(1, result.exitCode());
+			assertTrue(result.stderr().contains("ETag changed"));
+			assertEquals("original", Files.readString(destination));
+			assertEquals(0, Files.size(Path.of(destination + ".part")));
+		} finally {
+			server.stop(0);
+		}
+	}
+
+	@Test
+	void testLargeRangedTransferSpansSeveralBufferReads(@TempDir Path tempDir) throws Exception {
+		byte[] payload = new byte[512 * 1024 + 17];
+		for (int i = 0; i < payload.length; i++) {
+			payload[i] = (byte) (i % 251);
+		}
+		var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		server.createContext("/large.dat", new RangeHttpHandler(payload, 0));
+		server.start();
+		try {
+			Path destination = tempDir.resolve("large.dat");
+			var result = runCommand("http://127.0.0.1:" + server.getAddress().getPort() + "/large.dat",
+					"-o", destination.toString(), "-c", "1", "--no-checksum");
+			assertEquals(0, result.exitCode(), result.stderr());
+			assertTrue(java.util.Arrays.equals(payload, Files.readAllBytes(destination)));
 		} finally {
 			server.stop(0);
 		}
@@ -462,6 +768,7 @@ public class FetchTest {
 				exchange.getResponseHeaders().set("Accept-Ranges", "bytes");
 				exchange.getResponseHeaders().set("Content-Length", String.valueOf(data.length));
 				exchange.getResponseHeaders().set("ETag", "\"test-etag-123\"");
+				exchange.getResponseHeaders().set("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT");
 				exchange.sendResponseHeaders(200, -1);
 				exchange.close();
 				return;
@@ -481,6 +788,7 @@ public class FetchTest {
 						.set("Content-Range",
 								"bytes " + start + "-" + end + "/" + data.length);
 					exchange.getResponseHeaders().set("Content-Type", "application/octet-stream");
+					exchange.getResponseHeaders().set("ETag", "\"test-etag-123\"");
 					exchange.sendResponseHeaders(206, length);
 					try (var os = exchange.getResponseBody()) {
 						os.write(data, start, partial);
@@ -493,6 +801,7 @@ public class FetchTest {
 					.set("Content-Range",
 							"bytes " + start + "-" + end + "/" + data.length);
 				exchange.getResponseHeaders().set("Content-Type", "application/octet-stream");
+				exchange.getResponseHeaders().set("ETag", "\"test-etag-123\"");
 				exchange.sendResponseHeaders(206, length);
 				try (var os = exchange.getResponseBody()) {
 					os.write(data, start, length);

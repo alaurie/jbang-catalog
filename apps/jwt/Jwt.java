@@ -10,7 +10,11 @@ package jwt;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -24,6 +28,7 @@ import javax.crypto.spec.SecretKeySpec;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -107,19 +112,29 @@ class Jwt implements Callable<Integer> {
 			return 1;
 		}
 
+		var headerMap = parseJsonObject(headerJson);
+		var payloadMap = parseJsonObject(payloadJson);
+		if (headerMap == null || payloadMap == null) {
+			System.err.println("Error: Invalid JSON in JWT header or payload.");
+			return 1;
+		}
+
+		if (secret != null) {
+			var alg = headerMap.get("alg") instanceof String name ? name : "";
+			if (signatureStr.isEmpty() || !verifyHmacSignature(parts[0] + "." + parts[1], signatureStr, secret, alg)) {
+				System.err.println("Error: JWT signature verification failed.");
+				return 1;
+			}
+		}
+
 		if (headerOnly) {
-			System.out.println(prettyPrintJson(headerJson));
+			System.out.println(prettyFormat(headerMap, 0));
 			return 0;
 		}
 
 		if (payloadOnly) {
-			System.out.println(prettyPrintJson(payloadJson));
+			System.out.println(prettyFormat(payloadMap, 0));
 			return 0;
-		}
-
-		Map<String, Object> payloadMap = parseJsonObject(payloadJson);
-		if (payloadMap == null) {
-			payloadMap = Map.of();
 		}
 
 		if (exportEnv) {
@@ -153,10 +168,10 @@ class Jwt implements Callable<Integer> {
 		}
 
 		System.out.println("=== HEADER ===");
-		System.out.println(prettyPrintJson(headerJson));
+		System.out.println(prettyFormat(headerMap, 0));
 
 		System.out.println("\n=== PAYLOAD ===");
-		System.out.println(prettyPrintJson(payloadJson));
+		System.out.println(prettyFormat(payloadMap, 0));
 
 		System.out.println("\n=== CLAIMS SUMMARY ===");
 		printClaimTimestamp(payloadMap, "iat", "Issued At", nowSec);
@@ -172,24 +187,14 @@ class Jwt implements Callable<Integer> {
 			System.out.println("Audience (aud):  " + formatJsonValue(payloadMap.get("aud")));
 		}
 		System.out.println("\n=== SIGNATURE ===");
-		if (signatureStr.isBlank()) {
+		if (signatureStr.isEmpty()) {
 			System.out.println("[Unsigned Token]");
 		} else {
 			System.out.println(signatureStr);
-			if (secret != null && !secret.isBlank()) {
-				var headerMap = parseJsonObject(headerJson);
-				var alg = (headerMap != null && headerMap.get("alg") != null) ? headerMap.get("alg").toString()
-						: "";
-				var verified = verifyHmacSignature(parts[0] + "." + parts[1], signatureStr, secret, alg);
-				if (verified) {
-					System.out.println("Signature Verification: OK (HMAC " + alg + ")");
-				} else {
-					System.out.println("Signature Verification: FAILED (HMAC " + alg + " mismatch)");
-					return 1;
-				}
+			if (secret != null) {
+				System.out.println("Signature Verification: OK (HMAC " + headerMap.get("alg") + ")");
 			}
 		}
-
 		return isExpired ? 1 : 0;
 	}
 
@@ -203,7 +208,7 @@ class Jwt implements Callable<Integer> {
 	/// @return `true` if signature matches, `false` otherwise.
 	private static boolean verifyHmacSignature(String signingInput, String signature,
 			String secretKey, String alg) {
-		String hmacAlg = switch (alg.toUpperCase()) {
+		String hmacAlg = switch (alg.toUpperCase(Locale.ROOT)) {
 		case "HS256" -> "HmacSHA256";
 		case "HS384" -> "HmacSHA384";
 		case "HS512" -> "HmacSHA512";
@@ -219,25 +224,31 @@ class Jwt implements Callable<Integer> {
 			var keySpec = new SecretKeySpec(secretKey.getBytes(StandardCharsets.UTF_8), hmacAlg);
 			mac.init(keySpec);
 			var computedBytes = mac.doFinal(signingInput.getBytes(StandardCharsets.UTF_8));
-			var computedSignature = Base64.getUrlEncoder().withoutPadding().encodeToString(computedBytes);
-			return computedSignature.equals(signature.replace("=", ""));
+			return MessageDigest.isEqual(computedBytes, Base64.getUrlDecoder().decode(signature));
 		} catch (Exception e) {
 			return false;
 		}
 	}
 
 	private static void exportPayloadAsEnv(Map<String, Object> payload) {
-		var isWindows = System.getProperty("os.name", "").toLowerCase().contains("win");
+		var isWindows = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
 		for (var entry : payload.entrySet()) {
 			var key = entry.getKey();
-			var envKey = key.replaceAll("([a-z])([A-Z])", "$1_$2").replaceAll("[^a-zA-Z0-9_]", "_").toUpperCase();
+			var envKey = key.replaceAll("([a-z])([A-Z])", "$1_$2")
+				.replaceAll("[^a-zA-Z0-9_]", "_")
+				.toUpperCase(Locale.ROOT);
+			if (envKey.isEmpty() || Character.isDigit(envKey.charAt(0))) {
+				envKey = "_" + envKey;
+			}
 			var value = entry.getValue();
 			var valStr = value instanceof String s ? s : formatJsonValue(value);
 
 			if (isWindows) {
-				System.out.printf("SET %s=%s%n", envKey, valStr);
+				// PowerShell literals avoid cmd.exe's %, !, and metacharacter expansion.
+				System.out.printf("[Environment]::SetEnvironmentVariable('%s', '%s', 'Process')%n",
+						envKey, valStr.replace("'", "''"));
 			} else {
-				System.out.printf("export %s=\"%s\"%n", envKey, valStr.replace("\"", "\\\""));
+				System.out.printf("export %s='%s'%n", envKey, valStr.replace("'", "'\"'\"'"));
 			}
 		}
 	}
@@ -275,31 +286,22 @@ class Jwt implements Callable<Integer> {
 	private static String decodePart(String part) {
 		try {
 			var bytes = Base64.getUrlDecoder().decode(part);
-			return new String(bytes, StandardCharsets.UTF_8);
-		} catch (IllegalArgumentException e) {
+			return StandardCharsets.UTF_8.newDecoder()
+				.onMalformedInput(CodingErrorAction.REPORT)
+				.onUnmappableCharacter(CodingErrorAction.REPORT)
+				.decode(ByteBuffer.wrap(bytes))
+				.toString();
+		} catch (IllegalArgumentException | CharacterCodingException e) {
 			return null;
-		}
-	}
-
-	/// Formats raw JSON string into pretty indented JSON string.
-	///
-	/// @param rawJson Raw JSON string.
-	/// @return Indented JSON string or original string if parsing fails.
-	private static String prettyPrintJson(String rawJson) {
-		try {
-			Object parsed = parseJson(rawJson.trim());
-			return prettyFormat(parsed, 0);
-		} catch (Exception e) {
-			return rawJson;
 		}
 	}
 
 	@SuppressWarnings("unchecked")
 	private static Map<String, Object> parseJsonObject(String json) {
 		try {
-			Object obj = parseJson(json.trim());
+			Object obj = parseJson(json);
 			return (obj instanceof Map<?, ?> m) ? (Map<String, Object>) m : null;
-		} catch (Exception _) {
+		} catch (IllegalArgumentException _) {
 			return null;
 		}
 	}
@@ -388,13 +390,16 @@ class Jwt implements Callable<Integer> {
 			skipWhitespace();
 			Object val = parseValue();
 			skipWhitespace();
+			if (pos != src.length()) {
+				throw new IllegalArgumentException("Trailing JSON content");
+			}
 			return val;
 		}
 
 		private Object parseValue() {
 			skipWhitespace();
 			if (pos >= src.length())
-				return null;
+				throw new IllegalArgumentException("Missing JSON value");
 			char c = src.charAt(pos);
 			if (c == '{')
 				return parseObject();
@@ -415,60 +420,50 @@ class Jwt implements Callable<Integer> {
 			Map<String, Object> map = new LinkedHashMap<>();
 			pos++; // skip '{'
 			skipWhitespace();
-			if (pos < src.length() && src.charAt(pos) == '}') {
-				pos++;
+			if (consume('}'))
 				return map;
-			}
-			while (pos < src.length()) {
+			do {
 				skipWhitespace();
 				String key = parseString();
 				skipWhitespace();
-				if (pos < src.length() && src.charAt(pos) == ':') {
-					pos++;
-				}
-				Object val = parseValue();
-				map.put(key, val);
+				expect(':');
+				if (map.containsKey(key))
+					throw new IllegalArgumentException("Duplicate JSON key");
+				map.put(key, parseValue());
 				skipWhitespace();
-				if (pos < src.length() && src.charAt(pos) == ',') {
-					pos++;
-				} else if (pos < src.length() && src.charAt(pos) == '}') {
-					pos++;
-					break;
-				}
-			}
-			return map;
+				if (consume('}'))
+					return map;
+				expect(',');
+			} while (true);
 		}
 
 		private List<Object> parseArray() {
 			List<Object> list = new ArrayList<>();
 			pos++; // skip '['
 			skipWhitespace();
-			if (pos < src.length() && src.charAt(pos) == ']') {
-				pos++;
+			if (consume(']'))
 				return list;
-			}
-			while (pos < src.length()) {
+			do {
 				list.add(parseValue());
 				skipWhitespace();
-				if (pos < src.length() && src.charAt(pos) == ',') {
-					pos++;
-				} else if (pos < src.length() && src.charAt(pos) == ']') {
-					pos++;
-					break;
-				}
-			}
-			return list;
+				if (consume(']'))
+					return list;
+				expect(',');
+			} while (true);
 		}
 
 		private String parseString() {
-			pos++; // skip opening quote
+			expect('"');
 			var sb = new StringBuilder();
 			while (pos < src.length()) {
 				char c = src.charAt(pos++);
-				if (c == '"') {
+				if (c == '"')
 					return sb.toString();
-				}
-				if (c == '\\' && pos < src.length()) {
+				if (c < 0x20)
+					throw new IllegalArgumentException("Unescaped JSON control character");
+				if (c == '\\') {
+					if (pos >= src.length())
+						throw new IllegalArgumentException("Incomplete JSON escape");
 					char esc = src.charAt(pos++);
 					switch (esc) {
 					case '"' -> sb.append('"');
@@ -480,18 +475,24 @@ class Jwt implements Callable<Integer> {
 					case 'r' -> sb.append('\r');
 					case 't' -> sb.append('\t');
 					case 'u' -> {
-						if (pos + 4 <= src.length()) {
-							sb.append((char) Integer.parseInt(src.substring(pos, pos + 4), 16));
-							pos += 4;
+						if (pos + 4 > src.length())
+							throw new IllegalArgumentException("Incomplete JSON unicode escape");
+						for (int i = pos; i < pos + 4; i++) {
+							char hex = src.charAt(i);
+							if (!((hex >= '0' && hex <= '9') || (hex >= 'a' && hex <= 'f')
+									|| (hex >= 'A' && hex <= 'F')))
+								throw new IllegalArgumentException("Invalid JSON unicode escape");
 						}
+						sb.append((char) Integer.parseInt(src.substring(pos, pos + 4), 16));
+						pos += 4;
 					}
-					default -> sb.append(esc);
+					default -> throw new IllegalArgumentException("Invalid JSON escape");
 					}
 				} else {
 					sb.append(c);
 				}
 			}
-			return sb.toString();
+			throw new IllegalArgumentException("Unterminated JSON string");
 		}
 
 		private Boolean parseBoolean() {
@@ -516,22 +517,63 @@ class Jwt implements Callable<Integer> {
 
 		private Number parseNumber() {
 			int start = pos;
-			if (src.charAt(pos) == '-')
-				pos++;
-			while (pos < src.length()
-					&& (Character.isDigit(src.charAt(pos)) || src.charAt(pos) == '.' || src.charAt(pos) == 'e'
-							|| src.charAt(pos) == 'E' || src.charAt(pos) == '+' || src.charAt(pos) == '-')) {
-				pos++;
+			consume('-');
+			if (consume('0')) {
+				// A leading zero cannot be followed by another digit.
+			} else {
+				if (pos >= src.length() || src.charAt(pos) < '1' || src.charAt(pos) > '9')
+					throw new IllegalArgumentException("Invalid JSON number");
+				while (digit())
+					pos++;
 			}
-			String numStr = src.substring(start, pos);
-			if (numStr.contains(".") || numStr.contains("e") || numStr.contains("E")) {
-				return Double.parseDouble(numStr);
+			boolean decimal = false;
+			if (consume('.')) {
+				decimal = true;
+				if (!digit())
+					throw new IllegalArgumentException("Invalid JSON fraction");
+				while (digit())
+					pos++;
 			}
-			return Long.parseLong(numStr);
+			if (consume('e') || consume('E')) {
+				decimal = true;
+				if (!consume('+'))
+					consume('-');
+				if (!digit())
+					throw new IllegalArgumentException("Invalid JSON exponent");
+				while (digit())
+					pos++;
+			}
+			String number = src.substring(start, pos);
+			if (!decimal) {
+				try {
+					return Long.parseLong(number);
+				} catch (NumberFormatException _) {
+					// Valid JSON integers can exceed a long.
+				}
+			}
+			return new java.math.BigDecimal(number);
+		}
+
+		private boolean digit() {
+			return pos < src.length() && src.charAt(pos) >= '0' && src.charAt(pos) <= '9';
+		}
+
+		private boolean consume(char c) {
+			if (pos < src.length() && src.charAt(pos) == c) {
+				pos++;
+				return true;
+			}
+			return false;
+		}
+
+		private void expect(char c) {
+			if (!consume(c))
+				throw new IllegalArgumentException("Expected JSON '" + c + "'");
 		}
 
 		private void skipWhitespace() {
-			while (pos < src.length() && Character.isWhitespace(src.charAt(pos))) {
+			while (pos < src.length() && (src.charAt(pos) == ' ' || src.charAt(pos) == '\t'
+					|| src.charAt(pos) == '\r' || src.charAt(pos) == '\n')) {
 				pos++;
 			}
 		}

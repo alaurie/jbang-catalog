@@ -105,6 +105,21 @@ public class InstallNativeTest {
 	}
 
 	@Test
+	void testCleanReportsFailedDeletionAndContinues(@TempDir Path tempDir) throws Exception {
+		var suffix = System.getProperty("os.name").toLowerCase().contains("win") ? ".exe" : "";
+		var undeletable = Files.createDirectory(tempDir.resolve("digest" + suffix));
+		Files.writeString(undeletable.resolve("keep"), "not empty");
+		var removable = Files.writeString(tempDir.resolve("jwt" + suffix), "binary");
+
+		var result = runCommand("--clean", "-d", tempDir.toString(), "digest", "jwt");
+		assertEquals(1, result.exitCode());
+		assertTrue(result.stderr().contains("Error removing digest" + suffix));
+		assertTrue(result.stdout().contains("1 removed, 0 not found, 1 failed"));
+		assertTrue(Files.exists(undeletable.resolve("keep")));
+		assertFalse(Files.exists(removable));
+	}
+
+	@Test
 	void testCleanWithCatalogQualifier(@TempDir Path tempDir) throws Exception {
 		Path dummyNudge = tempDir.resolve("nudge");
 		Files.writeString(dummyNudge, "dummy binary");
@@ -172,7 +187,7 @@ public class InstallNativeTest {
 	void testCleanWhenNoFilesPresent(@TempDir Path tempDir) {
 		var result = runCommand("-c", "-d", tempDir.toString(), "digest");
 		assertEquals(0, result.exitCode());
-		assertTrue(result.stdout().contains("Clean complete: 0 removed, 1 not found."));
+		assertTrue(result.stdout().contains("Clean complete: 0 removed, 1 not found, 0 failed."));
 	}
 
 	public static void main(String... args) {

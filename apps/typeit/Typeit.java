@@ -27,6 +27,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -52,6 +53,18 @@ class Typeit implements Callable<Integer> {
 	/// Supported keyboard input simulation driver backends.
 	public enum DriverType {
 		AUTO, UINPUT, ROBOT, WTYPE, YDOTOOL
+	}
+
+	private final Supplier<char[]> passwordReader;
+	private final KeyboardDriver inputDriver;
+
+	Typeit() {
+		this(null, null);
+	}
+
+	Typeit(Supplier<char[]> passwordReader, KeyboardDriver inputDriver) {
+		this.passwordReader = passwordReader;
+		this.inputDriver = inputDriver;
 	}
 
 	@Option(names = { "-d", "--delay" }, description = "Countdown delay in seconds before typing starts (default: 5).")
@@ -94,32 +107,44 @@ class Typeit implements Callable<Integer> {
 	@Override
 	public Integer call() {
 		checkEnvironmentWarnings();
+		if (passwordPrompt && (driverType == DriverType.WTYPE || driverType == DriverType.YDOTOOL)) {
+			System.err.println(
+					"Error: Password mode cannot use WTYPE or YDOTOOL: typed text would be exposed in process arguments.");
+			return 1;
+		}
 
-		String textToType = customText;
+		String textToType = passwordPrompt ? null : customText;
 
 		if (passwordPrompt) {
-			var console = System.console();
-			if (console != null) {
-				char[] pwd = console.readPassword("Enter password to type: ");
+			if (passwordReader != null) {
+				var pwd = passwordReader.get();
 				if (pwd != null) {
 					textToType = new String(pwd);
 				}
 			} else {
-				System.err.println("Error: System.console() unavailable for secure password input.");
-				return 1;
+				var console = System.console();
+				if (console == null) {
+					System.err.println("Error: System.console() unavailable for secure password input.");
+					return 1;
+				}
+				var pwd = console.readPassword("Enter password to type: ");
+				if (pwd != null) {
+					textToType = new String(pwd);
+				}
 			}
 		} else if (textToType == null || textToType.isEmpty()) {
 			textToType = readClipboardText();
 		}
 
 		if (textToType == null || textToType.isEmpty()) {
-			System.err.println("Error: Clipboard is empty or contains non-text content.");
+			System.err.println(passwordPrompt ? "Error: Password is empty."
+					: "Error: Clipboard is empty or contains non-text content.");
 			return 1;
 		}
 
 		KeyboardDriver driver;
 		try {
-			driver = createKeyboardDriver();
+			driver = inputDriver != null ? inputDriver : createKeyboardDriver();
 		} catch (Throwable e) {
 			System.err.printf("Error initializing keyboard driver: %s%n", e.getMessage());
 			printDriverHelpHints();
@@ -127,9 +152,9 @@ class Typeit implements Callable<Integer> {
 		}
 
 		try (driver) {
-			String preview = textToType.length() > 30 ? textToType.substring(0, 30) + "..." : textToType;
-			preview = preview.replace("\n", "\\n").replace("\r", "");
 			if (!passwordPrompt) {
+				String preview = textToType.length() > 30 ? textToType.substring(0, 30) + "..." : textToType;
+				preview = preview.replace("\n", "\\n").replace("\r", "");
 				System.out.printf("Text to type: %d characters (\"%s\") [%s driver]%n", textToType.length(),
 						preview, driver.name());
 			} else {
@@ -162,12 +187,12 @@ class Typeit implements Callable<Integer> {
 				}
 				driver.typeChar(ch);
 				typedCount++;
-				if (verbose) {
+				if (verbose && !passwordPrompt) {
 					System.out.print(ch);
 					System.out.flush();
 				}
 			}
-			if (verbose) {
+			if (verbose && !passwordPrompt) {
 				System.out.println();
 			}
 
@@ -193,10 +218,15 @@ class Typeit implements Callable<Integer> {
 				.println("  1. Enable kernel uinput access (recommended for GNOME, KDE, Wayland & X11):");
 			System.err.println("       sudo usermod -aG input $USER");
 			System.err.println("     (Log out and log back in to apply group changes)");
-			System.err.println("  2. Or on wlroots compositors (Sway, Hyprland), install 'wtype':");
-			System.err.println("       sudo apt install wtype   (or pacman -S wtype)");
-			System.err.println("  3. Or start the ydotool background daemon:");
-			System.err.println("       systemctl --user start ydotool");
+			if (passwordPrompt) {
+				System.err
+					.println("  Password mode requires uinput or a working AWT Robot; CLI drivers expose typed text.");
+			} else {
+				System.err.println("  2. Or on wlroots compositors (Sway, Hyprland), install 'wtype':");
+				System.err.println("       sudo apt install wtype   (or pacman -S wtype)");
+				System.err.println("  3. Or start the ydotool background daemon:");
+				System.err.println("       systemctl --user start ydotool");
+			}
 			System.err.println();
 		}
 	}
@@ -248,7 +278,7 @@ class Typeit implements Callable<Integer> {
 					}
 				}
 			}
-			if (isWayland) {
+			if (isWayland && !passwordPrompt) {
 				if (WTypeKeyboardDriver.isAvailable()) {
 					try {
 						return new WTypeKeyboardDriver(speed);
@@ -601,7 +631,7 @@ class Typeit implements Callable<Integer> {
 			case '?' -> sendKey(KEY_SLASH, true);
 			case '`' -> sendKey(KEY_GRAVE, false);
 			case '~' -> sendKey(KEY_GRAVE, true);
-			default -> System.err.printf("Skipping unmappable character: '%c' (0x%04x)%n", c, (int) c);
+			default -> System.err.println("Skipping unmappable character.");
 			}
 		}
 
@@ -860,7 +890,7 @@ class Typeit implements Callable<Integer> {
 			case '?' -> typeShifted(KeyEvent.VK_SLASH);
 			case '`' -> typePlain(KeyEvent.VK_BACK_QUOTE);
 			case '~' -> typeShifted(KeyEvent.VK_BACK_QUOTE);
-			default -> System.err.printf("Skipping unmappable character: '%c' (0x%04x)%n", c, (int) c);
+			default -> System.err.println("Skipping unmappable character.");
 			}
 		}
 

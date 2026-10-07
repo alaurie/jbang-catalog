@@ -17,9 +17,12 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.List;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.Test;
 import org.junit.platform.engine.discovery.DiscoverySelectors;
 import org.junit.platform.launcher.core.LauncherDiscoveryRequestBuilder;
@@ -61,20 +64,19 @@ public class JwtTest {
 	}
 
 	private String createSampleJwt(String secret, long expEpochSeconds) throws Exception {
-		var b64Url = Base64.getUrlEncoder().withoutPadding();
-		var headerJson = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
-		var payloadJson = "{\"sub\":\"1234567890\",\"name\":\"Alex Test\",\"exp\":" + expEpochSeconds + "}";
+		return signedJwt(secret, "{\"alg\":\"HS256\",\"typ\":\"JWT\"}",
+				"{\"sub\":\"1234567890\",\"name\":\"Alex Test\",\"exp\":" + expEpochSeconds + "}");
+	}
 
+	private String signedJwt(String secret, String headerJson, String payloadJson) throws Exception {
+		var b64Url = Base64.getUrlEncoder().withoutPadding();
 		var headerPart = b64Url.encodeToString(headerJson.getBytes(StandardCharsets.UTF_8));
 		var payloadPart = b64Url.encodeToString(payloadJson.getBytes(StandardCharsets.UTF_8));
 		var signingInput = headerPart + "." + payloadPart;
 
 		var mac = Mac.getInstance("HmacSHA256");
 		mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-		var signatureBytes = mac.doFinal(signingInput.getBytes(StandardCharsets.UTF_8));
-		var signaturePart = b64Url.encodeToString(signatureBytes);
-
-		return signingInput + "." + signaturePart;
+		return signingInput + "." + b64Url.encodeToString(mac.doFinal(signingInput.getBytes(StandardCharsets.UTF_8)));
 	}
 
 	@Test
@@ -127,10 +129,39 @@ public class JwtTest {
 		assertEquals(0, successResult.exitCode());
 		assertTrue(successResult.stdout().contains("Signature Verification: OK"));
 
-		// Wrong secret
+		// Wrong secret must not reveal the claims.
 		var failResult = runCommand("-s", "wrongSecret", jwt);
 		assertEquals(1, failResult.exitCode());
-		assertTrue(failResult.stdout().contains("Signature Verification: FAILED"));
+		assertEquals("", failResult.stdout());
+		assertTrue(failResult.stderr().contains("signature verification failed"));
+	}
+
+	@Test
+	void secretRequiresValidSignatureInEveryMode() throws Exception {
+		var signed = createSampleJwt("correctSecret", (System.currentTimeMillis() / 1000) + 3600);
+		var unsigned = signed.substring(0, signed.lastIndexOf('.'));
+		var badSignature = unsigned + ".AA";
+		var modes = List.of("", "--check-exp", "--header-only", "--payload-only", "--env");
+
+		for (var mode : modes) {
+			for (var forged : List.of(unsigned, badSignature)) {
+				var result = mode.isEmpty()
+						? runCommand("--secret", "correctSecret", forged)
+						: runCommand("--secret", "correctSecret", mode, forged);
+				assertEquals(1, result.exitCode(), "Mode " + mode + " accepted a forged JWT");
+				assertEquals("", result.stdout(), "Mode " + mode + " exposed unverified claims");
+				assertTrue(result.stderr().contains("signature verification failed"));
+			}
+			var wrongKey = mode.isEmpty()
+					? runCommand("--secret", "wrongSecret", signed)
+					: runCommand("--secret", "wrongSecret", mode, signed);
+			assertEquals(1, wrongKey.exitCode(), "Mode " + mode + " accepted a bad signature");
+			assertEquals("", wrongKey.stdout(), "Mode " + mode + " exposed unverified claims");
+			var valid = mode.isEmpty()
+					? runCommand("--secret", "correctSecret", signed)
+					: runCommand("--secret", "correctSecret", mode, signed);
+			assertEquals(0, valid.exitCode(), "Mode " + mode + " rejected a signed JWT");
+		}
 	}
 
 	@Test
@@ -150,15 +181,42 @@ public class JwtTest {
 		assertTrue(validResult.stdout().contains("VALID"));
 	}
 
-	@Test
-	void testExportEnv() throws Exception {
-		long futureExp = (System.currentTimeMillis() / 1000) + 3600;
-		String jwt = createSampleJwt("secretKey123", futureExp);
+	private String dangerousEnvToken(String value) throws Exception {
+		var jsonValue = value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
+		return signedJwt("correctSecret", "{\"alg\":\"HS256\"}", "{\"9.bad-key\":\"" + jsonValue + "\"}");
+	}
 
-		var result = runCommand("-e", jwt);
-		assertEquals(0, result.exitCode());
-		assertTrue(result.stdout().contains("NAME=\"Alex Test\"")
-				|| result.stdout().contains("NAME=Alex Test"));
+	@Test
+	@EnabledOnOs({ OS.LINUX, OS.MAC })
+	void posixExportPreservesDangerousValueWithoutExecutingIt() throws Exception {
+		var value = "a\"'\\$HOME $(printf EXECUTED) `printf AGAIN`\n; printf BREAK >&2";
+		var export = runCommand("--secret", "correctSecret", "--env", dangerousEnvToken(value));
+		assertEquals(0, export.exitCode());
+
+		var process = new ProcessBuilder("sh", "-c", "eval \"$1\"; printf '%s' \"$_9_BAD_KEY\"", "sh",
+				export.stdout())
+			.start();
+		var actual = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+		var errors = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+		assertEquals(0, process.waitFor());
+		assertEquals(value, actual);
+		assertEquals("", errors);
+	}
+
+	@Test
+	@EnabledOnOs(OS.WINDOWS)
+	void windowsExportPreservesDangerousValueWithoutExecutingIt() throws Exception {
+		var value = "a\"'\\$HOME $(printf EXECUTED) `printf AGAIN` %PATH% !PATH!\n; Write-Error BREAK";
+		var export = runCommand("--secret", "correctSecret", "--env", dangerousEnvToken(value));
+		assertEquals(0, export.exitCode());
+
+		var script = export.stdout() + "[Console]::Out.Write(${env:_9_BAD_KEY})";
+		var process = new ProcessBuilder("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script).start();
+		var actual = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+		var errors = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+		assertEquals(0, process.waitFor());
+		assertEquals(value, actual);
+		assertEquals("", errors);
 	}
 
 	@Test
@@ -184,6 +242,36 @@ public class JwtTest {
 		var badBase64 = runCommand("???invalid???b64.???invalid???b64.sig");
 		assertEquals(1, badBase64.exitCode());
 		assertTrue(badBase64.stderr().contains("Failed to base64-decode"));
+
+		var invalidUtf8 = Base64.getUrlEncoder()
+			.withoutPadding()
+			.encodeToString(
+					new byte[] { '{', '"', 'x', '"', ':', '"', (byte) 0xff, '"', '}' });
+		var badEncoding = runCommand("e30." + invalidUtf8);
+		assertEquals(1, badEncoding.exitCode());
+		assertTrue(badEncoding.stderr().contains("Failed to base64-decode"));
+	}
+
+	@Test
+	void malformedJsonCannotBecomeVerifiedClaims() throws Exception {
+		var header = "{\"alg\":\"HS256\"}";
+		for (var malformed : List.of(
+				"{} trailing", "{\"x\" 1}", "{\"x\":1,}", "{\"x\":\"\\q\"}",
+				"{\"x\":\"\\u12G4\"}", "{\"x\":01}", "{\"x\":true",
+				"{\"x\":\"line\nbreak\"}", "{\"x\":1 \"y\":2}", "{\"x\":1,\"x\":2}", "[]")) {
+			var signed = signedJwt("correctSecret", header, malformed);
+			for (var mode : List.of("--header-only", "--payload-only", "--check-exp", "--env")) {
+				var result = runCommand("--secret", "correctSecret", mode, signed);
+				assertEquals(1, result.exitCode(), "Accepted malformed payload: " + malformed);
+				assertEquals("", result.stdout());
+				assertTrue(result.stderr().contains("Invalid JSON"));
+			}
+		}
+		var malformedHeader = signedJwt("correctSecret", "{\"alg\":\"HS256\"} trailing", "{\"sub\":\"user\"}");
+		var result = runCommand("--secret", "correctSecret", "--payload-only", malformedHeader);
+		assertEquals(1, result.exitCode());
+		assertEquals("", result.stdout());
+		assertTrue(result.stderr().contains("Invalid JSON"));
 	}
 
 	@Test

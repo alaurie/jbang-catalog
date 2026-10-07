@@ -65,9 +65,15 @@ class Killport implements Callable<Integer> {
 		var hasError = false;
 
 		if (signal != null) {
-			var sigUpper = signal.toUpperCase(Locale.ROOT);
-			if (sigUpper.contains("KILL") || sigUpper.equals("9")) {
-				force = true;
+			switch (signal.toUpperCase(Locale.ROOT)) {
+			case "KILL", "SIGKILL", "9" -> force = true;
+			case "TERM", "SIGTERM", "15" -> {
+			}
+			default -> {
+				System.err.printf("Error: Unsupported signal '%s'. Use TERM, SIGTERM, 15, KILL, SIGKILL, or 9.%n",
+						signal);
+				return 1;
+			}
 			}
 		}
 

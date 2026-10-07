@@ -31,6 +31,10 @@ Or, if you clone the repository locally:
 jbang serve
 ```
 
+`--auth` requires a non-empty `user:password` pair; malformed credentials stop the server rather than serving files without authentication. Basic Auth does not encrypt traffic, so bind locally or put the server behind HTTPS for network access.
+
+SPA fallback serves `index.html` only for GET and HEAD requests to missing paths; unsupported write methods retain the static server's error response.
+
 ### Options
 
 ```
@@ -79,6 +83,8 @@ Or, if you clone the repository locally:
 ```bash
 jbang nudge
 ```
+
+On Wayland, `wtype` supports keyboard nudges only. Mouse, scroll, and combined modes select a capable backend; if none is available, `nudge` fails instead of claiming to move the mouse.
 
 ### Options
 
@@ -136,8 +142,10 @@ jbang typeit@alaurie -d 3 -s 20
 Or with custom text instead of clipboard:
 
 ```bash
-jbang typeit@alaurie -t "my-secret-password"
+jbang typeit@alaurie -t "Hello, world!"
 ```
+
+For passwords, use `-p` to read from the console without displaying the characters. Even with `-v`, password characters are not logged. Password mode cannot use `WTYPE` or `YDOTOOL`, because those tools expose typed characters in process arguments; `AUTO` uses only a safe available driver.
 
 ### Options
 
@@ -188,11 +196,15 @@ Or check token validity:
 jbang jwt@alaurie --check-exp <token>
 ```
 
+`--check-exp` checks the expiration claim only. Add `--secret` when the token's HMAC signature must also be verified; an invalid or missing signature then fails before any token content is printed or exported.
+
 Or read token from stdin:
 
 ```bash
 cat token.txt | jbang jwt@alaurie -
 ```
+
+`--env` emits shell-quoted exports for POSIX shells. On Windows it emits PowerShell commands (`[Environment]::SetEnvironmentVariable(...)`), not `cmd.exe` `SET` commands; run them only in the appropriate shell.
 
 Or, if you clone the repository locally:
 
@@ -219,6 +231,8 @@ parties.
                             HS384, HS512).
   -V, --version           Print version information and exit.
 ```
+
+---
 
 ## killport
 
@@ -264,6 +278,10 @@ Find and terminate processes listening on specified network ports.
                             (forceful). Default: TERM.
   -V, --version           Print version information and exit.
 ```
+
+Only `TERM`/`SIGTERM`/`15` and `KILL`/`SIGKILL`/`9` are accepted by `--signal`; unsupported signals are rejected before looking up processes.
+
+---
 
 ## digest
 
@@ -395,6 +413,10 @@ jbang reach@alaurie example.com 80,443,8080
 jbang reach@alaurie 192.168.1.1 80-85
 ```
 
+IPv6 literals work as a host with a separate port (`jbang reach@alaurie ::1 8080`) or in bracketed host-and-port form (`jbang reach@alaurie '[::1]:8080'`).
+
+`--timeout` bounds both TCP connection attempts and TLS handshakes. `--warn-days` reports certificate expiry only after a successful TLS inspection; JSON numeric values always use a decimal point.
+
 Or output machine-readable JSON for scripts & monitoring:
 
 ```bash
@@ -482,6 +504,10 @@ Or, if you clone the repository locally:
 jbang fetch https://example.com/file.iso
 ```
 
+When a checksum is available, `fetch` verifies the `.part` file before replacing an existing output. A checksum failure leaves the existing output unchanged; ranged downloads retain their resume data for a later attempt.
+
+Ranged downloads require a strong ETag that matches every response. Servers without one use a fresh single-stream download instead of resuming unverified chunks; when no checksum manifest is found, `fetch` reports that the saved file was not checksum-verified.
+
 ### Options
 
 ```
@@ -541,6 +567,8 @@ Or clean / remove exported native binaries from `~/.local/bin`:
 jbang install-native@alaurie --clean
 jbang install-native@alaurie --clean fetch digest
 ```
+
+`--clean` exits nonzero if any selected binary cannot be removed.
 
 Or list catalog tools and native compatibility:
 
@@ -605,6 +633,10 @@ Or restore onto a fresh OS installation:
 ```bash
 sudo jbang jellyfin-backup@alaurie restore /path/to/backups/jellyfin-backup-2026-09-04_120000.tar.gz
 ```
+
+Restore rejects archive links or preexisting directory links that escape the target directories. If an archive entry cannot be written, restore exits with an error rather than reporting completion.
+
+Backup creation also fails on unreadable source entries instead of silently writing an incomplete archive.
 
 ### Options
 

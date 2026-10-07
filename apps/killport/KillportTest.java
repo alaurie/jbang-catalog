@@ -138,6 +138,23 @@ public class KillportTest {
 		assertEquals(0, sigNumResult.exitCode());
 	}
 
+	@Test
+	void testOnlySupportedSignalFormsAreAcceptedBeforeProcessDiscovery() {
+		for (var signal : new String[] { "TERM", "SIGTERM", "15", "KILL", "SIGKILL", "9",
+				"sigterm", "sigkill" }) {
+			var result = runCommand("--dry-run", "--signal", signal, "0");
+			assertEquals(1, result.exitCode());
+			assertTrue(result.stderr().contains("Invalid port number"));
+			assertTrue(!result.stdout().contains("Searching processes"));
+		}
+		for (var signal : new String[] { "HUP", "KILLME", "TERM_EXTRA", "0" }) {
+			var result = runCommand("--dry-run", "--signal", signal, "1");
+			assertEquals(1, result.exitCode());
+			assertTrue(result.stderr().contains("Unsupported signal '" + signal + "'"));
+			assertTrue(!result.stdout().contains("Searching processes"));
+		}
+	}
+
 	public static void main(String... args) {
 		var launcher = LauncherFactory.create();
 		var summaryListener = new SummaryGeneratingListener();
