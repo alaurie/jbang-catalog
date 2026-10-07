@@ -3,7 +3,7 @@
 //DEPS info.picocli:picocli:4.7.7
 //DEPS info.picocli:picocli-codegen:4.7.7
 //JAVAC_OPTIONS -proc:full
-//JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms16m -Xmx64m -XX:CICompilerCount=2 -XX:CompressedClassSpaceSize=32m -XX:ReservedCodeCacheSize=16m -XX:-UsePerfData
+//JAVA_OPTIONS --enable-native-access=ALL-UNNAMED -XX:+UseSerialGC -Xms16m -Xmx256m -XX:CICompilerCount=2 -XX:CompressedClassSpaceSize=32m -XX:ReservedCodeCacheSize=16m -XX:-UsePerfData
 //NATIVE_OPTIONS -O2 -march=native --no-fallback
 
 package fetch;
@@ -76,6 +76,13 @@ class Fetch implements Callable<Integer> {
 	@Option(names = {
 			"--expected-hash" }, description = "Explicitly verify against this hash (auto-detects algorithm by length). Bypasses server probe.")
 	private String explicitHash;
+	@Option(names = {
+			"--print-hash" }, description = "Compute and print SHA-256 hash of the downloaded file upon completion")
+	private boolean printHash;
+	@Option(names = {
+			"--retries" }, defaultValue = "0", description = "Number of retries for failed chunk requests (default: 0)")
+	private int retries = 0;
+
 
 	private static final List<String> CANDIDATE_MANIFESTS = List.of("SHA512SUMS", "SHA256SUMS", "SHA512", "SHA256",
 			"MD5SUMS", "MD5", "CHECKSUMS",
@@ -83,6 +90,8 @@ class Fetch implements Callable<Integer> {
 	private static final int MAX_MANIFEST_BYTES = 64 * 1024;
 	private static final Duration MANIFEST_TIMEOUT = Duration.ofSeconds(3);
 	private static final Pattern CONTENT_RANGE = Pattern.compile("bytes ([0-9]+)-([0-9]+)/([0-9]+)");
+	private static final Duration CHUNK_TIMEOUT = Duration.ofSeconds(30);
+	private static final Duration STREAM_TIMEOUT = Duration.ofSeconds(60);
 
 	private final HttpClient client = HttpClient.newBuilder()
 		.followRedirects(HttpClient.Redirect.NORMAL)
@@ -305,6 +314,12 @@ class Fetch implements Callable<Integer> {
 		if (!quiet) {
 			System.out.println("Saved: " + outputPath.toAbsolutePath());
 		}
+		if (printHash) {
+			String finalHash = (expectedHash != null && "SHA-256".equalsIgnoreCase(expectedHash.algorithm())
+					&& streamedHash != null) ? streamedHash : computeFileHash(outputPath, "SHA-256");
+			System.out.printf("SHA-256: %s%n", finalHash);
+		}
+
 
 		return 0;
 	}
@@ -386,9 +401,11 @@ class Fetch implements Callable<Integer> {
 
 	private boolean downloadSingleStream(Path partPath, MessageDigest digest) {
 		try {
-			HttpRequest req = applyHeaders(HttpRequest.newBuilder(uri)).GET().build();
+			HttpRequest req = applyHeaders(HttpRequest.newBuilder(uri))
+				.timeout(STREAM_TIMEOUT)
+				.GET()
+				.build();
 			HttpResponse<InputStream> res = client.send(req, HttpResponse.BodyHandlers.ofInputStream());
-
 			int status = res.statusCode();
 			if (status >= 400) {
 				System.err.println("Error: Server returned HTTP " + status);
@@ -464,66 +481,78 @@ class Fetch implements Callable<Integer> {
 				}
 
 				futures.add(CompletableFuture.runAsync(() -> {
-					try {
-						long initialDownloaded = chunk.getDownloaded();
-						long startOffset = chunk.start + initialDownloaded;
-						long endOffset = chunk.end;
-						if (startOffset > endOffset) {
+					int maxRetries = Math.max(0, retries);
+					for (int attempt = 0; attempt <= maxRetries; attempt++) {
+						try {
+							long currentDownloaded = chunk.getDownloaded();
+							long startOffset = chunk.start + currentDownloaded;
+							long endOffset = chunk.end;
+							if (startOffset > endOffset) {
+								return;
+							}
+
+							HttpRequest req = applyHeaders(HttpRequest.newBuilder(uri))
+								.timeout(CHUNK_TIMEOUT)
+								.header("Range", "bytes=" + startOffset + "-" + endOffset)
+								.header("If-Match", etag)
+								.GET()
+								.build();
+
+							HttpResponse<InputStream> response = client.send(req,
+									HttpResponse.BodyHandlers.ofInputStream());
+
+							try (InputStream in = response.body()) {
+								int statusCode = response.statusCode();
+								if (statusCode != 206) {
+									throw new IOException("Server returned HTTP " + statusCode + " for range bytes="
+											+ startOffset + "-" + endOffset);
+								}
+								String responseEtag = response.headers().firstValue("etag").orElse(null);
+								if (!etag.equals(responseEtag)) {
+									throw new IOException("ETag changed during ranged download");
+								}
+								String contentRange = response.headers().firstValue("content-range").orElse("");
+								if (!matchesContentRange(contentRange, startOffset, endOffset, totalSize)) {
+									throw new IOException("Invalid Content-Range for bytes=" + startOffset + "-"
+											+ endOffset + ": " + contentRange);
+								}
+								byte[] buf = new byte[128 * 1024];
+								ByteBuffer buffer = ByteBuffer.wrap(buf);
+								long bytesRemaining = endOffset - startOffset + 1;
+								long currentOffset = startOffset;
+								while (bytesRemaining > 0) {
+									int toRead = (int) Math.min(buf.length, bytesRemaining);
+									int bytesRead = in.read(buf, 0, toRead);
+									if (bytesRead == -1) {
+										break;
+									}
+									buffer.clear();
+									buffer.limit(bytesRead);
+									while (buffer.hasRemaining()) {
+										currentOffset += fileChannel.write(buffer, currentOffset);
+									}
+									chunk.downloaded.add(bytesRead);
+									bytesRemaining -= bytesRead;
+									if (pb != null) {
+										pb.stepBy(bytesRead);
+									}
+								}
+								if (bytesRemaining > 0) {
+									throw new IOException("Connection closed prematurely (" + bytesRemaining
+											+ " bytes unread in chunk " + chunk.index + ")");
+								}
+							}
 							return;
-						}
-
-						HttpRequest req = applyHeaders(HttpRequest.newBuilder(uri))
-							.header("Range", "bytes=" + startOffset + "-" + endOffset)
-							.header("If-Match", etag)
-							.GET()
-							.build();
-
-						HttpResponse<InputStream> response = client.send(req,
-								HttpResponse.BodyHandlers.ofInputStream());
-
-						try (InputStream in = response.body()) {
-							int statusCode = response.statusCode();
-							if (statusCode != 206) {
-								throw new IOException("Server returned HTTP " + statusCode + " for range bytes="
-										+ startOffset + "-" + endOffset);
+						} catch (Exception e) {
+							if (attempt >= maxRetries) {
+								throw new RuntimeException(e);
 							}
-							String responseEtag = response.headers().firstValue("etag").orElse(null);
-							if (!etag.equals(responseEtag)) {
-								throw new IOException("ETag changed during ranged download");
-							}
-							String contentRange = response.headers().firstValue("content-range").orElse("");
-							if (!matchesContentRange(contentRange, startOffset, endOffset, totalSize)) {
-								throw new IOException("Invalid Content-Range for bytes=" + startOffset + "-"
-										+ endOffset + ": " + contentRange);
-							}
-							byte[] buf = new byte[128 * 1024];
-							ByteBuffer buffer = ByteBuffer.wrap(buf);
-							long bytesRemaining = endOffset - startOffset + 1;
-							long currentOffset = startOffset;
-							while (bytesRemaining > 0) {
-								int toRead = (int) Math.min(buf.length, bytesRemaining);
-								int bytesRead = in.read(buf, 0, toRead);
-								if (bytesRead == -1) {
-									break;
-								}
-								buffer.clear();
-								buffer.limit(bytesRead);
-								while (buffer.hasRemaining()) {
-									currentOffset += fileChannel.write(buffer, currentOffset);
-								}
-								chunk.downloaded.add(bytesRead);
-								bytesRemaining -= bytesRead;
-								if (pb != null) {
-									pb.stepBy(bytesRead);
-								}
-							}
-							if (bytesRemaining > 0) {
-								throw new IOException("Connection closed prematurely (" + bytesRemaining
-										+ " bytes unread in chunk " + chunk.index + ")");
+							try {
+								Thread.sleep(500L * attempt);
+							} catch (InterruptedException _) {
+								throw new RuntimeException(e);
 							}
 						}
-					} catch (Exception e) {
-						throw new RuntimeException(e);
 					}
 				}, executor));
 			}
@@ -851,21 +880,28 @@ class Fetch implements Callable<Integer> {
 		private final Thread renderThread;
 		private volatile boolean closed = false;
 
+		private final boolean isInteractive;
+		private int lastLoggedPercent = -1;
+
 		ProgressBar(String taskName, long totalBytes, long initialOffset) {
 			this.taskName = taskName;
 			this.totalBytes = totalBytes;
 			this.initialOffset = Math.max(0L, initialOffset);
-			this.shutdownHook = new Thread(() -> System.out.print(SHOW_CURSOR));
-			try {
-				Runtime.getRuntime().addShutdownHook(shutdownHook);
-			} catch (IllegalStateException _) {
-				// VM already shutting down
+			this.isInteractive = System.console() != null;
+			if (isInteractive) {
+				this.shutdownHook = new Thread(() -> System.out.print(SHOW_CURSOR));
+				try {
+					Runtime.getRuntime().addShutdownHook(shutdownHook);
+				} catch (IllegalStateException _) {
+					// VM already shutting down
+				}
+				System.out.print(HIDE_CURSOR);
+				System.out.flush();
+			} else {
+				this.shutdownHook = null;
 			}
-			System.out.print(HIDE_CURSOR);
-			System.out.flush();
 			this.renderThread = Thread.ofVirtual().name("progress-render").start(this::renderLoop);
 		}
-
 		void stepBy(long bytes) {
 			sessionDownloaded.add(bytes);
 		}
@@ -874,7 +910,7 @@ class Fetch implements Callable<Integer> {
 			while (!closed) {
 				render();
 				try {
-					Thread.sleep(Duration.ofMillis(75)); // ~13 FPS smooth update rate
+					Thread.sleep(Duration.ofMillis(isInteractive ? 75 : 1000));
 				} catch (InterruptedException _) {
 					break;
 				}
@@ -888,26 +924,35 @@ class Fetch implements Callable<Integer> {
 			double speedMBps = elapsedSec > 0 ? (inSession / 1_048_576.0) / elapsedSec : 0.0;
 			String displayName = taskName.length() > 20 ? taskName.substring(0, 17) + "..." : taskName;
 
-			String output;
-			if (totalBytes > 0) {
-				double percent = Math.min(100.0, (current * 100.0) / totalBytes);
-				int barWidth = 30;
-				int completed = (int) Math.round((percent / 100.0) * barWidth);
-				completed = Math.clamp(completed, 0, barWidth);
-				String bar = "█".repeat(completed) + "░".repeat(barWidth - completed);
-				long remainingBytes = Math.max(0, totalBytes - current);
-				long etaSec = speedMBps > 0 ? (long) ((remainingBytes / 1_048_576.0) / speedMBps) : 0;
+			if (isInteractive) {
+				String output;
+				if (totalBytes > 0) {
+					double percent = Math.min(100.0, (current * 100.0) / totalBytes);
+					int barWidth = 30;
+					int completed = (int) Math.round((percent / 100.0) * barWidth);
+					completed = Math.clamp(completed, 0, barWidth);
+					String bar = "█".repeat(completed) + "░".repeat(barWidth - completed);
+					long remainingBytes = Math.max(0, totalBytes - current);
+					long etaSec = speedMBps > 0 ? (long) ((remainingBytes / 1_048_576.0) / speedMBps) : 0;
 
-				output = String.format("\r%-20s [%s] %5.1f%% (%6.2f / %6.2f MB) %6.2f MB/s eta %02d:%02d%s",
-						displayName, bar, percent, current / 1_048_576.0, totalBytes / 1_048_576.0, speedMBps,
-						etaSec / 60, etaSec % 60, ERASE_TO_EOL);
-			} else {
-				long elapsed = (long) elapsedSec;
-				output = String.format("\r%-20s %6.2f MB downloaded (%6.2f MB/s) [%02d:%02d]%s", displayName,
-						current / 1_048_576.0, speedMBps, elapsed / 60, elapsed % 60, ERASE_TO_EOL);
+					output = String.format("\r%-20s [%s] %5.1f%% (%6.2f / %6.2f MB) %6.2f MB/s eta %02d:%02d%s",
+							displayName, bar, percent, current / 1_048_576.0, totalBytes / 1_048_576.0, speedMBps,
+							etaSec / 60, etaSec % 60, ERASE_TO_EOL);
+				} else {
+					long elapsed = (long) elapsedSec;
+					output = String.format("\r%-20s %6.2f MB downloaded (%6.2f MB/s) [%02d:%02d]%s", displayName,
+							current / 1_048_576.0, speedMBps, elapsed / 60, elapsed % 60, ERASE_TO_EOL);
+				}
+				System.out.print(output);
+				System.out.flush();
+			} else if (totalBytes > 0) {
+				int percent = (int) Math.min(100, (current * 100) / totalBytes);
+				if (percent >= lastLoggedPercent + 20 || percent == 100) {
+					lastLoggedPercent = percent;
+					System.out.printf("%s: %d%% (%.2f / %.2f MB) at %.2f MB/s%n",
+							displayName, percent, current / 1_048_576.0, totalBytes / 1_048_576.0, speedMBps);
+				}
 			}
-			System.out.print(output);
-			System.out.flush();
 		}
 
 		@Override
@@ -922,14 +967,18 @@ class Fetch implements Callable<Integer> {
 			} catch (InterruptedException _) {
 				// continue shutdown
 			}
-			render(); // final 100% frame
-			try {
-				Runtime.getRuntime().removeShutdownHook(shutdownHook);
-			} catch (IllegalStateException _) {
-				// VM already shutting down
+			if (isInteractive) {
+				render(); // final 100% frame
+				if (shutdownHook != null) {
+					try {
+						Runtime.getRuntime().removeShutdownHook(shutdownHook);
+					} catch (IllegalStateException _) {
+						// VM already shutting down
+					}
+				}
+				System.out.println(SHOW_CURSOR);
+				System.out.flush();
 			}
-			System.out.println(SHOW_CURSOR);
-			System.out.flush();
 		}
 	}
 }

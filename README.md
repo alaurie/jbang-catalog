@@ -506,7 +506,7 @@ jbang fetch@alaurie https://mirror.aarnet.edu.au/pub/almalinux/10.2/isos/x86_64/
 Or download with custom concurrent connections or explicit checksum verification:
 
 ```bash
-jbang fetch@alaurie https://example.com/file.tar.gz -c 8 --expected-hash sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+jbang fetch@alaurie https://example.com/file.tar.gz -c 8 --retries 3 --print-hash
 ```
 
 Or, if you clone the repository locally:
@@ -519,26 +519,39 @@ When a checksum is available, `fetch` verifies the `.part` file before replacing
 
 Ranged downloads require a strong ETag that matches every response. Servers without one use a fresh single-stream download instead of resuming unverified chunks; when no checksum manifest is found, `fetch` reports that the saved file was not checksum-verified.
 
+`--print-hash` calculates and displays the SHA-256 digest of the saved file upon completion. `--retries` specifies the number of transient reconnection attempts per chunk worker before failing.
+
 ### Options
 
 ```
-Usage: fetch [-hV] [--no-checksum] [--no-resume] [-c=<connections>]
-             [--expected-hash=<explicitHash>] [-o=<outputPath>] <uri>
+Usage: fetch [-hqV] [--no-checksum] [--no-resume] [--print-hash]
+             [-A=<customUserAgent>] [-c=<connections>]
+             [--expected-hash=<explicitHash>] [-o=<outputPath>]
+             [--retries=<retries>] [-H=<headers>]... <uri>
 High-performance multi-threaded CLI file downloader with auto-checksum
 verification
-      <uri>           Target URL to download
+      <uri>                 Target URL to download
+  -A, --user-agent=<customUserAgent>
+                            Custom User-Agent string
   -c, --connections=<connections>
-                      Concurrent chunk download connections
+                            Concurrent chunk download connections
       --expected-hash=<explicitHash>
-                      Explicitly verify against this hash (auto-detects
-                        algorithm by length). Bypasses server probe.
-  -h, --help          Show this help message and exit.
-      --no-checksum   Skip automatic checksum probing and verification
-      --no-resume     Disable automatic download resumption and start fresh
-  -o, --output=<outputPath>
-                      Target file output path
-  -V, --version       Print version information and exit.
-```
+                            Explicitly verify against this hash (auto-detects
+                              algorithm by length). Bypasses server probe.
+  -h, --help                Show this help message and exit.
+  -H, --header=<headers>    Custom HTTP header(s) to send (e.g. -H
+                              'Authorization: Bearer token')
+      --no-checksum         Skip automatic checksum probing and verification
+      --no-resume           Disable automatic download resumption and start
+                              fresh
+  -o, --output=<outputPath> Target file output path
+      --print-hash          Compute and print SHA-256 hash of the downloaded
+                              file upon completion
+  -q, --quiet               Quiet mode: disable progress bar and non-essential
+                              logs
+      --retries=<retries>   Number of retries for failed chunk requests
+                              (default: 0)
+  -V, --version             Print version information and exit.
 
 ---
 

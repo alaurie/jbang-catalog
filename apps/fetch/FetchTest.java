@@ -739,6 +739,60 @@ public class FetchTest {
 		}
 	}
 
+	@Test
+	void testPrintHashOption(@TempDir Path tempDir) throws Exception {
+		byte[] testData = "Data for print-hash test".getBytes(StandardCharsets.UTF_8);
+		var md = MessageDigest.getInstance("SHA-256");
+		String expectedSha256 = HexFormat.of().formatHex(md.digest(testData));
+
+		var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		server.createContext("/printhash.dat", exchange -> {
+			exchange.getResponseHeaders().set("Content-Type", "application/octet-stream");
+			exchange.sendResponseHeaders(200, testData.length);
+			try (var os = exchange.getResponseBody()) {
+				os.write(testData);
+			}
+		});
+		server.start();
+
+		try {
+			Path destFile = tempDir.resolve("printhash.dat");
+			var result = runCommand("http://127.0.0.1:" + server.getAddress().getPort() + "/printhash.dat",
+					"-o", destFile.toString(), "--print-hash", "--no-checksum");
+			assertEquals(0, result.exitCode(), result.stderr());
+			assertTrue(result.stdout().contains("SHA-256: " + expectedSha256));
+		} finally {
+			server.stop(0);
+		}
+	}
+
+	@Test
+	void testChunkWorkerRetries(@TempDir Path tempDir) throws Exception {
+		byte[] testData = new byte[256 * 1024];
+		for (int i = 0; i < testData.length; i++) {
+			testData[i] = (byte) (i % 229);
+		}
+		var md = MessageDigest.getInstance("SHA-256");
+		String sha256Hex = HexFormat.of().formatHex(md.digest(testData));
+
+		// Handler configured to interrupt request #2
+		var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		server.createContext("/retry.dat", new RangeHttpHandler(testData, 2));
+		server.start();
+
+		try {
+			Path destFile = tempDir.resolve("retry.dat");
+			// With --retries 2, worker automatically retries request #2 and succeeds
+			var result = runCommand("http://127.0.0.1:" + server.getAddress().getPort() + "/retry.dat",
+					"-o", destFile.toString(), "-c", "2", "--retries", "2", "--no-checksum");
+			assertEquals(0, result.exitCode(), result.stderr());
+			assertTrue(Files.exists(destFile));
+			assertEquals(sha256Hex, sha256Of(destFile));
+		} finally {
+			server.stop(0);
+		}
+	}
+
 	private static String sha256Of(Path file) throws Exception {
 		var md = MessageDigest.getInstance("SHA-256");
 		try (var in = Files.newInputStream(file)) {
@@ -753,7 +807,8 @@ public class FetchTest {
 
 	static class RangeHttpHandler implements com.sun.net.httpserver.HttpHandler {
 		private final byte[] data;
-		private final java.util.concurrent.atomic.AtomicInteger requestCount = new java.util.concurrent.atomic.AtomicInteger();
+		private final java.util.concurrent.atomic.AtomicInteger requestCount =
+				new java.util.concurrent.atomic.AtomicInteger();
 		private final int failOnRequestNumber;
 
 		RangeHttpHandler(byte[] data, int failOnRequestNumber) {
