@@ -83,7 +83,6 @@ class Fetch implements Callable<Integer> {
 			"--retries" }, defaultValue = "0", description = "Number of retries for failed chunk requests (default: 0)")
 	private int retries = 0;
 
-
 	private static final List<String> CANDIDATE_MANIFESTS = List.of("SHA512SUMS", "SHA256SUMS", "SHA512", "SHA256",
 			"MD5SUMS", "MD5", "CHECKSUMS",
 			"CHECKSUM", "sha512sums.txt", "sha256sums.txt", "sha512sum.txt", "sha256sum.txt");
@@ -120,6 +119,11 @@ class Fetch implements Callable<Integer> {
 
 	@Override
 	public Integer call() throws Exception {
+		if (skipChecksum && explicitHash != null && !explicitHash.isBlank()) {
+			System.err.println("Error: --expected-hash cannot be combined with --no-checksum.");
+			return 1;
+		}
+
 		String pathStr = uri.getPath();
 		String defaultFileName = (pathStr == null || pathStr.isBlank() || pathStr.endsWith("/")) ? "downloaded_file"
 				: Path.of(pathStr).getFileName().toString();
@@ -319,7 +323,6 @@ class Fetch implements Callable<Integer> {
 					&& streamedHash != null) ? streamedHash : computeFileHash(outputPath, "SHA-256");
 			System.out.printf("SHA-256: %s%n", finalHash);
 		}
-
 
 		return 0;
 	}
@@ -902,6 +905,7 @@ class Fetch implements Callable<Integer> {
 			}
 			this.renderThread = Thread.ofVirtual().name("progress-render").start(this::renderLoop);
 		}
+
 		void stepBy(long bytes) {
 			sessionDownloaded.add(bytes);
 		}

@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import picocli.CommandLine;
+import picocli.CommandLine.ArgGroup;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
@@ -46,19 +47,26 @@ class Jwt implements Callable<Integer> {
 
 	private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z");
 
-	@Option(names = { "-p", "--payload-only" }, description = "Print payload JSON only.")
-	private boolean payloadOnly;
+	@ArgGroup(exclusive = true, multiplicity = "0..1")
+	private OutputOptions outputOptions;
 
-	@Option(names = { "-H", "--header-only" }, description = "Print header JSON only.")
-	private boolean headerOnly;
+	@SuppressWarnings("unused")
+	static class OutputOptions {
 
-	@Option(names = { "-c",
-			"--check-exp" }, description = "Validate token expiry state and exit 0 (valid) or 1 (expired).")
-	private boolean checkExp;
+		@Option(names = { "-p", "--payload-only" }, description = "Print payload JSON only.")
+		private boolean payloadOnly;
 
-	@Option(names = { "-e", "--env",
-			"--export" }, description = "Format payload claims as shell environment variables (export KEY=VAL).")
-	private boolean exportEnv;
+		@Option(names = { "-H", "--header-only" }, description = "Print header JSON only.")
+		private boolean headerOnly;
+
+		@Option(names = { "-e", "--env",
+				"--export" }, description = "Format payload claims as shell environment variables (export KEY=VAL).")
+		private boolean exportEnv;
+
+		@Option(names = { "-c",
+				"--check-exp" }, description = "Validate token expiry state and exit 0 (valid) or 1 (expired).")
+		private boolean checkExp;
+	}
 
 	@Option(names = { "-s",
 			"--secret" }, description = "HMAC secret key to verify token signature (HS256, HS384, HS512).")
@@ -127,17 +135,17 @@ class Jwt implements Callable<Integer> {
 			}
 		}
 
-		if (headerOnly) {
+		if (outputOptions != null && outputOptions.headerOnly) {
 			System.out.println(prettyFormat(headerMap, 0));
 			return 0;
 		}
 
-		if (payloadOnly) {
+		if (outputOptions != null && outputOptions.payloadOnly) {
 			System.out.println(prettyFormat(payloadMap, 0));
 			return 0;
 		}
 
-		if (exportEnv) {
+		if (outputOptions != null && outputOptions.exportEnv) {
 			exportPayloadAsEnv(payloadMap);
 			return 0;
 		}
@@ -153,7 +161,7 @@ class Jwt implements Callable<Integer> {
 			}
 		}
 
-		if (checkExp) {
+		if (outputOptions != null && outputOptions.checkExp) {
 			if (expObj == null) {
 				System.out.println("No 'exp' claim present in JWT.");
 				return 0;

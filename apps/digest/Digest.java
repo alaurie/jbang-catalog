@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Callable;
 import picocli.CommandLine;
+import picocli.CommandLine.ArgGroup;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
@@ -42,20 +43,27 @@ class Digest implements Callable<Integer> {
 			"--algorithm" }, description = "Hash algorithm: MD5, SHA-1, SHA-256, SHA-512, SHA3-256, SHA3-512. Default: SHA-256.")
 	private String algorithm = "SHA-256";
 
-	@Option(names = { "-t", "--text" }, description = "Compute hash for string text input instead of file.")
-	private String textInput;
+	@ArgGroup(exclusive = true, multiplicity = "0..1")
+	private InputMode inputMode;
 
-	@Option(names = { "-c", "--check" }, description = "Verify checksums from specified checksum file.")
-	private Path checkFile;
+	@SuppressWarnings("unused")
+	static class InputMode {
+
+		@Option(names = { "-t", "--text" }, description = "Compute hash for string text input instead of file.")
+		private String textInput;
+
+		@Option(names = { "-c", "--check" }, description = "Verify checksums from specified checksum file.")
+		private Path checkFile;
+
+		@Option(names = { "--benchmark" }, description = "Benchmark CPU hashing throughput across algorithms (MB/s).")
+		private boolean benchmark;
+
+		@Parameters(arity = "1..*", paramLabel = "<file>", description = "One or more file paths or directories to hash, or '-' for stdin.")
+		private List<Path> files;
+	}
 
 	@Option(names = { "-r", "--recursive" }, description = "Recursively compute checksum manifest for directories.")
 	private boolean recursive;
-
-	@Option(names = { "--benchmark" }, description = "Benchmark CPU hashing throughput across algorithms (MB/s).")
-	private boolean benchmark;
-
-	@Parameters(arity = "0..*", paramLabel = "<file>", description = "One or more file paths or directories to hash, or '-' for stdin.")
-	private List<Path> files;
 
 	/// Main entry point for the JBang script execution.
 	///
@@ -70,7 +78,12 @@ class Digest implements Callable<Integer> {
 	/// @return Status code 0 for success, 1 on hash mismatch or errors.
 	@Override
 	public Integer call() {
-		if (benchmark) {
+		var mode = inputMode;
+		if (recursive && (mode == null || mode.files == null)) {
+			System.err.println("Error: --recursive requires file or directory arguments.");
+			return 1;
+		}
+		if (mode != null && mode.benchmark) {
 			runBenchmark();
 			return 0;
 		}
@@ -82,13 +95,15 @@ class Digest implements Callable<Integer> {
 			return 1;
 		}
 
-		if (checkFile != null) {
-			return verifyCheckFile(checkFile);
+		if (mode != null && mode.checkFile != null) {
+			return verifyCheckFile(mode.checkFile);
 		}
 
-		if (textInput != null) {
-			return hashText(textInput);
+		if (mode != null && mode.textInput != null) {
+			return hashText(mode.textInput);
 		}
+
+		var files = mode == null ? null : mode.files;
 
 		if (files == null || files.isEmpty()) {
 			if (System.console() != null) {

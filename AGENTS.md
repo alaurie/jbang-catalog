@@ -110,6 +110,7 @@ package <app-name>;
   - `-h`, `--help`: Display usage options and exit.
   - `-v` / `-V`, `--version`: Display version information and exit.
   - Handle option collisions gracefully (e.g., if custom `-v` is used for version-to-install or verbose logging, declare explicit `@Option(names = {"-h", "--help"}, usageHelp = true)` fields).
+- **Conflicting Options**: Use Picocli `@ArgGroup(exclusive = true)` for mutually exclusive command-line options, with an appropriate `multiplicity` such as `"0..1"` for an optional group. Keep runtime validation for semantic conflicts that depend on decoded input, file contents, or other runtime state.
 - **Main Method Entry Point (Java 25+)**:
   In Java 25+, `public` access modifiers and `static` declarations are **no longer required** for main entry points (JEP 495). You can use flexible instance or package-private main methods:
   

@@ -102,6 +102,14 @@ public class ServeTest {
 	}
 
 	@Test
+	void testPositionalArgumentsCannotBeCombinedWithExplicitDirectoryOrPort() {
+		var result = runCommand("8080", "--port", "8081");
+
+		assertEquals(1, result.exitCode());
+		assertTrue(result.stderr().contains("cannot be combined"));
+	}
+
+	@Test
 	void testServeFileAndDirectoryListing(@TempDir Path tempDir) throws Exception {
 		Path fileA = tempDir.resolve("hello.txt");
 		Files.writeString(fileA, "Hello World Content");

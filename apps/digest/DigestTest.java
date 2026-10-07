@@ -157,6 +157,22 @@ public class DigestTest {
 	}
 
 	@Test
+	void testInputModesAreMutuallyExclusive() {
+		var result = runCommand("--benchmark", "--text", "hello");
+
+		assertEquals(2, result.exitCode());
+		assertTrue(result.stdout().contains("exclusive"));
+	}
+
+	@Test
+	void testRecursiveRequiresFileArguments() {
+		var result = runCommand("--recursive");
+
+		assertEquals(1, result.exitCode());
+		assertTrue(result.stderr().contains("requires file or directory arguments"));
+	}
+
+	@Test
 	void testFileHashingAndVerification(@TempDir Path tempDir) throws Exception {
 		Path testFile = tempDir.resolve("sample.txt");
 		Files.writeString(testFile, "test content for hashing");

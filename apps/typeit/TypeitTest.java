@@ -98,6 +98,14 @@ public class TypeitTest {
 	}
 
 	@Test
+	void testTextAndPasswordModesAreMutuallyExclusive() {
+		var result = runCommand("-t", "visible", "--password");
+
+		assertEquals(2, result.exitCode());
+		assertTrue(result.stderr().contains("exclusive"));
+	}
+
+	@Test
 	void testEmptyPasswordNeverTypes() {
 		var driver = new RecordingDriver();
 		var result = runCommand(new Typeit(() -> new char[0], driver), "-p", "-v");

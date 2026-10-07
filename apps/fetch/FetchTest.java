@@ -79,6 +79,14 @@ public class FetchTest {
 	}
 
 	@Test
+	void testExpectedHashCannotBeCombinedWithNoChecksum() {
+		var result = runCommand("https://example.com/file.bin", "--expected-hash", "0".repeat(64), "--no-checksum");
+
+		assertEquals(1, result.exitCode());
+		assertTrue(result.stderr().contains("cannot be combined"));
+	}
+
+	@Test
 	void testDownloadFileWithExplicitHashVerification(@TempDir Path tempDir) throws Exception {
 		byte[] testData = "Sample data for Fetch download and checksum test".getBytes(StandardCharsets.UTF_8);
 		var md = MessageDigest.getInstance("SHA-256");
@@ -807,8 +815,7 @@ public class FetchTest {
 
 	static class RangeHttpHandler implements com.sun.net.httpserver.HttpHandler {
 		private final byte[] data;
-		private final java.util.concurrent.atomic.AtomicInteger requestCount =
-				new java.util.concurrent.atomic.AtomicInteger();
+		private final java.util.concurrent.atomic.AtomicInteger requestCount = new java.util.concurrent.atomic.AtomicInteger();
 		private final int failOnRequestNumber;
 
 		RangeHttpHandler(byte[] data, int failOnRequestNumber) {

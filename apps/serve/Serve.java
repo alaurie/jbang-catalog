@@ -100,6 +100,7 @@ class Serve implements Callable<Integer> {
 			serverThread.interrupt();
 		}
 	}
+
 	/// Helper method checking whether a string represents a valid integer.
 	///
 	/// @param s String to check.
@@ -128,6 +129,12 @@ class Serve implements Callable<Integer> {
 	@SuppressWarnings("HttpUrlsUsage")
 	@Override
 	public Integer call() {
+		if (!positionalArgs.isEmpty() && (directory != null || port != null)) {
+			System.err
+				.println("Error: Positional directory/port arguments cannot be combined with --directory or --port.");
+			return 1;
+		}
+
 		resolveArguments();
 
 		if (!Files.exists(directory)) {
@@ -152,7 +159,6 @@ class Serve implements Callable<Integer> {
 
 		var absDir = directory.toAbsolutePath().normalize();
 		var addr = new InetSocketAddress(bind, port);
-
 
 		// Initialize server instance
 
@@ -396,9 +402,9 @@ class Serve implements Callable<Integer> {
 		}
 	}
 
-	/// Creates an HTTP request logging filter that formats output using Common Log Format
-	/// while gracefully suppressing aborted client connections (such as browser speculative
-	/// preconnects or socket cancellations).
+	/// Creates an HTTP request logging filter that formats output using Common Log
+	/// Format while gracefully suppressing aborted client connections (such as
+	/// browser speculative preconnects or socket cancellations).
 	///
 	/// @return A configured [Filter] instance.
 	private Filter createLoggingFilter() {
@@ -441,7 +447,7 @@ class Serve implements Callable<Integer> {
 
 	/// Logs an HTTP exchange in Common Log Format to standard output.
 	///
-	/// @param exchange The completed exchange.
+	/// @param exchange  The completed exchange.
 	/// @param formatter Date-time formatter for log timestamps.
 	private void logExchange(HttpExchange exchange, DateTimeFormatter formatter) {
 		int code = exchange.getResponseCode();
@@ -469,7 +475,8 @@ class Serve implements Callable<Integer> {
 
 	/// Prints HTTP request or response headers in verbose mode.
 	///
-	/// @param sign Header direction indicator (`>` for request, `<` for response).
+	/// @param sign    Header direction indicator (`>` for request, `<` for
+	///                response).
 	/// @param headers HTTP headers collection.
 	private static void logHeaders(String sign, Headers headers) {
 		headers.forEach((name, values) -> {
@@ -546,7 +553,8 @@ class Serve implements Callable<Integer> {
 		private WatchService watchService;
 		private volatile long lastEventTime;
 
-		private record SseClient(HttpExchange exchange, OutputStream os) {}
+		private record SseClient(HttpExchange exchange, OutputStream os) {
+		}
 
 		LiveReloadManager(Path rootDir, boolean verbose) {
 			this.rootDir = rootDir;

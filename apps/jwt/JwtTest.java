@@ -120,6 +120,16 @@ public class JwtTest {
 	}
 
 	@Test
+	void testOutputModesAreMutuallyExclusive() throws Exception {
+		var jwt = createSampleJwt("secretKey123", (System.currentTimeMillis() / 1000) + 3600);
+
+		var result = runCommand("--header-only", "--payload-only", jwt);
+
+		assertEquals(2, result.exitCode());
+		assertTrue(result.stdout().contains("exclusive"));
+	}
+
+	@Test
 	void testHmacSignatureVerification() throws Exception {
 		long futureExp = (System.currentTimeMillis() / 1000) + 3600;
 		String jwt = createSampleJwt("correctSecret", futureExp);

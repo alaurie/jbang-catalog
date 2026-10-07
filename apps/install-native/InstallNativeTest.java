@@ -86,6 +86,22 @@ public class InstallNativeTest {
 	}
 
 	@Test
+	void testListAndCleanAreMutuallyExclusive() {
+		var result = runCommand("--list", "--clean");
+
+		assertEquals(2, result.exitCode());
+		assertTrue(result.stdout().contains("exclusive"));
+	}
+
+	@Test
+	void testListCannotSelectApplications() {
+		var result = runCommand("--list", "jwt");
+
+		assertEquals(1, result.exitCode());
+		assertTrue(result.stderr().contains("cannot be combined"));
+	}
+
+	@Test
 	void testCleanTargetDirectory(@TempDir Path tempDir) throws Exception {
 		// Create dummy files that would match aliases
 		Path dummyDigest = tempDir.resolve("digest");

@@ -43,6 +43,8 @@ jbang serve
 SPA fallback serves `index.html` only for GET and HEAD requests to missing paths; unsupported write methods retain the static server's error response.
 
 `--live-reload` (`-r`) watches the served directory and automatically refreshes connected browser tabs via Server-Sent Events (SSE) when files are created, modified, or deleted.
+Positional directory/port arguments cannot be combined with the explicit `--directory` or `--port` options.
+
 
 ### Options
 
@@ -156,13 +158,14 @@ Or with custom text instead of clipboard:
 jbang typeit@alaurie -t "Hello, world!"
 ```
 
-For passwords, use `-p` to read from the console without displaying the characters. Even with `-v`, password characters are not logged. Password mode cannot use `WTYPE` or `YDOTOOL`, because those tools expose typed characters in process arguments; `AUTO` uses only a safe available driver.
+For passwords, use `-p` to read from the console without displaying the characters. `--text` and `--password` are mutually exclusive. Even with `-v`, password characters are not logged. Password mode cannot use `WTYPE` or `YDOTOOL`, because those tools expose typed characters in process arguments; `AUTO` uses only a safe available driver.
+
 
 ### Options
 
 ```
-Usage: typeit [-ehpvV] [-d=<delay>] [--driver=<driverType>] [-s=<speed>]
-              [-t=<customText>]
+Usage: typeit [-ehvV] [-d=<delay>] [--driver=<driverType>] [-s=<speed>]
+              [-t=<customText> | -p]
 Simulates typing clipboard text (or specified string) into the active window
 after a countdown delay.
   -d, --delay=<delay>       Countdown delay in seconds before typing starts
@@ -207,7 +210,8 @@ Or check token validity:
 jbang jwt@alaurie --check-exp <token>
 ```
 
-`--check-exp` checks the expiration claim only. Add `--secret` when the token's HMAC signature must also be verified; an invalid or missing signature then fails before any token content is printed or exported.
+`--check-exp` checks the expiration claim only. Add `--secret` when the token's HMAC signature must also be verified; an invalid or missing signature then fails before any token content is printed or exported. The output modes `--header-only`, `--payload-only`, `--env`, and `--check-exp` are mutually exclusive.
+
 
 Or read token from stdin:
 
@@ -226,7 +230,7 @@ jbang jwt
 ### Options
 
 ```
-Usage: jwt [-cehHpV] [-s=<secret>] [<tokenOrFile>]
+Usage: jwt [-hV] [-s=<secret>] [-p | -H | -e | -c] [<tokenOrFile>]
 Inspect and decode JSON Web Tokens (JWT) without sending tokens to third
 parties.
       [<tokenOrFile>]     JWT token string, file path containing token, or '-'
@@ -263,7 +267,8 @@ Or compute an SHA-512 checksum of string text:
 jbang digest@alaurie -a SHA-512 -t "my-password-string"
 ```
 
-Or verify files against a checksum file:
+Or verify files against a checksum file. Input modes (`--text`, `--check`, `--benchmark`, and file arguments) are mutually exclusive:
+
 
 ```bash
 jbang digest@alaurie -c checksums.sha256
@@ -278,8 +283,8 @@ jbang digest
 ### Options
 
 ```
-Usage: digest [-chrV] [-a=<algorithm>] [-c=<checkFile>] [-t=<textInput>]
-              [--benchmark] [<file>...]
+Usage: digest [-hrV] [-a=<algorithm>] [-t=<textInput> | -c=<checkFile> |
+              --benchmark | <file>...]
 Compute and verify cryptographic checksums for files or text input.
       [<file>...]           One or more file paths or directories to hash, or
                               '-' for stdin.
@@ -385,6 +390,8 @@ When a checksum is available, `fetch` verifies the `.part` file before replacing
 Ranged downloads require a strong ETag that matches every response. Servers without one use a fresh single-stream download instead of resuming unverified chunks; when no checksum manifest is found, `fetch` reports that the saved file was not checksum-verified.
 
 `--print-hash` calculates and displays the SHA-256 digest of the saved file upon completion. `--retries` specifies the number of transient reconnection attempts per chunk worker before failing.
+`--expected-hash` cannot be combined with `--no-checksum`; use one explicit verification policy.
+
 
 ### Options
 
@@ -458,6 +465,8 @@ jbang install-native@alaurie --clean fetch digest
 ```
 
 `--clean` exits nonzero if any selected binary cannot be removed.
+`--list` and `--clean` are mutually exclusive, and `--list` cannot be combined with application names or build options.
+
 
 Or list catalog tools and native compatibility:
 
@@ -468,9 +477,9 @@ jbang install-native@alaurie --list
 ### Options
 
 ```
-Usage: install-native [-cfhlpvV] [-d=<targetDir>]
-                      [--graalvm-home=<explicitGraalVmHome>] [-j=<jobs>]
-                      [<apps>...]
+Usage: install-native [-fhpvV] [-d=<targetDir>]
+                      [--graalvm-home=<explicitGraalVmHome>] [-j=<jobs>] [-l |
+                      -c] [<apps>...]
 Compile, export, and manage standalone zero-overhead native executables.
       [<apps>...]            Specific application aliases to export or clean (e.
                                g. fetch digest jwt). Defaults to all

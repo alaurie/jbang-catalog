@@ -29,6 +29,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import picocli.CommandLine;
+import picocli.CommandLine.ArgGroup;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
@@ -67,6 +68,10 @@ class Typeit implements Callable<Integer> {
 		this.inputDriver = inputDriver;
 	}
 
+	private boolean isPasswordPrompt() {
+		return inputMode != null && inputMode.passwordPrompt;
+	}
+
 	@Option(names = { "-d", "--delay" }, description = "Countdown delay in seconds before typing starts (default: 5).")
 	private int delay = 5;
 
@@ -74,13 +79,20 @@ class Typeit implements Callable<Integer> {
 			"--speed" }, description = "Typing speed delay in milliseconds between keystrokes (default: 10).")
 	private int speed = 10;
 
-	@Option(names = { "-t",
-			"--text" }, description = "Custom text to type instead of reading from the system clipboard.")
-	private String customText;
+	@ArgGroup(exclusive = true, multiplicity = "0..1")
+	private InputMode inputMode;
 
-	@Option(names = { "-p",
-			"--password" }, description = "Prompt securely for password input without echoing characters to terminal.")
-	private boolean passwordPrompt;
+	@SuppressWarnings("unused")
+	static class InputMode {
+
+		@Option(names = { "-t",
+				"--text" }, description = "Custom text to type instead of reading from the system clipboard.")
+		private String customText;
+
+		@Option(names = { "-p",
+				"--password" }, description = "Prompt securely for password input without echoing characters to terminal.")
+		private boolean passwordPrompt;
+	}
 
 	@Option(names = { "-e", "--enter" }, description = "Press Enter key after typing completes.")
 	private boolean pressEnter;
@@ -107,6 +119,8 @@ class Typeit implements Callable<Integer> {
 	@Override
 	public Integer call() {
 		checkEnvironmentWarnings();
+		boolean passwordPrompt = isPasswordPrompt();
+		String customText = inputMode == null ? null : inputMode.customText;
 		if (passwordPrompt && (driverType == DriverType.WTYPE || driverType == DriverType.YDOTOOL)) {
 			System.err.println(
 					"Error: Password mode cannot use WTYPE or YDOTOOL: typed text would be exposed in process arguments.");
@@ -218,7 +232,7 @@ class Typeit implements Callable<Integer> {
 				.println("  1. Enable kernel uinput access (recommended for GNOME, KDE, Wayland & X11):");
 			System.err.println("       sudo usermod -aG input $USER");
 			System.err.println("     (Log out and log back in to apply group changes)");
-			if (passwordPrompt) {
+			if (isPasswordPrompt()) {
 				System.err
 					.println("  Password mode requires uinput or a working AWT Robot; CLI drivers expose typed text.");
 			} else {
@@ -278,7 +292,7 @@ class Typeit implements Callable<Integer> {
 					}
 				}
 			}
-			if (isWayland && !passwordPrompt) {
+			if (isWayland && !isPasswordPrompt()) {
 				if (WTypeKeyboardDriver.isAvailable()) {
 					try {
 						return new WTypeKeyboardDriver(speed);

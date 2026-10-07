@@ -28,6 +28,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import picocli.CommandLine;
+import picocli.CommandLine.ArgGroup;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
@@ -60,13 +61,20 @@ class InstallNative implements Callable<Integer> {
 			"--dir" }, description = "Target destination directory for native binaries. Default: ~/.local/bin (~/.jbang/bin on Windows)")
 	private Path targetDir;
 
-	@Option(names = { "-l",
-			"--list" }, description = "List all available catalog applications and dynamic native compatibility.")
-	private boolean listOnly;
+	@ArgGroup(exclusive = true, multiplicity = "0..1")
+	private Operation operation;
 
-	@Option(names = { "-c", "--clean",
-			"--uninstall" }, description = "Remove exported native binaries from the target destination directory.")
-	private boolean cleanOnly;
+	@SuppressWarnings("unused")
+	static class Operation {
+
+		@Option(names = { "-l",
+				"--list" }, description = "List all available catalog applications and dynamic native compatibility.")
+		private boolean listOnly;
+
+		@Option(names = { "-c", "--clean",
+				"--uninstall" }, description = "Remove exported native binaries from the target destination directory.")
+		private boolean cleanOnly;
+	}
 
 	@Option(names = { "-j",
 			"--jobs" }, description = "Number of concurrent native compilation jobs. Default: 1", defaultValue = "1")
@@ -96,14 +104,19 @@ class InstallNative implements Callable<Integer> {
 			return 1;
 		}
 
-		if (listOnly) {
+		if (operation != null && operation.listOnly) {
+			if (!requestedApps.isEmpty() || targetDir != null || jobs != 1 || portable || force || verbose
+					|| explicitGraalVmHome != null) {
+				System.err.println("Error: --list cannot be combined with application names or build options.");
+				return 1;
+			}
 			printCatalogList(catalogApps);
 			return 0;
 		}
 
 		Path destination = resolveDestination();
 
-		if (cleanOnly) {
+		if (operation != null && operation.cleanOnly) {
 			return cleanNativeBinaries(catalogApps, destination);
 		}
 
