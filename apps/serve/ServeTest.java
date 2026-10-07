@@ -12,7 +12,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
+import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -82,6 +84,7 @@ public class ServeTest {
 		assertEquals(0, result.exitCode());
 		assertTrue(
 				result.stdout().contains("Simple HTTP file server inspired by python -m http.server"));
+		assertTrue(result.stdout().contains("--live-reload"));
 	}
 
 	@Test
@@ -394,6 +397,98 @@ public class ServeTest {
 			assertTrue(capturedOut.contains("<"));
 		} finally {
 			System.setOut(originalOut);
+			app.stop();
+			serverFuture.cancel(true);
+			executor.shutdownNow();
+		}
+	}
+
+	@Test
+	void testLiveReloadHtmlInjectionAndBroadcast(@TempDir Path tempDir) throws Exception {
+		Path htmlFile = tempDir.resolve("index.html");
+		Files.writeString(htmlFile, "<html><head><title>Test</title></head><body><h1>Live</h1></body></html>");
+
+		Path cssFile = tempDir.resolve("style.css");
+		Files.writeString(cssFile, "body { color: red; }");
+
+		int port = findFreePort();
+		var app = new Serve();
+		var executor = Executors.newSingleThreadExecutor();
+		Future<Integer> serverFuture = executor.submit(() -> {
+			var cmd = new CommandLine(app);
+			return cmd.execute("-d", tempDir.toString(), "-p", String.valueOf(port), "-b", "127.0.0.1",
+					"--live-reload");
+		});
+
+		try {
+			Thread.sleep(300);
+			var client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
+
+			// 1. HTML request must have live-reload script injected
+			var htmlReq = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/index.html")).GET().build();
+			var htmlResp = client.send(htmlReq, HttpResponse.BodyHandlers.ofString());
+			assertEquals(200, htmlResp.statusCode());
+			assertTrue(htmlResp.body().contains("/__serve_live_reload"));
+			assertTrue(htmlResp.body().contains("EventSource"));
+
+			// 2. CSS request must NOT have live-reload script injected
+			var cssReq = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/style.css")).GET().build();
+			var cssResp = client.send(cssReq, HttpResponse.BodyHandlers.ofString());
+			assertEquals(200, cssResp.statusCode());
+			assertFalse(cssResp.body().contains("/__serve_live_reload"));
+			assertEquals("body { color: red; }", cssResp.body());
+
+			// 3. Connect to SSE stream and observe reload event on file change
+			var sseUri = URI.create("http://127.0.0.1:" + port + "/__serve_live_reload");
+			var url = sseUri.toURL();
+			try (var is = url.openStream();
+					var reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
+				String handshake = reader.readLine();
+				assertEquals(": connected", handshake);
+
+				// Modify file to trigger watcher
+				Files.writeString(htmlFile, "<html><body><h1>Updated</h1></body></html>");
+
+				// Expect reload event
+				String line = reader.readLine();
+				while (line != null && line.isEmpty()) {
+					line = reader.readLine();
+				}
+				assertEquals("data: reload", line);
+			}
+		} finally {
+			app.stop();
+			serverFuture.cancel(true);
+			executor.shutdownNow();
+		}
+	}
+
+	@Test
+	void testLiveReloadWithSpaMode(@TempDir Path tempDir) throws Exception {
+		Path indexFile = tempDir.resolve("index.html");
+		Files.writeString(indexFile, "<html><body><h1>SPA</h1></body></html>");
+
+		int port = findFreePort();
+		var app = new Serve();
+		var executor = Executors.newSingleThreadExecutor();
+		Future<Integer> serverFuture = executor.submit(() -> {
+			var cmd = new CommandLine(app);
+			return cmd.execute("-d", tempDir.toString(), "-p", String.valueOf(port), "-b", "127.0.0.1",
+					"--spa", "--live-reload");
+		});
+
+		try {
+			Thread.sleep(300);
+			var client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
+
+			var spaReq = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/arbitrary/route"))
+				.GET()
+				.build();
+			var spaResp = client.send(spaReq, HttpResponse.BodyHandlers.ofString());
+			assertEquals(200, spaResp.statusCode());
+			assertTrue(spaResp.body().contains("<h1>SPA</h1>"));
+			assertTrue(spaResp.body().contains("/__serve_live_reload"));
+		} finally {
 			app.stop();
 			serverFuture.cancel(true);
 			executor.shutdownNow();

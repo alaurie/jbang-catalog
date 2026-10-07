@@ -15,20 +15,35 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.SimpleFileServer;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.nio.channels.ClosedChannelException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.ClosedWatchServiceException;
+import java.nio.file.FileSystems;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.StandardWatchEventKinds;
+import java.nio.file.WatchEvent;
+import java.nio.file.WatchKey;
+import java.nio.file.WatchService;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -60,6 +75,10 @@ class Serve implements Callable<Integer> {
 	@Option(names = { "--spa" }, description = "Single Page Application mode: fallback 404 requests to index.html")
 	private boolean spaMode;
 
+	@Option(names = { "-r",
+			"--live-reload" }, description = "Enable live reload: auto-refresh browser on file changes")
+	private boolean liveReload;
+
 	@Option(names = { "--auth" }, description = "HTTP Basic Authentication credentials (format: user:password)")
 	private String authCredentials;
 
@@ -68,8 +87,12 @@ class Serve implements Callable<Integer> {
 
 	private HttpServer server;
 	private volatile Thread serverThread;
+	private LiveReloadManager liveReloadManager;
 
 	public void stop() {
+		if (liveReloadManager != null) {
+			liveReloadManager.close();
+		}
 		if (server != null) {
 			server.stop(0);
 		}
@@ -77,7 +100,6 @@ class Serve implements Callable<Integer> {
 			serverThread.interrupt();
 		}
 	}
-
 	/// Helper method checking whether a string represents a valid integer.
 	///
 	/// @param s String to check.
@@ -138,17 +160,48 @@ class Serve implements Callable<Integer> {
 			HttpHandler fileHandler = SimpleFileServer.createFileHandler(absDir);
 
 			HttpHandler finalHandler;
-			if (spaMode) {
+			if (liveReload || spaMode) {
 				finalHandler = exchange -> {
 					var method = exchange.getRequestMethod();
+					if (!"GET".equals(method) && !"HEAD".equals(method)) {
+						fileHandler.handle(exchange);
+						return;
+					}
+
 					var reqPath = exchange.getRequestURI().getPath();
 					var relPath = reqPath.startsWith("/") ? reqPath.substring(1) : reqPath;
 					var targetFile = absDir.resolve(relPath).normalize();
 
-					if (("GET".equals(method) || "HEAD".equals(method))
-							&& targetFile.startsWith(absDir) && !Files.exists(targetFile)
+					if (!targetFile.startsWith(absDir)) {
+						fileHandler.handle(exchange);
+						return;
+					}
+
+					Path htmlFile = null;
+					if (liveReload && Files.isRegularFile(targetFile)
+							&& (relPath.endsWith(".html") || relPath.endsWith(".htm"))) {
+						htmlFile = targetFile;
+					} else if (liveReload && Files.isDirectory(targetFile)) {
+						if (Files.isRegularFile(targetFile.resolve("index.html"))) {
+							htmlFile = targetFile.resolve("index.html");
+						} else if (Files.isRegularFile(targetFile.resolve("index.htm"))) {
+							htmlFile = targetFile.resolve("index.htm");
+						}
+					} else if (spaMode && !Files.exists(targetFile)
 							&& Files.isRegularFile(absDir.resolve("index.html"))) {
-						var bytes = Files.readAllBytes(absDir.resolve("index.html"));
+						htmlFile = absDir.resolve("index.html");
+					}
+
+					if (htmlFile != null) {
+						if (Files.isDirectory(targetFile) && !reqPath.endsWith("/")) {
+							var query = exchange.getRequestURI().getRawQuery();
+							var loc = query != null ? reqPath + "/?" + query : reqPath + "/";
+							exchange.getResponseHeaders().set("Location", loc);
+							exchange.sendResponseHeaders(301, -1);
+							return;
+						}
+						var rawBytes = Files.readAllBytes(htmlFile);
+						var bytes = liveReload ? injectLiveReloadScript(rawBytes) : rawBytes;
 						exchange.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
 						if ("HEAD".equals(method)) {
 							exchange.getResponseHeaders().set("Content-Length", String.valueOf(bytes.length));
@@ -161,6 +214,7 @@ class Serve implements Callable<Integer> {
 						}
 						return;
 					}
+
 					fileHandler.handle(exchange);
 				};
 			} else {
@@ -173,11 +227,11 @@ class Serve implements Callable<Integer> {
 
 			var context = server.createContext("/", finalHandler);
 			context.getFilters().add(logFilter);
-
+			Filter authFilter = null;
 			if (authCredentials != null) {
 				var expectedAuth = "Basic "
 						+ Base64.getEncoder().encodeToString(authCredentials.getBytes(StandardCharsets.UTF_8));
-				Filter authFilter = new Filter() {
+				authFilter = new Filter() {
 					@Override
 					public void doFilter(HttpExchange exchange, Chain chain) throws IOException {
 						var authHeader = exchange.getRequestHeaders().getFirst("Authorization");
@@ -197,6 +251,38 @@ class Serve implements Callable<Integer> {
 					}
 				};
 				context.getFilters().add(authFilter);
+			}
+
+			if (liveReload) {
+				liveReloadManager = new LiveReloadManager(absDir, verbose);
+				liveReloadManager.start();
+
+				var sseContext = server.createContext("/__serve_live_reload", exchange -> {
+					if (!"GET".equals(exchange.getRequestMethod())) {
+						exchange.sendResponseHeaders(405, -1);
+						return;
+					}
+					var headers = exchange.getResponseHeaders();
+					headers.set("Content-Type", "text/event-stream; charset=utf-8");
+					headers.set("Cache-Control", "no-cache, no-store, must-revalidate");
+					headers.set("Connection", "keep-alive");
+					headers.set("Access-Control-Allow-Origin", "*");
+
+					exchange.sendResponseHeaders(200, 0);
+					var os = exchange.getResponseBody();
+					try {
+						os.write(": connected\n\n".getBytes(StandardCharsets.UTF_8));
+						os.flush();
+					} catch (IOException _) {
+						return;
+					}
+
+					liveReloadManager.handleClient(exchange, os);
+				});
+				sseContext.getFilters().add(logFilter);
+				if (authFilter != null) {
+					sseContext.getFilters().add(authFilter);
+				}
 			}
 
 			if (download) {
@@ -231,13 +317,16 @@ class Serve implements Callable<Integer> {
 		if (spaMode) {
 			System.out.println("Mode: Single Page Application (SPA) fallback to index.html enabled");
 		}
+		if (liveReload) {
+			System.out.println("Mode: Live reload enabled (auto-refresh browser on file changes)");
+		}
 		if (authCredentials != null) {
 			System.out.println("Auth: Basic Authentication enabled");
 		}
 
 		Runtime.getRuntime().addShutdownHook(new Thread(() -> {
 			System.out.println("\nStopping server...");
-			server.stop(0);
+			stop();
 		}));
 
 		try {
@@ -413,5 +502,232 @@ class Serve implements Callable<Integer> {
 			}
 		}
 		return false;
+	}
+
+	private static final String LIVE_RELOAD_SCRIPT = """
+			<!-- serve live-reload -->
+			<script>
+			(() => {
+			  const es = new EventSource("/__serve_live_reload");
+			  es.onmessage = (e) => {
+			    if (e.data === "reload") {
+			      location.reload();
+			    }
+			  };
+			})();
+			</script>
+			""";
+
+	/// Injects the client-side live reload EventSource script into an HTML payload.
+	///
+	/// @param htmlBytes Original HTML bytes.
+	/// @return Transformed HTML bytes with live reload script injected.
+	private static byte[] injectLiveReloadScript(byte[] htmlBytes) {
+		String html = new String(htmlBytes, StandardCharsets.UTF_8);
+		int idx = html.toLowerCase(Locale.ROOT).lastIndexOf("</body>");
+		String injected;
+		if (idx != -1) {
+			injected = html.substring(0, idx) + LIVE_RELOAD_SCRIPT + html.substring(idx);
+		} else {
+			injected = html + "\n" + LIVE_RELOAD_SCRIPT;
+		}
+		return injected.getBytes(StandardCharsets.UTF_8);
+	}
+
+	/// Manages live reload file watching and Server-Sent Events (SSE) broadcasting.
+	private static class LiveReloadManager implements AutoCloseable {
+		private static final long DEBOUNCE_MS = 100;
+		private final Path rootDir;
+		private final boolean verbose;
+		private final AtomicBoolean running = new AtomicBoolean(true);
+		private final AtomicBoolean reloadScheduled = new AtomicBoolean(false);
+		private final Set<SseClient> clients = ConcurrentHashMap.newKeySet();
+		private final Map<WatchKey, Path> watchKeys = new ConcurrentHashMap<>();
+		private WatchService watchService;
+		private volatile long lastEventTime;
+
+		private record SseClient(HttpExchange exchange, OutputStream os) {}
+
+		LiveReloadManager(Path rootDir, boolean verbose) {
+			this.rootDir = rootDir;
+			this.verbose = verbose;
+		}
+
+		void start() throws IOException {
+			this.watchService = FileSystems.getDefault().newWatchService();
+			registerAll(rootDir);
+			Thread.ofVirtual().name("live-reload-watcher").start(this::watchLoop);
+		}
+
+		private void registerAll(Path start) throws IOException {
+			Files.walkFileTree(start, new SimpleFileVisitor<Path>() {
+				@Override
+				public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
+					Path fileName = dir.getFileName();
+					if (fileName != null && fileName.toString().startsWith(".") && !dir.equals(rootDir)) {
+						return FileVisitResult.SKIP_SUBTREE;
+					}
+					WatchKey key = dir.register(watchService,
+							StandardWatchEventKinds.ENTRY_CREATE,
+							StandardWatchEventKinds.ENTRY_DELETE,
+							StandardWatchEventKinds.ENTRY_MODIFY);
+					watchKeys.put(key, dir);
+					return FileVisitResult.CONTINUE;
+				}
+			});
+		}
+
+		private void watchLoop() {
+			try {
+				while (running.get()) {
+					WatchKey key = watchService.take();
+					Path dir = watchKeys.get(key);
+					if (dir == null) {
+						key.cancel();
+						continue;
+					}
+
+					boolean triggered = false;
+					for (WatchEvent<?> event : key.pollEvents()) {
+						var kind = event.kind();
+						if (kind == StandardWatchEventKinds.OVERFLOW) {
+							triggered = true;
+							continue;
+						}
+
+						@SuppressWarnings("unchecked")
+						var ev = (WatchEvent<Path>) event;
+						Path filename = ev.context();
+						Path child = dir.resolve(filename);
+
+						if (kind == StandardWatchEventKinds.ENTRY_CREATE && Files.isDirectory(child)) {
+							try {
+								registerAll(child);
+							} catch (IOException _) {
+								// Ignored
+							}
+						}
+
+						if (!isIgnored(filename)) {
+							triggered = true;
+						}
+					}
+
+					boolean valid = key.reset();
+					if (!valid) {
+						watchKeys.remove(key);
+					}
+
+					if (triggered) {
+						scheduleReload();
+					}
+				}
+			} catch (InterruptedException | ClosedWatchServiceException _) {
+				// Normal shutdown
+			} catch (Exception e) {
+				if (running.get() && verbose) {
+					System.err.printf("[debug] Live reload watch error: %s%n", e.getMessage());
+				}
+			}
+		}
+
+		private static boolean isIgnored(Path filename) {
+			if (filename == null) {
+				return true;
+			}
+			String name = filename.toString();
+			return name.startsWith(".") || name.endsWith("~") || name.endsWith(".swp")
+					|| name.endsWith(".tmp") || name.endsWith(".bak");
+		}
+
+		private void scheduleReload() {
+			lastEventTime = System.currentTimeMillis();
+			if (reloadScheduled.compareAndSet(false, true)) {
+				Thread.ofVirtual().name("live-reload-debouncer").start(() -> {
+					try {
+						while (running.get()) {
+							long elapsed = System.currentTimeMillis() - lastEventTime;
+							if (elapsed >= DEBOUNCE_MS) {
+								break;
+							}
+							Thread.sleep(DEBOUNCE_MS - elapsed);
+						}
+						if (running.get()) {
+							broadcastReload();
+						}
+					} catch (InterruptedException _) {
+						// Shutdown
+					} finally {
+						reloadScheduled.set(false);
+					}
+				});
+			}
+		}
+
+		void broadcastReload() {
+			byte[] msg = "data: reload\n\n".getBytes(StandardCharsets.UTF_8);
+			int count = 0;
+			for (var client : clients) {
+				try {
+					client.os().write(msg);
+					client.os().flush();
+					count++;
+				} catch (Exception _) {
+					clients.remove(client);
+					try {
+						client.exchange().close();
+					} catch (Exception _) {
+						// Ignored
+					}
+				}
+			}
+			if (count > 0 && verbose) {
+				System.out.printf("[debug] Live reload: refreshed %d browser tab(s)%n", count);
+			}
+		}
+
+		void handleClient(HttpExchange exchange, OutputStream os) {
+			var client = new SseClient(exchange, os);
+			clients.add(client);
+			try {
+				while (running.get()) {
+					Thread.sleep(15_000);
+					os.write(": ping\n\n".getBytes(StandardCharsets.UTF_8));
+					os.flush();
+				}
+			} catch (Exception _) {
+				// Client disconnected or server shutting down
+			} finally {
+				clients.remove(client);
+				try {
+					exchange.close();
+				} catch (Exception _) {
+					// Ignored
+				}
+			}
+		}
+
+		@Override
+		public void close() {
+			if (!running.compareAndSet(true, false)) {
+				return;
+			}
+			try {
+				if (watchService != null) {
+					watchService.close();
+				}
+			} catch (Exception _) {
+				// Ignored
+			}
+			for (var client : clients) {
+				try {
+					client.exchange().close();
+				} catch (Exception _) {
+					// Ignored
+				}
+			}
+			clients.clear();
+			watchKeys.clear();
+		}
 	}
 }

@@ -8,7 +8,7 @@ This repository contains a [jbang](https://jbang.dev/) catalog of useful scripts
 
 ## serve
 
-`serve` is a simple HTTP file server inspired by `python -m http.server` with built-in SPA routing and Basic Auth support.
+`serve` is a simple HTTP file server inspired by `python -m http.server` with built-in SPA routing, live reload, and Basic Auth support.
 
 ### Usage
 
@@ -25,6 +25,13 @@ jbang serve@alaurie 8000
 jbang serve@alaurie /path/to/dir 8000
 ```
 
+With live reload enabled to auto-refresh the browser on file save:
+
+```bash
+jbang serve@alaurie -r
+jbang serve@alaurie --spa --live-reload -d /path/to/app
+```
+
 Or, if you clone the repository locally:
 
 ```bash
@@ -35,10 +42,12 @@ jbang serve
 
 SPA fallback serves `index.html` only for GET and HEAD requests to missing paths; unsupported write methods retain the static server's error response.
 
+`--live-reload` (`-r`) watches the served directory and automatically refreshes connected browser tabs via Server-Sent Events (SSE) when files are created, modified, or deleted.
+
 ### Options
 
 ```
-Usage: serve [-ahvV] [--spa] [--auth=<authCredentials>] [-b=<bind>]
+Usage: serve [-ahrvV] [--spa] [--auth=<authCredentials>] [-b=<bind>]
              [-d=<directory>] [-p=<port>] [[dirOrPort]...]
 Simple HTTP file server inspired by python -m http.server
       [[dirOrPort]...]   Optional directory path and/or port number
@@ -52,6 +61,8 @@ Simple HTTP file server inspired by python -m http.server
                          Directory to serve (default: current directory)
   -h, --help             Show this help message and exit.
   -p, --port=<port>      Port to listen on (default: 8080)
+  -r, --live-reload      Enable live reload: auto-refresh browser on file
+                           changes
       --spa              Single Page Application mode: fallback 404 requests to
                            index.html
   -v, --verbose          Enable verbose request logging
