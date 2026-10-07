@@ -44,7 +44,7 @@ public class DigestTest {
 		try {
 			System.setOut(printOut);
 			System.setErr(printErr);
-			var app = new Digest();
+			var app = new digest.Digest();
 			var cmd = new CommandLine(app);
 			cmd.setOut(pw);
 			cmd.setErr(pw);

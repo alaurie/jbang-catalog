@@ -15,12 +15,8 @@
 //SOURCES ../apps/jellyfin-backup/JellyfinBackupTest.java
 //SOURCES ../apps/jwt/Jwt.java
 //SOURCES ../apps/jwt/JwtTest.java
-//SOURCES ../apps/killport/Killport.java
-//SOURCES ../apps/killport/KillportTest.java
 //SOURCES ../apps/nudge/Nudge.java
 //SOURCES ../apps/nudge/NudgeTest.java
-//SOURCES ../apps/reach/Reach.java
-//SOURCES ../apps/reach/ReachTest.java
 //SOURCES ../apps/serve/Serve.java
 //SOURCES ../apps/serve/ServeTest.java
 //SOURCES ../apps/typeit/Typeit.java
@@ -35,22 +31,21 @@ import java.io.PrintWriter;
 import java.util.List;
 import jellyfinbackup.JellyfinBackupTest;
 import jwt.JwtTest;
-import killport.KillportTest;
 import nudge.NudgeTest;
 import org.junit.platform.engine.discovery.DiscoverySelectors;
 import org.junit.platform.launcher.core.LauncherDiscoveryRequestBuilder;
 import org.junit.platform.launcher.core.LauncherFactory;
 import org.junit.platform.launcher.listeners.SummaryGeneratingListener;
-import reach.ReachTest;
 import serve.ServeTest;
 import typeit.TypeitTest;
 
-/// Centralized test suite runner executing all catalog application unit and integration tests.
+/// Centralized test suite runner executing all catalog application unit and
+/// integration tests.
 public class RunAllTests {
 
 	private static final List<Class<?>> TEST_CLASSES = List.of(DigestTest.class, FetchTest.class,
-			InstallNativeTest.class, JellyfinBackupTest.class, JwtTest.class, KillportTest.class,
-			NudgeTest.class, ReachTest.class, ServeTest.class, TypeitTest.class);
+			InstallNativeTest.class, JellyfinBackupTest.class, JwtTest.class, NudgeTest.class,
+			ServeTest.class, TypeitTest.class);
 
 	public static void main(String... args) {
 		System.out.println("===============================================================");

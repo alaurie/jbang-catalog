@@ -16,10 +16,6 @@
       "script-ref": "apps/jwt/Jwt.java",
       "description": "Inspect and decode JSON Web Tokens (JWT) safely off-line."
     },
-    "killport": {
-      "script-ref": "apps/killport/Killport.java",
-      "description": "Find and terminate processes listening on specified network ports."
-    },
     "digest": {
       "script-ref": "apps/digest/Digest.java",
       "description": "Compute and verify cryptographic checksums for files or text input."
@@ -27,10 +23,6 @@
     "fetch": {
       "script-ref": "apps/fetch/Fetch.java",
       "description": "Multithreaded download utility with automatic checksum capability."
-    },
-    "reach": {
-      "script-ref": "apps/reach/Reach.java",
-      "description": "Network diagnostic CLI utility to test TCP reachability and inspect TLS certs."
     },
     "install-native": {
       "script-ref": "apps/install-native/InstallNative.java",

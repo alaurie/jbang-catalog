@@ -82,7 +82,6 @@ public class InstallNativeTest {
 		assertEquals(0, result.exitCode());
 		assertTrue(result.stdout().contains("digest"));
 		assertTrue(result.stdout().contains("jwt"));
-		assertTrue(result.stdout().contains("reach"));
 		assertTrue(result.stdout().contains("Supported"));
 	}
 
