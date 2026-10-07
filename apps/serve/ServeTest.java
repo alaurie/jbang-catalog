@@ -9,6 +9,7 @@
 package serve;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
@@ -16,6 +17,7 @@ import java.io.PrintStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -178,6 +180,18 @@ public class ServeTest {
 	}
 
 	@Test
+	void testInvalidAuthenticationRejectedBeforeBinding(@TempDir Path tempDir) throws Exception {
+		try (var occupied = new ServerSocket(0)) {
+			for (String invalid : new String[] { "nocredentials", ":password", "username:" }) {
+				var result = runCommand("-d", tempDir.toString(), "-p",
+						String.valueOf(occupied.getLocalPort()), "-b", "127.0.0.1", "--auth", invalid);
+				assertEquals(1, result.exitCode(), invalid);
+				assertTrue(result.stderr().contains("--auth requires non-empty user:password"), invalid);
+			}
+		}
+	}
+
+	@Test
 	void testSinglePageApplicationMode(@TempDir Path tempDir) throws Exception {
 		Path indexFile = tempDir.resolve("index.html");
 		Files.writeString(indexFile, "<html><body>SPA Root</body></html>");
@@ -202,6 +216,19 @@ public class ServeTest {
 			var spaResp = client.send(spaReq, HttpResponse.BodyHandlers.ofString());
 			assertEquals(200, spaResp.statusCode());
 			assertTrue(spaResp.body().contains("SPA Root"));
+			var missing = URI.create("http://127.0.0.1:" + port + "/user/profile/settings");
+			var headResp = client.send(HttpRequest.newBuilder(missing)
+				.method("HEAD", HttpRequest.BodyPublishers.noBody())
+				.build(), HttpResponse.BodyHandlers.ofByteArray());
+			assertEquals(200, headResp.statusCode());
+			assertEquals(0, headResp.body().length);
+			assertEquals(Files.size(indexFile), headResp.headers().firstValueAsLong("content-length").orElse(-1));
+
+			var postResp = client.send(HttpRequest.newBuilder(missing)
+				.POST(HttpRequest.BodyPublishers.noBody())
+				.build(), HttpResponse.BodyHandlers.ofString());
+			assertEquals(405, postResp.statusCode());
+			assertFalse(postResp.body().contains("SPA Root"));
 		} finally {
 			app.stop();
 			serverFuture.cancel(true);
@@ -227,7 +254,9 @@ public class ServeTest {
 			var client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
 			Thread.sleep(300);
 
-			var req = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/download.pdf")).GET().build();
+			var req = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/download.pdf"))
+				.GET()
+				.build();
 			var resp = client.send(req, HttpResponse.BodyHandlers.ofString());
 			assertEquals(200, resp.statusCode());
 			var disposition = resp.headers().firstValue("Content-Disposition").orElse("");
@@ -258,6 +287,117 @@ public class ServeTest {
 		var result = runCommand("-d", file.toString());
 		assertEquals(1, result.exitCode());
 		assertTrue(result.stderr().contains("is not a directory"));
+	}
+
+	@Test
+	void testClientDisconnectDoesNotPolluteOutput(@TempDir Path tempDir) throws Exception {
+		Path file = tempDir.resolve("data.txt");
+		Files.writeString(file, "Some content for streaming test...".repeat(50));
+
+		int port = findFreePort();
+		var app = new Serve();
+		var executor = Executors.newSingleThreadExecutor();
+
+		var originalOut = System.out;
+		var originalErr = System.err;
+		var outStream = new ByteArrayOutputStream();
+		var errStream = new ByteArrayOutputStream();
+		var printOut = new PrintStream(outStream, true, StandardCharsets.UTF_8);
+		var printErr = new PrintStream(errStream, true, StandardCharsets.UTF_8);
+
+		System.setOut(printOut);
+		System.setErr(printErr);
+
+		Future<Integer> serverFuture = executor.submit(() -> {
+			var cmd = new CommandLine(app);
+			return cmd.execute("-d", tempDir.toString(), "-p", String.valueOf(port), "-b", "127.0.0.1");
+		});
+
+		try {
+			Thread.sleep(300);
+
+			// 1. Connect and immediately abort socket with TCP RST (simulates browser socket drop)
+			try (var s = new Socket("127.0.0.1", port)) {
+				s.getOutputStream()
+					.write(("GET /data.txt HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+				s.getOutputStream().flush();
+				s.setSoLinger(true, 0);
+			} catch (Exception _) {
+				// Client-side socket close
+			}
+
+			// 2. Connect and abort prematurely
+			try (var s = new Socket("127.0.0.1", port)) {
+				s.getOutputStream()
+					.write(("GET /favicon.ico HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+				s.getOutputStream().flush();
+				s.close();
+			} catch (Exception _) {
+				// Client-side socket close
+			}
+
+			Thread.sleep(300);
+
+			// 3. Normal request should still succeed
+			var client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
+			var req = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/data.txt")).GET().build();
+			var resp = client.send(req, HttpResponse.BodyHandlers.ofString());
+			assertEquals(200, resp.statusCode());
+
+			Thread.sleep(200);
+
+			String capturedOut = outStream.toString(StandardCharsets.UTF_8);
+			String capturedErr = errStream.toString(StandardCharsets.UTF_8);
+
+			assertFalse(capturedOut.contains("server exchange handling failed"));
+			assertFalse(capturedErr.contains("server exchange handling failed"));
+			assertTrue(capturedOut.contains("\"GET /data.txt HTTP/1.1\" 200 -"));
+		} finally {
+			System.setOut(originalOut);
+			System.setErr(originalErr);
+			app.stop();
+			serverFuture.cancel(true);
+			executor.shutdownNow();
+		}
+	}
+
+	@Test
+	void testVerboseLogging(@TempDir Path tempDir) throws Exception {
+		Path file = tempDir.resolve("test.txt");
+		Files.writeString(file, "verbose test content");
+
+		int port = findFreePort();
+		var app = new Serve();
+		var executor = Executors.newSingleThreadExecutor();
+
+		var originalOut = System.out;
+		var outStream = new ByteArrayOutputStream();
+		var printOut = new PrintStream(outStream, true, StandardCharsets.UTF_8);
+		System.setOut(printOut);
+
+		Future<Integer> serverFuture = executor.submit(() -> {
+			var cmd = new CommandLine(app);
+			return cmd.execute("-d", tempDir.toString(), "-p", String.valueOf(port), "-b", "127.0.0.1", "-v");
+		});
+
+		try {
+			Thread.sleep(300);
+			var client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
+			var req = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/test.txt")).GET().build();
+			var resp = client.send(req, HttpResponse.BodyHandlers.ofString());
+			assertEquals(200, resp.statusCode());
+
+			Thread.sleep(200);
+			String capturedOut = outStream.toString(StandardCharsets.UTF_8);
+			assertTrue(capturedOut.contains("Resource requested:"));
+			assertTrue(capturedOut.contains(">"));
+			assertTrue(capturedOut.contains("<"));
+		} finally {
+			System.setOut(originalOut);
+			app.stop();
+			serverFuture.cancel(true);
+			executor.shutdownNow();
+		}
 	}
 
 	public static void main(String... args) {

@@ -9,18 +9,21 @@
 package serve;
 
 import com.sun.net.httpserver.Filter;
+import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.SimpleFileServer;
-import com.sun.net.httpserver.SimpleFileServer.OutputLevel;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.BindException;
 import java.net.InetSocketAddress;
+import java.nio.channels.ClosedChannelException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -119,9 +122,15 @@ class Serve implements Callable<Integer> {
 			return 1;
 		}
 
+		if (authCredentials != null && (authCredentials.indexOf(':') < 1
+				|| authCredentials.indexOf(':') == authCredentials.length() - 1)) {
+			System.err.println("Error: --auth requires non-empty user:password credentials.");
+			return 1;
+		}
+
 		var absDir = directory.toAbsolutePath().normalize();
 		var addr = new InetSocketAddress(bind, port);
-		var outputLevel = verbose ? OutputLevel.VERBOSE : OutputLevel.INFO;
+
 
 		// Initialize server instance
 
@@ -131,18 +140,24 @@ class Serve implements Callable<Integer> {
 			HttpHandler finalHandler;
 			if (spaMode) {
 				finalHandler = exchange -> {
+					var method = exchange.getRequestMethod();
 					var reqPath = exchange.getRequestURI().getPath();
 					var relPath = reqPath.startsWith("/") ? reqPath.substring(1) : reqPath;
 					var targetFile = absDir.resolve(relPath).normalize();
 
-					if (!targetFile.startsWith(absDir)
-							|| (!Files.exists(targetFile) && Files.exists(absDir.resolve("index.html")))) {
-						var indexPath = absDir.resolve("index.html");
-						var bytes = Files.readAllBytes(indexPath);
+					if (("GET".equals(method) || "HEAD".equals(method))
+							&& targetFile.startsWith(absDir) && !Files.exists(targetFile)
+							&& Files.isRegularFile(absDir.resolve("index.html"))) {
+						var bytes = Files.readAllBytes(absDir.resolve("index.html"));
 						exchange.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
-						exchange.sendResponseHeaders(200, bytes.length);
-						try (var os = exchange.getResponseBody()) {
-							os.write(bytes);
+						if ("HEAD".equals(method)) {
+							exchange.getResponseHeaders().set("Content-Length", String.valueOf(bytes.length));
+							exchange.sendResponseHeaders(200, -1);
+						} else {
+							exchange.sendResponseHeaders(200, bytes.length);
+							try (var os = exchange.getResponseBody()) {
+								os.write(bytes);
+							}
 						}
 						return;
 					}
@@ -152,14 +167,14 @@ class Serve implements Callable<Integer> {
 				finalHandler = fileHandler;
 			}
 
-			var logFilter = SimpleFileServer.createOutputFilter(System.out, outputLevel);
+			var logFilter = createLoggingFilter();
 			server = HttpServer.create(addr, 0);
 			server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
 
 			var context = server.createContext("/", finalHandler);
 			context.getFilters().add(logFilter);
 
-			if (authCredentials != null && authCredentials.contains(":")) {
+			if (authCredentials != null) {
 				var expectedAuth = "Basic "
 						+ Base64.getEncoder().encodeToString(authCredentials.getBytes(StandardCharsets.UTF_8));
 				Filter authFilter = new Filter() {
@@ -216,7 +231,7 @@ class Serve implements Callable<Integer> {
 		if (spaMode) {
 			System.out.println("Mode: Single Page Application (SPA) fallback to index.html enabled");
 		}
-		if (authCredentials != null && authCredentials.contains(":")) {
+		if (authCredentials != null) {
 			System.out.println("Auth: Basic Authentication enabled");
 		}
 
@@ -290,5 +305,113 @@ class Serve implements Callable<Integer> {
 		} else if (port == null) {
 			port = 8080;
 		}
+	}
+
+	/// Creates an HTTP request logging filter that formats output using Common Log Format
+	/// while gracefully suppressing aborted client connections (such as browser speculative
+	/// preconnects or socket cancellations).
+	///
+	/// @return A configured [Filter] instance.
+	private Filter createLoggingFilter() {
+		final var formatter = DateTimeFormatter.ofPattern("dd/MMM/yyyy:HH:mm:ss Z");
+		return new Filter() {
+			@Override
+			public void doFilter(HttpExchange exchange, Chain chain) throws IOException {
+				try {
+					chain.doFilter(exchange);
+					logExchange(exchange, formatter);
+				} catch (IOException e) {
+					if (isClientDisconnect(e)) {
+						if (verbose) {
+							System.err.printf("[debug] Client disconnected: %s%n",
+									e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+						}
+						try {
+							exchange.close();
+						} catch (Exception _) {
+							// Ignored on aborted socket
+						}
+						return;
+					}
+					System.err.printf("Error handling request: %s%n",
+							e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+					throw e;
+				} catch (Throwable t) {
+					System.err.printf("Error handling request: %s%n",
+							t.getMessage() != null ? t.getMessage() : t.getClass().getSimpleName());
+					throw t;
+				}
+			}
+
+			@Override
+			public String description() {
+				return "Request Logging Filter";
+			}
+		};
+	}
+
+	/// Logs an HTTP exchange in Common Log Format to standard output.
+	///
+	/// @param exchange The completed exchange.
+	/// @param formatter Date-time formatter for log timestamps.
+	private void logExchange(HttpExchange exchange, DateTimeFormatter formatter) {
+		int code = exchange.getResponseCode();
+		if (code <= 0) {
+			return;
+		}
+		var addr = exchange.getRemoteAddress();
+		String host = addr != null ? addr.getHostString() : "-";
+		System.out.printf("%s - - [%s] \"%s %s %s\" %d -%n",
+				host,
+				OffsetDateTime.now().format(formatter),
+				exchange.getRequestMethod(),
+				exchange.getRequestURI(),
+				exchange.getProtocol(),
+				code);
+
+		if (verbose) {
+			if (exchange.getAttribute("request-path") instanceof String reqPath) {
+				System.out.printf("Resource requested: %s%n", reqPath);
+			}
+			logHeaders(">", exchange.getRequestHeaders());
+			logHeaders("<", exchange.getResponseHeaders());
+		}
+	}
+
+	/// Prints HTTP request or response headers in verbose mode.
+	///
+	/// @param sign Header direction indicator (`>` for request, `<` for response).
+	/// @param headers HTTP headers collection.
+	private static void logHeaders(String sign, Headers headers) {
+		headers.forEach((name, values) -> {
+			System.out.printf("%s %s: %s%n", sign, name, String.join(", ", values));
+		});
+		System.out.println(sign);
+	}
+
+	/// Detects if an exception represents a normal client socket disconnection.
+	///
+	/// @param t The throwable to check.
+	/// @return `true` if the exception is due to client socket termination.
+	private static boolean isClientDisconnect(Throwable t) {
+		for (Throwable cur = t; cur != null; cur = cur.getCause()) {
+			if (cur instanceof ClosedChannelException) {
+				return true;
+			}
+			String cls = cur.getClass().getSimpleName();
+			if ("StreamClosedException".equals(cls)) {
+				return true;
+			}
+			String msg = cur.getMessage();
+			if (msg != null) {
+				String lower = msg.toLowerCase();
+				if (lower.contains("broken pipe") || lower.contains("connection reset")
+						|| lower.contains("socket closed") || lower.contains("stream closed")
+						|| lower.contains("stream is closed") || lower.contains("headers already sent")) {
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 }
