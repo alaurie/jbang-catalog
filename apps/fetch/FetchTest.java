@@ -79,8 +79,17 @@ public class FetchTest {
 	}
 
 	@Test
+	void testProgressLineFitsNarrowTerminalWidths() {
+		String line = Fetch.ProgressBar.formatProgressLine("Ubuntu-26.10-beta-desktop-amd64.iso",
+				(long) (6_031.64 * 1_048_576), (long) (302.87 * 1_048_576), 5.0, 20);
+
+		assertTrue(line.length() <= 20, () -> "progress line wraps at 20 columns: " + line);
+	}
+
+	@Test
 	void testExpectedHashCannotBeCombinedWithNoChecksum() {
-		var result = runCommand("https://example.com/file.bin", "--expected-hash", "0".repeat(64), "--no-checksum");
+		var result = runCommand("https://example.com/file.bin", "--expected-hash", "0".repeat(64),
+				"--no-checksum");
 
 		assertEquals(1, result.exitCode());
 		assertTrue(result.stderr().contains("cannot be combined"));

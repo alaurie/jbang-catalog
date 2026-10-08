@@ -8,6 +8,7 @@
 
 package fetch;
 
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -881,6 +882,7 @@ class Fetch implements Callable<Integer> {
 		private final long startTime = System.nanoTime();
 		private final Thread shutdownHook;
 		private final Thread renderThread;
+		private final int terminalWidth;
 		private volatile boolean closed = false;
 
 		private final boolean isInteractive;
@@ -891,6 +893,7 @@ class Fetch implements Callable<Integer> {
 			this.totalBytes = totalBytes;
 			this.initialOffset = Math.max(0L, initialOffset);
 			this.isInteractive = System.console() != null;
+			this.terminalWidth = detectTerminalWidth();
 			if (isInteractive) {
 				this.shutdownHook = new Thread(() -> System.out.print(SHOW_CURSOR));
 				try {
@@ -926,36 +929,81 @@ class Fetch implements Callable<Integer> {
 			long current = initialOffset + inSession;
 			double elapsedSec = (System.nanoTime() - startTime) / 1_000_000_000.0;
 			double speedMBps = elapsedSec > 0 ? (inSession / 1_048_576.0) / elapsedSec : 0.0;
-			String displayName = taskName.length() > 20 ? taskName.substring(0, 17) + "..." : taskName;
 
 			if (isInteractive) {
-				String output;
-				if (totalBytes > 0) {
-					double percent = Math.min(100.0, (current * 100.0) / totalBytes);
-					int barWidth = 30;
-					int completed = (int) Math.round((percent / 100.0) * barWidth);
-					completed = Math.clamp(completed, 0, barWidth);
-					String bar = "█".repeat(completed) + "░".repeat(barWidth - completed);
-					long remainingBytes = Math.max(0, totalBytes - current);
-					long etaSec = speedMBps > 0 ? (long) ((remainingBytes / 1_048_576.0) / speedMBps) : 0;
-
-					output = String.format("\r%-20s [%s] %5.1f%% (%6.2f / %6.2f MB) %6.2f MB/s eta %02d:%02d%s",
-							displayName, bar, percent, current / 1_048_576.0, totalBytes / 1_048_576.0, speedMBps,
-							etaSec / 60, etaSec % 60, ERASE_TO_EOL);
-				} else {
-					long elapsed = (long) elapsedSec;
-					output = String.format("\r%-20s %6.2f MB downloaded (%6.2f MB/s) [%02d:%02d]%s", displayName,
-							current / 1_048_576.0, speedMBps, elapsed / 60, elapsed % 60, ERASE_TO_EOL);
-				}
-				System.out.print(output);
+				System.out.print(
+						"\r" + formatProgressLine(taskName, totalBytes, current, speedMBps, terminalWidth)
+								+ ERASE_TO_EOL);
 				System.out.flush();
 			} else if (totalBytes > 0) {
 				int percent = (int) Math.min(100, (current * 100) / totalBytes);
 				if (percent >= lastLoggedPercent + 20 || percent == 100) {
 					lastLoggedPercent = percent;
-					System.out.printf("%s: %d%% (%.2f / %.2f MB) at %.2f MB/s%n",
-							displayName, percent, current / 1_048_576.0, totalBytes / 1_048_576.0, speedMBps);
+					System.out.printf("%s: %d%% (%.2f / %.2f MB) at %.2f MB/s%n", truncate(taskName, 20),
+							percent, current / 1_048_576.0, totalBytes / 1_048_576.0, speedMBps);
 				}
+			}
+		}
+
+		static String formatProgressLine(String taskName, long totalBytes, long current,
+				double speedMBps, int terminalWidth) {
+			int width = Math.max(1, terminalWidth);
+			double percent = totalBytes > 0 ? Math.min(100.0, (current * 100.0) / totalBytes) : 0.0;
+			if (totalBytes <= 0) {
+				return fit(
+						String.format("%s %6.2f MB (%5.2f MB/s)", taskName, current / 1_048_576.0, speedMBps),
+						width);
+			}
+
+			long remainingBytes = Math.max(0, totalBytes - current);
+			long etaSec = speedMBps > 0 ? (long) ((remainingBytes / 1_048_576.0) / speedMBps) : 0;
+			int barWidth = Math.clamp(width - 68, 0, 30);
+			int completed = (int) Math.round((percent / 100.0) * barWidth);
+			String bar = "█".repeat(completed) + "░".repeat(barWidth - completed);
+			String line = String.format("%s [%s] %5.1f%% (%6.2f / %6.2f MB) %5.2f MB/s %02d:%02d",
+					truncate(taskName, 20), bar, percent, current / 1_048_576.0, totalBytes / 1_048_576.0,
+					speedMBps, etaSec / 60, etaSec % 60);
+			if (line.length() <= width) {
+				return line;
+			}
+
+			line = String.format("%5.1f%% %6.2f/%6.2f MB %5.2f MB/s", percent, current / 1_048_576.0,
+					totalBytes / 1_048_576.0, speedMBps);
+			if (line.length() <= width) {
+				return line;
+			}
+			return fit(String.format("%5.1f%% %6.2f/%6.2f MB", percent, current / 1_048_576.0,
+					totalBytes / 1_048_576.0), width);
+		}
+
+		private static String fit(String text, int width) {
+			return text.length() <= width ? text : text.substring(0, width);
+		}
+
+		private static String truncate(String text, int maxLength) {
+			return text.length() <= maxLength ? text : text.substring(0, maxLength - 3) + "...";
+		}
+
+		private static int detectTerminalWidth() {
+			try {
+				var process = new ProcessBuilder("stty", "size")
+					.redirectInput(ProcessBuilder.Redirect.from(Path.of("/dev/tty").toFile()))
+					.start();
+				try (BufferedReader reader = process.inputReader()) {
+					String dimensions = reader.readLine();
+					if (process.waitFor(Duration.ofMillis(100)) && process.exitValue() == 0
+							&& dimensions != null) {
+						String[] fields = dimensions.trim().split("\\s+");
+						return Integer.parseInt(fields[fields.length - 1]);
+					}
+				}
+			} catch (Exception _) {
+				// Fall back to the conventional terminal width.
+			}
+			try {
+				return Integer.parseInt(System.getenv().getOrDefault("COLUMNS", "80"));
+			} catch (NumberFormatException _) {
+				return 80;
 			}
 		}
 
