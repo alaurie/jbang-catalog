@@ -15,10 +15,14 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -27,6 +31,7 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.regex.Pattern;
 import picocli.CommandLine;
 import picocli.CommandLine.ArgGroup;
 import picocli.CommandLine.Command;
@@ -49,6 +54,9 @@ class InstallNative implements Callable<Integer> {
 
 	private static final Set<String> JNI_DEPENDENCY_PATTERNS = Set.of("oshi-core", "jna", "sqlite-jdbc",
 			"libjnidispatch");
+	private static final String MANIFEST_FILE_NAME = ".jbang-catalog-manifest.json";
+
+	private static final Pattern VERSION_PATTERN = Pattern.compile("version\\s*=\\s*\"([^\"]+)\"");
 
 	record AppMetadata(String alias, String scriptRef, String description, boolean nativeSupported,
 			String supportReason) {
@@ -87,6 +95,10 @@ class InstallNative implements Callable<Integer> {
 	@Option(names = { "-f", "--force" }, description = "Overwrite existing binaries in the target directory.")
 	private boolean force;
 
+	@Option(names = { "-u",
+			"--upgrade" }, description = "Upgrade installed binaries if their source has changed.")
+	private boolean upgrade;
+
 	@Option(names = { "-v", "--verbose" }, description = "Enable verbose output during native-image compilation.")
 	private boolean verbose;
 
@@ -105,8 +117,8 @@ class InstallNative implements Callable<Integer> {
 		}
 
 		if (operation != null && operation.listOnly) {
-			if (!requestedApps.isEmpty() || targetDir != null || jobs != 1 || portable || force || verbose
-					|| explicitGraalVmHome != null) {
+			if (!requestedApps.isEmpty() || targetDir != null || jobs != 1 || portable || force || upgrade
+					|| verbose || explicitGraalVmHome != null) {
 				System.err.println("Error: --list cannot be combined with application names or build options.");
 				return 1;
 			}
@@ -117,6 +129,10 @@ class InstallNative implements Callable<Integer> {
 		Path destination = resolveDestination();
 
 		if (operation != null && operation.cleanOnly) {
+			if (upgrade) {
+				System.err.println("Error: --clean cannot be combined with --upgrade.");
+				return 1;
+			}
 			return cleanNativeBinaries(catalogApps, destination);
 		}
 
@@ -125,8 +141,13 @@ class InstallNative implements Callable<Integer> {
 			System.out.printf("Created destination directory: %s%n", destination.toAbsolutePath());
 		}
 
-		List<AppMetadata> targets = selectTargets(catalogApps, false);
+		List<AppMetadata> targets = selectTargets(catalogApps, destination, false);
 		if (targets.isEmpty()) {
+			if (upgrade && (requestedApps == null || requestedApps.isEmpty())) {
+				System.out.printf("No installed catalog applications found to upgrade in %s.%n",
+						destination.toAbsolutePath());
+				return 0;
+			}
 			System.err.println("No matching native-supported applications selected.");
 			return 1;
 		}
@@ -164,7 +185,7 @@ class InstallNative implements Callable<Integer> {
 
 				long startTime = System.currentTimeMillis();
 				System.out.flush();
-				var res = exportNativeBinary(app, outputPath, isBatch, true);
+				var res = exportNativeBinary(app, outputPath, isBatch, true, destination);
 				long elapsed = System.currentTimeMillis() - startTime;
 
 				if (res.skipped()) {
@@ -203,7 +224,7 @@ class InstallNative implements Callable<Integer> {
 
 					futures.add(executor.submit(() -> {
 						long startTime = System.currentTimeMillis();
-						var res = exportNativeBinary(app, outputPath, isBatch, false);
+						var res = exportNativeBinary(app, outputPath, isBatch, false, destination);
 						long elapsed = System.currentTimeMillis() - startTime;
 						return new TaskOutcome(index, app, outputPath, res, elapsed);
 					}));
@@ -254,7 +275,7 @@ class InstallNative implements Callable<Integer> {
 			return 0;
 		}
 
-		List<AppMetadata> targets = selectTargets(catalogApps, true);
+		List<AppMetadata> targets = selectTargets(catalogApps, destination, true);
 		if (targets.isEmpty()) {
 			System.err.println("No applications selected for cleaning.");
 			return 1;
@@ -278,6 +299,7 @@ class InstallNative implements Callable<Integer> {
 			if (Files.exists(binaryPath)) {
 				try {
 					Files.delete(binaryPath);
+					removeManifestEntry(destination, app.alias());
 					removed++;
 					System.out.printf("  ✓ Removed: %s%n", binaryPath.getFileName());
 				} catch (Exception e) {
@@ -599,11 +621,21 @@ class InstallNative implements Callable<Integer> {
 		return Path.of(userHome, ".local", "bin");
 	}
 
-	private List<AppMetadata> selectTargets(Map<String, AppMetadata> catalogApps,
+	private List<AppMetadata> selectTargets(Map<String, AppMetadata> catalogApps, Path destination,
 			boolean includeAllForClean) {
 		if (requestedApps == null || requestedApps.isEmpty()) {
 			if (includeAllForClean) {
 				return new ArrayList<>(catalogApps.values());
+			}
+			if (upgrade) {
+				return catalogApps.values()
+					.stream()
+					.filter(AppMetadata::nativeSupported)
+					.filter(app -> {
+						String binaryName = IS_WINDOWS ? app.alias() + ".exe" : app.alias();
+						return Files.exists(destination.resolve(binaryName));
+					})
+					.toList();
 			}
 			return catalogApps.values().stream().filter(AppMetadata::nativeSupported).toList();
 		}
@@ -673,17 +705,33 @@ class InstallNative implements Callable<Integer> {
 	}
 
 	private ExportResult exportNativeBinary(AppMetadata app, Path outputPath, boolean isBatch,
-			boolean liveOutput) {
-		if (Files.exists(outputPath) && !force) {
-			if (!isBatch) {
-				return new ExportResult(false, false,
-						"Binary '%s' already exists. Use --force (-f) to overwrite."
-							.formatted(outputPath.getFileName()),
+			boolean liveOutput, Path destination) {
+		boolean alreadyExists = Files.exists(outputPath);
+		String source = loadScriptSource(app.alias(), app.scriptRef());
+		String currentHash = computeSha256(source);
+		String version = extractVersion(source);
+
+		if (alreadyExists && !force) {
+			if (upgrade) {
+				var manifest = loadManifest(destination);
+				var entry = manifest.get(app.alias().toLowerCase(Locale.ROOT));
+				String recordedHash = entry != null ? entry.sourceHash() : null;
+				if (!currentHash.isEmpty() && currentHash.equalsIgnoreCase(recordedHash)) {
+					return new ExportResult(true, true,
+							"Already up to date (%s).".formatted(formatFileSize(outputPath)),
+							List.of());
+				}
+			} else {
+				if (!isBatch) {
+					return new ExportResult(false, false,
+							"Binary '%s' already exists. Use --force (-f) or --upgrade (-u) to overwrite."
+								.formatted(outputPath.getFileName()),
+							List.of());
+				}
+				return new ExportResult(true, true,
+						"Already installed (%s). Use -f or -u to update.".formatted(formatFileSize(outputPath)),
 						List.of());
 			}
-			return new ExportResult(true, true,
-					"Already installed (%s). Use -f to overwrite.".formatted(formatFileSize(outputPath)),
-					List.of());
 		}
 
 		String scriptSource = app.scriptRef();
@@ -700,7 +748,7 @@ class InstallNative implements Callable<Integer> {
 		command.add(scriptSource);
 		command.add("-O");
 		command.add(outputPath.toAbsolutePath().toString());
-		if (force) {
+		if (force || upgrade) {
 			command.add("--force");
 		}
 		if (portable) {
@@ -739,6 +787,9 @@ class InstallNative implements Callable<Integer> {
 			if (exitCode == 0 && Files.exists(outputPath)) {
 				if (!IS_WINDOWS) {
 					outputPath.toFile().setExecutable(true, false);
+				}
+				if (!currentHash.isEmpty()) {
+					updateManifestEntry(destination, app.alias(), currentHash, version);
 				}
 				return new ExportResult(true, false, "SUCCESS", outputLines);
 			}
@@ -789,7 +840,7 @@ class InstallNative implements Callable<Integer> {
 		}
 		System.out.println();
 		System.out.println("Usage:");
-		System.out.println("  jbang install-native@alaurie              # Install all native apps");
+		System.out.println("  jbang install-native@alaurie -u           # Upgrade installed native apps");
 		System.out.println("  jbang install-native@alaurie fetch digest   # Install specific apps");
 		System.out
 			.println("  jbang install-native@alaurie --clean      # Remove installed native binaries");
@@ -878,6 +929,21 @@ class InstallNative implements Callable<Integer> {
 		if (fromMise != null) {
 			return fromMise;
 		}
+		Path miseGraal = (xdgData != null && !xdgData.isBlank())
+				? Path.of(xdgData, "mise", "installs", "graalvm")
+				: Path.of(userHome, ".local", "share", "mise", "installs", "graalvm");
+		Path fromMiseGraal = scanForGraalVm(miseGraal);
+		if (fromMiseGraal != null) {
+			return fromMiseGraal;
+		}
+
+		Path miseGraalCommunity = (xdgData != null && !xdgData.isBlank())
+				? Path.of(xdgData, "mise", "installs", "graalvm-community")
+				: Path.of(userHome, ".local", "share", "mise", "installs", "graalvm-community");
+		Path fromMiseGraalCommunity = scanForGraalVm(miseGraalCommunity);
+		if (fromMiseGraalCommunity != null) {
+			return fromMiseGraalCommunity;
+		}
 
 		Path jbangJdks = Path.of(userHome, ".jbang", "cache", "jdks");
 		Path fromJbang = scanForGraalVm(jbangJdks);
@@ -962,6 +1028,124 @@ class InstallNative implements Callable<Integer> {
 			}
 		}
 		return null;
+	}
+
+	private record ManifestEntry(String sourceHash, String version, String updatedAt) {
+	}
+
+	private synchronized Map<String, ManifestEntry> loadManifest(Path destination) {
+		Map<String, ManifestEntry> entries = new LinkedHashMap<>();
+		Path manifestPath = destination.resolve(MANIFEST_FILE_NAME);
+		if (!Files.isRegularFile(manifestPath)) {
+			return entries;
+		}
+		try {
+			String content = Files.readString(manifestPath);
+			Object parsed = parseJson(content);
+			if (parsed instanceof Map<?, ?> root) {
+				for (var entry : root.entrySet()) {
+					String alias = String.valueOf(entry.getKey()).toLowerCase(Locale.ROOT);
+					if (entry.getValue() instanceof Map<?, ?> node) {
+						String hash = node.containsKey("sourceHash") ? String.valueOf(node.get("sourceHash")) : "";
+						String ver = node.containsKey("version") ? String.valueOf(node.get("version")) : "";
+						String time = node.containsKey("updatedAt") ? String.valueOf(node.get("updatedAt")) : "";
+						entries.put(alias, new ManifestEntry(hash, ver, time));
+					}
+				}
+			}
+		} catch (Exception e) {
+			if (verbose) {
+				System.err.println("Could not parse manifest: " + e.getMessage());
+			}
+		}
+		return entries;
+	}
+
+	private synchronized void updateManifestEntry(Path destination, String alias, String sourceHash,
+			String version) {
+		try {
+			var manifest = loadManifest(destination);
+			String now = Instant.now().toString();
+			manifest.put(alias.toLowerCase(Locale.ROOT), new ManifestEntry(sourceHash, version, now));
+			saveManifest(destination, manifest);
+		} catch (Exception e) {
+			if (verbose) {
+				System.err.println("Could not update manifest for " + alias + ": " + e.getMessage());
+			}
+		}
+	}
+
+	private synchronized void removeManifestEntry(Path destination, String alias) {
+		try {
+			var manifest = loadManifest(destination);
+			if (manifest.remove(alias.toLowerCase(Locale.ROOT)) != null) {
+				if (manifest.isEmpty()) {
+					Files.deleteIfExists(destination.resolve(MANIFEST_FILE_NAME));
+				} else {
+					saveManifest(destination, manifest);
+				}
+			}
+		} catch (Exception e) {
+			if (verbose) {
+				System.err.println("Could not remove manifest entry for " + alias + ": " + e.getMessage());
+			}
+		}
+	}
+
+	private void saveManifest(Path destination, Map<String, ManifestEntry> manifest) throws Exception {
+		Path manifestPath = destination.resolve(MANIFEST_FILE_NAME);
+		if (manifest.isEmpty()) {
+			Files.deleteIfExists(manifestPath);
+			return;
+		}
+		StringBuilder sb = new StringBuilder("{\n");
+		var iterator = manifest.entrySet().iterator();
+		while (iterator.hasNext()) {
+			var entry = iterator.next();
+			sb.append("  \"").append(escapeJson(entry.getKey())).append("\": {\n");
+			sb.append("    \"sourceHash\": \"").append(escapeJson(entry.getValue().sourceHash())).append("\",\n");
+			sb.append("    \"version\": \"").append(escapeJson(entry.getValue().version())).append("\",\n");
+			sb.append("    \"updatedAt\": \"").append(escapeJson(entry.getValue().updatedAt())).append("\"\n");
+			sb.append("  }");
+			if (iterator.hasNext()) {
+				sb.append(",");
+			}
+			sb.append("\n");
+		}
+		sb.append("}\n");
+		Files.writeString(manifestPath, sb.toString());
+	}
+
+	private static String escapeJson(String s) {
+		if (s == null) {
+			return "";
+		}
+		return s.replace("\\", "\\\\").replace("\"", "\\\"");
+	}
+
+	private static String computeSha256(String content) {
+		if (content == null || content.isEmpty()) {
+			return "";
+		}
+		try {
+			var digest = MessageDigest.getInstance("SHA-256");
+			String normalized = content.replace("\r\n", "\n");
+			byte[] bytes = digest.digest(normalized.getBytes(StandardCharsets.UTF_8));
+			return HexFormat.of().formatHex(bytes);
+		} catch (Exception _) {
+			return "";
+		}
+	}
+
+	private static String extractVersion(String source) {
+		if (source == null) {
+			return "unknown";
+		}
+		var matcher = VERSION_PATTERN.matcher(source);
+		if (matcher.find()) {
+			return matcher.group(1);
+		}
+		return "unknown";
 	}
 
 	void main(String... args) {

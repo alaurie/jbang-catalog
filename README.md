@@ -468,6 +468,13 @@ jbang install-native@alaurie --clean fetch digest
 `--list` and `--clean` are mutually exclusive, and `--list` cannot be combined with application names or build options.
 
 
+Or upgrade installed native binaries whose source has changed:
+
+```bash
+jbang install-native@alaurie -u
+jbang install-native@alaurie -u fetch digest
+```
+
 Or list catalog tools and native compatibility:
 
 ```bash
@@ -477,7 +484,7 @@ jbang install-native@alaurie --list
 ### Options
 
 ```
-Usage: install-native [-fhpvV] [-d=<targetDir>]
+Usage: install-native [-fhpuvV] [-d=<targetDir>]
                       [--graalvm-home=<explicitGraalVmHome>] [-j=<jobs>] [-l |
                       -c] [<apps>...]
 Compile, export, and manage standalone zero-overhead native executables.
@@ -501,6 +508,8 @@ Compile, export, and manage standalone zero-overhead native executables.
   -p, --portable             Build portable binary with compatibility baseline
                                (-march=compatibility) instead of host CPU
                                native (-march=native).
+  -u, --upgrade              Upgrade installed binaries if their source has
+                               changed.
   -v, --verbose              Enable verbose output during native-image
                                compilation.
   -V, --version              Print version information and exit.

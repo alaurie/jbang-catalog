@@ -19,6 +19,8 @@ import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.platform.engine.discovery.DiscoverySelectors;
@@ -153,7 +155,7 @@ public class InstallNativeTest {
 
 		var result = runCommand("-d", tempDir.toString(), "nudge@alaurie");
 		assertEquals(1, result.exitCode());
-		assertTrue(result.stderr().contains("already exists. Use --force (-f) to overwrite."));
+		assertTrue(result.stderr().contains("already exists. Use --force (-f) or --upgrade (-u) to overwrite."));
 	}
 
 	@Test
@@ -203,6 +205,115 @@ public class InstallNativeTest {
 		var result = runCommand("-c", "-d", tempDir.toString(), "digest");
 		assertEquals(0, result.exitCode());
 		assertTrue(result.stdout().contains("Clean complete: 0 removed, 1 not found, 0 failed."));
+	}
+
+	@Test
+	void testHelpDisplaysUpgradeOption() {
+		var result = runCommand("--help");
+		assertEquals(0, result.exitCode());
+		assertTrue(result.stdout().contains("-u, --upgrade"));
+		assertTrue(result.stdout().contains("Upgrade installed binaries"));
+	}
+
+	@Test
+	void testUpgradeWhenNothingInstalled(@TempDir Path tempDir) {
+		var result = runCommand("-u", "-d", tempDir.toString());
+		assertEquals(0, result.exitCode());
+		assertTrue(result.stdout().contains("No installed catalog applications found to upgrade"));
+	}
+
+	@Test
+	void testUpgradeSkipsUpToDateBinary(@TempDir Path tempDir) throws Exception {
+		var suffix = System.getProperty("os.name").toLowerCase().contains("win") ? ".exe" : "";
+		Path binary = tempDir.resolve("fetch" + suffix);
+		Files.writeString(binary, "dummy binary");
+
+		String source = Files.readString(Path.of("apps/fetch/Fetch.java")).replace("\r\n", "\n");
+		byte[] hashBytes = MessageDigest.getInstance("SHA-256").digest(source.getBytes(StandardCharsets.UTF_8));
+		String hash = HexFormat.of().formatHex(hashBytes);
+
+		Path manifest = tempDir.resolve(".jbang-catalog-manifest.json");
+		String manifestJson = """
+				{
+				  "fetch": {
+				    "sourceHash": "%s",
+				    "version": "fetch 2.0",
+				    "updatedAt": "2026-10-22T00:00:00Z"
+				  }
+				}
+				""".formatted(hash);
+		Files.writeString(manifest, manifestJson);
+
+		var result = runCommand("-u", "-d", tempDir.toString(), "fetch");
+		assertEquals(0, result.exitCode());
+		assertTrue(result.stdout().contains("SKIPPED: Already up to date"));
+		assertTrue(result.stdout().contains("0 succeeded, 1 skipped, 0 failed"));
+	}
+
+	@Test
+	void testUpgradeWithNoArgsUpgradesOnlyInstalled(@TempDir Path tempDir) throws Exception {
+		var suffix = System.getProperty("os.name").toLowerCase().contains("win") ? ".exe" : "";
+		Path binary = tempDir.resolve("fetch" + suffix);
+		Files.writeString(binary, "dummy binary");
+
+		String source = Files.readString(Path.of("apps/fetch/Fetch.java")).replace("\r\n", "\n");
+		byte[] hashBytes = MessageDigest.getInstance("SHA-256").digest(source.getBytes(StandardCharsets.UTF_8));
+		String hash = HexFormat.of().formatHex(hashBytes);
+
+		Path manifest = tempDir.resolve(".jbang-catalog-manifest.json");
+		String manifestJson = """
+				{
+				  "fetch": {
+				    "sourceHash": "%s",
+				    "version": "fetch 2.0",
+				    "updatedAt": "2026-10-22T00:00:00Z"
+				  }
+				}
+				""".formatted(hash);
+		Files.writeString(manifest, manifestJson);
+
+		var result = runCommand("-u", "-d", tempDir.toString());
+		assertEquals(0, result.exitCode());
+		assertTrue(result.stdout().contains("Applications to export (1): fetch"));
+		assertTrue(result.stdout().contains("SKIPPED: Already up to date"));
+	}
+
+	@Test
+	void testCleanCannotBeCombinedWithUpgrade() {
+		var result = runCommand("-c", "-u");
+		assertEquals(1, result.exitCode());
+		assertTrue(result.stderr().contains("--clean cannot be combined with --upgrade"));
+	}
+
+	@Test
+	void testListCannotBeCombinedWithUpgrade() {
+		var result = runCommand("-l", "-u");
+		assertEquals(1, result.exitCode());
+		assertTrue(result.stderr().contains("--list cannot be combined"));
+	}
+
+	@Test
+	void testCleanRemovesManifestEntry(@TempDir Path tempDir) throws Exception {
+		var suffix = System.getProperty("os.name").toLowerCase().contains("win") ? ".exe" : "";
+		Path binary = tempDir.resolve("fetch" + suffix);
+		Files.writeString(binary, "dummy binary");
+
+		Path manifest = tempDir.resolve(".jbang-catalog-manifest.json");
+		String manifestJson = """
+				{
+				  "fetch": {
+				    "sourceHash": "dummyhash",
+				    "version": "fetch 2.0",
+				    "updatedAt": "2026-10-22T00:00:00Z"
+				  }
+				}
+				""";
+		Files.writeString(manifest, manifestJson);
+
+		var result = runCommand("-c", "-d", tempDir.toString(), "fetch");
+		assertEquals(0, result.exitCode());
+		assertFalse(Files.exists(binary));
+		assertFalse(Files.exists(manifest));
 	}
 
 	public static void main(String... args) {
