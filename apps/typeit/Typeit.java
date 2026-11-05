@@ -559,6 +559,13 @@ class Typeit implements Callable<Integer> {
 			} catch (Throwable t) {
 				throw new RuntimeException("Failed to emit uinput event", t);
 			}
+			// Pace transitions, not just characters: remote clients must observe
+			// Shift before key-down and keep it active through key-up.
+			try {
+				Thread.sleep(Duration.ofMillis(speed));
+			} catch (InterruptedException _) {
+				Thread.currentThread().interrupt();
+			}
 		}
 
 		private void sendKey(short code, boolean shifted) {
@@ -569,11 +576,6 @@ class Typeit implements Callable<Integer> {
 			emitEvent(code, 0);
 			if (shifted) {
 				emitEvent(KEY_LEFTSHIFT, 0);
-			}
-			try {
-				Thread.sleep(Duration.ofMillis(speed));
-			} catch (InterruptedException _) {
-				Thread.currentThread().interrupt();
 			}
 		}
 

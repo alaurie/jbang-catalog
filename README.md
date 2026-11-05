@@ -152,6 +152,11 @@ Or with custom countdown delay and typing speed:
 jbang typeit@alaurie -d 3 -s 20
 ```
 
+On Linux, the uinput driver applies `--speed` between individual key press/release transitions, not just
+between characters. This gives remote clients time to register Shift before a letter or symbol and
+keeps it held through the key release. Shifted characters therefore take longer than unshifted ones.
+Increase `-s` for remote sessions that need more time to process input.
+
 Or with custom text instead of clipboard:
 
 ```bash
