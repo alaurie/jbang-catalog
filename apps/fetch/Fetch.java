@@ -90,8 +90,6 @@ class Fetch implements Callable<Integer> {
 	private static final int MAX_MANIFEST_BYTES = 64 * 1024;
 	private static final Duration MANIFEST_TIMEOUT = Duration.ofSeconds(3);
 	private static final Pattern CONTENT_RANGE = Pattern.compile("bytes ([0-9]+)-([0-9]+)/([0-9]+)");
-	private static final Duration CHUNK_TIMEOUT = Duration.ofSeconds(30);
-	private static final Duration STREAM_TIMEOUT = Duration.ofSeconds(60);
 
 	private final HttpClient client = HttpClient.newBuilder()
 		.followRedirects(HttpClient.Redirect.NORMAL)
@@ -405,8 +403,8 @@ class Fetch implements Callable<Integer> {
 
 	private boolean downloadSingleStream(Path partPath, MessageDigest digest) {
 		try {
+			// JDK 26+ applies request timeouts to the body too; downloads have no total-duration limit.
 			HttpRequest req = applyHeaders(HttpRequest.newBuilder(uri))
-				.timeout(STREAM_TIMEOUT)
 				.GET()
 				.build();
 			HttpResponse<InputStream> res = client.send(req, HttpResponse.BodyHandlers.ofInputStream());
@@ -495,8 +493,8 @@ class Fetch implements Callable<Integer> {
 								return;
 							}
 
+							// Keep the connect timeout, but allow large ranges to take as long as needed.
 							HttpRequest req = applyHeaders(HttpRequest.newBuilder(uri))
-								.timeout(CHUNK_TIMEOUT)
 								.header("Range", "bytes=" + startOffset + "-" + endOffset)
 								.header("If-Match", etag)
 								.GET()

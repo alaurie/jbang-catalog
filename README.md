@@ -394,6 +394,8 @@ When a checksum is available, `fetch` verifies the `.part` file before replacing
 
 Ranged downloads require a strong ETag that matches every response. Servers without one use a fresh single-stream download instead of resuming unverified chunks; when no checksum manifest is found, `fetch` reports that the saved file was not checksum-verified.
 
+Downloads have no fixed total-duration timeout, so large files can continue past 30 seconds (ranged) or 60 seconds (single-stream) on Java 26+. The 15-second connection timeout and checksum-manifest timeout remain in effect. A stalled response body must be interrupted manually; ranged downloads retain their progress for resumption.
+
 `--print-hash` calculates and displays the SHA-256 digest of the saved file upon completion. `--retries` specifies the number of transient reconnection attempts per chunk worker before failing.
 `--expected-hash` cannot be combined with `--no-checksum`; use one explicit verification policy.
 

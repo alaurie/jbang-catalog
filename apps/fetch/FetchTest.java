@@ -24,6 +24,7 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.platform.engine.discovery.DiscoverySelectors;
 import org.junit.platform.launcher.core.LauncherDiscoveryRequestBuilder;
@@ -303,6 +304,78 @@ public class FetchTest {
 			assertEquals(sha256Hex, actualHex);
 		} finally {
 			server.stop(0);
+		}
+	}
+
+	@Test
+	@Timeout(90)
+	void testRangedDownloadCanExceedThirtySeconds(@TempDir Path tempDir) throws Exception {
+		assertSlowDownloadCompletes(tempDir, true);
+	}
+
+	@Test
+	@Timeout(90)
+	void testStreamingDownloadCanExceedSixtySeconds(@TempDir Path tempDir) throws Exception {
+		assertSlowDownloadCompletes(tempDir, false);
+	}
+
+	/// Streams bytes regularly beyond the former request deadline, then verifies the published file.
+	private void assertSlowDownloadCompletes(Path tempDir, boolean ranged) throws Exception {
+		int bytesPerWorker = ranged ? 34 : 64;
+		byte[] payload = new byte[bytesPerWorker * (ranged ? 4 : 1)];
+		for (int i = 0; i < payload.length; i++) {
+			payload[i] = (byte) (i % 251);
+		}
+		var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+			server.setExecutor(executor);
+			server.createContext("/slow.dat", exchange -> {
+				exchange.getResponseHeaders().set("ETag", "\"slow-payload\"");
+				if (ranged) {
+					exchange.getResponseHeaders().set("Accept-Ranges", "bytes");
+				}
+				if ("HEAD".equals(exchange.getRequestMethod())) {
+					exchange.getResponseHeaders().set("Content-Length", String.valueOf(payload.length));
+					exchange.sendResponseHeaders(200, -1);
+					exchange.close();
+					return;
+				}
+				int start = 0;
+				int end = payload.length - 1;
+				if (ranged) {
+					String range = exchange.getRequestHeaders().getFirst("Range");
+					String[] bounds = range.substring(6).split("-");
+					start = Integer.parseInt(bounds[0]);
+					end = Integer.parseInt(bounds[1]);
+					exchange.getResponseHeaders().set("Content-Range",
+							"bytes " + start + "-" + end + "/" + payload.length);
+				}
+				exchange.sendResponseHeaders(ranged ? 206 : 200, end - start + 1);
+				try (var out = exchange.getResponseBody()) {
+					for (int i = start; i <= end; i++) {
+						if (i > start) {
+							Thread.sleep(1000);
+						}
+						out.write(payload[i]);
+						out.flush();
+					}
+				} catch (InterruptedException _) {
+					Thread.currentThread().interrupt();
+				}
+			});
+			server.start();
+			try {
+				Path destination = tempDir.resolve("slow.dat");
+				String expectedHash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(payload));
+				var result = runCommand("http://127.0.0.1:" + server.getAddress().getPort() + "/slow.dat",
+						"-o", destination.toString(), "-c", "4", "--expected-hash", expectedHash, "--quiet");
+				assertEquals(0, result.exitCode(), result.stderr());
+				assertEquals(expectedHash, sha256Of(destination));
+				assertFalse(Files.exists(Path.of(destination + ".part")));
+				assertFalse(Files.exists(Path.of(destination + ".part.meta")));
+			} finally {
+				server.stop(0);
+			}
 		}
 	}
 
