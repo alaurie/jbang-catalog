@@ -49,19 +49,15 @@ import picocli.CommandLine.Parameters;
 
 /// CLI utility to backup, restore, and inspect complete Jellyfin installations.
 ///
-/// Designed for full disaster recovery and OS migrations across Linux
-/// distributions. Captures configurations (/etc/jellyfin), live databases
-/// (jellyfin.db, library.db), installed plugins, and metadata, while safely
-/// stopping the systemd service and excluding temporary cache bloat and previous
-/// internal backups.
+/// Supports Linux systemd and Windows service installations, plus stopped
+/// Windows tray/portable installations. Archives configuration, databases,
+/// plugins, and metadata using a platform-independent layout.
 @Command(name = "jellyfin-backup", mixinStandardHelpOptions = true, version = "jellyfin-backup 2.0", description = "Complete backup, restore, and disaster recovery utility for Jellyfin media server.", subcommands = {
 		JellyfinBackup.BackupCmd.class, JellyfinBackup.RestoreCmd.class,
 		JellyfinBackup.InspectCmd.class })
 @SuppressWarnings("unused")
 class JellyfinBackup implements Callable<Integer> {
 
-	static final String DEFAULT_CONFIG_DIR = "/etc/jellyfin";
-	static final String DEFAULT_DATA_DIR = "/var/lib/jellyfin";
 	static final String MANIFEST_ENTRY_NAME = "jellyfin-manifest.json";
 
 	void main(String... args) {
@@ -90,15 +86,20 @@ class JellyfinBackup implements Callable<Integer> {
 				"--output" }, description = "Target destination directory or .tar.gz archive path. Default: current directory.")
 		private Path outputPath;
 
-		@Option(names = { "-c",
-				"--config-dir" }, description = "Jellyfin configuration directory. Default: /etc/jellyfin")
-		private Path configDir = Path.of(DEFAULT_CONFIG_DIR);
+		@Option(names = { "-c", "--config-dir" }, description = "Configuration directory. Default: /etc/jellyfin on Linux, "
+				+ "<data-dir>/config on Windows; honors JELLYFIN_CONFIG_DIR.")
+		private Path configDir;
 
-		@Option(names = { "-d", "--data-dir" }, description = "Jellyfin data directory. Default: /var/lib/jellyfin")
-		private Path dataDir = Path.of(DEFAULT_DATA_DIR);
+		@Option(names = { "-d", "--data-dir" }, description = "Data directory. Default: /var/lib/jellyfin on Linux; "
+				+ "auto-detected on Windows; honors JELLYFIN_DATA_DIR.")
+		private Path dataDir;
+
+		@Option(names = { "--service-name" }, description = "Service name. "
+				+ "Default: jellyfin on Linux, JellyfinServer on Windows.")
+		private String serviceName = defaultServiceName();
 
 		@Option(names = {
-				"--no-stop" }, description = "Do not stop the Jellyfin systemd service during backup (live copy).")
+				"--no-stop" }, description = "Do not stop or check Jellyfin before backup (unsafe if the server is running).")
 		private boolean noStop;
 
 		@Option(names = { "--include-cache" }, description = "Include transcode cache and temporary directories.")
@@ -110,10 +111,15 @@ class JellyfinBackup implements Callable<Integer> {
 
 		@Override
 		public Integer call() throws Exception {
-			if (!isRunningAsRoot()
+			if (dataDir == null) {
+				dataDir = defaultDataDir();
+			}
+			if (configDir == null) {
+				configDir = defaultConfigDir(dataDir);
+			}
+			if (isLinux() && !isRunningAsRoot()
 					&& (configDir.toString().startsWith("/etc") || dataDir.toString().startsWith("/var"))) {
-				System.err.println(
-						"Error: 'jellyfin-backup backup' requires root privileges to read /var/lib/jellyfin and stop services.");
+				System.err.println("Error: Run as root to back up system Jellyfin directories.");
 				return 1;
 			}
 
@@ -148,36 +154,30 @@ class JellyfinBackup implements Callable<Integer> {
 			System.out.println("---------------------------------------------------------------");
 
 			boolean serviceWasRunning = false;
-			if (!noStop && isSystemdServiceActive("jellyfin")) {
-				serviceWasRunning = true;
-				System.out.print("Stopping 'jellyfin' service for clean database snapshot... ");
-				if (stopSystemdService("jellyfin")) {
-					System.out.println("OK");
-				} else {
-					System.err.println("FAILED");
-					System.err.println(
-							"Error: Could not stop jellyfin service. Aborting to prevent inconsistent database state.");
-					return 1;
-				}
-			}
 
 			long startTime = System.currentTimeMillis();
 			int exitCode = 0;
 			try {
+				if (!noStop) {
+					serviceWasRunning = isServiceRunning(serviceName);
+					if (serviceWasRunning) {
+						System.out.printf("Stopping '%s' service for clean database snapshot...%n", serviceName);
+						changeServiceState(serviceName, false);
+					}
+					ensureWindowsServerStopped();
+				}
 				createBackupArchive(finalArchiveFile, hasConfig, hasData);
 			} catch (Exception e) {
 				System.err.println("Error: Failed to create backup archive: " + e.getMessage());
 				exitCode = 1;
 			} finally {
 				if (serviceWasRunning) {
-					System.out.print("Restarting 'jellyfin' service... ");
-					if (startSystemdService("jellyfin")) {
-						System.out.println("OK");
-					} else {
-						System.err.println("FAILED (Please check 'systemctl status jellyfin')");
-						if (exitCode == 0) {
-							exitCode = 1;
-						}
+					try {
+						System.out.printf("Restarting '%s' service...%n", serviceName);
+						changeServiceState(serviceName, true);
+					} catch (Exception e) {
+						System.err.println("Error: Could not restart Jellyfin: " + e.getMessage());
+						exitCode = 1;
 					}
 				}
 			}
@@ -243,16 +243,16 @@ class JellyfinBackup implements Callable<Integer> {
 
 					// 1. Archive /etc/jellyfin
 					if (hasConfig) {
-						System.out.print("Archiving configurations (/etc/jellyfin)... ");
-						archiveDirectory(configDir, "etc/jellyfin", tarOut, false, false);
+						System.out.printf("Archiving configurations (%s)... ", configDir);
+						archiveDirectory(configDir, "etc/jellyfin", tarOut, false, false, null);
 						System.out.println("OK");
 					}
 
 					// 2. Archive /var/lib/jellyfin
 					if (hasData) {
-						System.out.print("Archiving databases, plugins & metadata (/var/lib/jellyfin)... ");
+						System.out.printf("Archiving databases, plugins & metadata (%s)... ", dataDir);
 						archiveDirectory(dataDir, "var/lib/jellyfin", tarOut, includeCache,
-								includeInternalBackups);
+								includeInternalBackups, hasConfig ? configDir.toAbsolutePath().normalize() : null);
 						System.out.println("OK");
 					}
 
@@ -292,12 +292,15 @@ class JellyfinBackup implements Callable<Integer> {
 		}
 
 		private void archiveDirectory(Path baseDir, String prefix, TarArchiveOutputStream tarOut,
-				boolean inclCache, boolean inclBackups) throws Exception {
+				boolean inclCache, boolean inclBackups, Path excludedConfig) throws Exception {
 			Files.walkFileTree(baseDir, new SimpleFileVisitor<>() {
 				@Override
 				public java.nio.file.FileVisitResult preVisitDirectory(Path dir,
 						BasicFileAttributes attrs) throws IOException {
-					String relPath = baseDir.relativize(dir).toString();
+					if (!dir.equals(baseDir) && dir.toAbsolutePath().normalize().equals(excludedConfig)) {
+						return java.nio.file.FileVisitResult.SKIP_SUBTREE;
+					}
+					String relPath = baseDir.relativize(dir).toString().replace('\\', '/');
 					if (!relPath.isEmpty()) {
 						if (!inclCache && isCachePath(relPath)) {
 							return java.nio.file.FileVisitResult.SKIP_SUBTREE;
@@ -321,7 +324,7 @@ class JellyfinBackup implements Callable<Integer> {
 				@Override
 				public java.nio.file.FileVisitResult visitFile(Path file, BasicFileAttributes attrs)
 						throws IOException {
-					String relPath = baseDir.relativize(file).toString();
+					String relPath = baseDir.relativize(file).toString().replace('\\', '/');
 					if (!inclCache && isCachePath(relPath)) {
 						return java.nio.file.FileVisitResult.CONTINUE;
 					}
@@ -382,7 +385,7 @@ class JellyfinBackup implements Callable<Integer> {
 				@Override
 				public java.nio.file.FileVisitResult visitFileFailed(Path file, IOException exc)
 						throws IOException {
-					String relPath = baseDir.relativize(file).toString();
+					String relPath = baseDir.relativize(file).toString().replace('\\', '/');
 					if ((!inclCache && isCachePath(relPath))
 							|| (!inclBackups && (isBackupPath(relPath)
 									|| file.toString().endsWith(".zip")
@@ -416,14 +419,20 @@ class JellyfinBackup implements Callable<Integer> {
 		@Parameters(index = "0", description = "Path to the .tar.gz backup archive.")
 		private Path archiveFile;
 
-		@Option(names = { "-c",
-				"--config-dir" }, description = "Target configuration directory. Default: /etc/jellyfin")
-		private Path configDir = Path.of(DEFAULT_CONFIG_DIR);
+		@Option(names = { "-c", "--config-dir" }, description = "Target configuration directory. "
+				+ "Default: /etc/jellyfin on Linux, <data-dir>/config on Windows; honors JELLYFIN_CONFIG_DIR.")
+		private Path configDir;
 
-		@Option(names = { "-d", "--data-dir" }, description = "Target data directory. Default: /var/lib/jellyfin")
-		private Path dataDir = Path.of(DEFAULT_DATA_DIR);
+		@Option(names = { "-d", "--data-dir" }, description = "Target data directory. "
+				+ "Default: /var/lib/jellyfin on Linux; auto-detected on Windows; honors JELLYFIN_DATA_DIR.")
+		private Path dataDir;
 
-		@Option(names = { "--no-stop" }, description = "Do not stop the Jellyfin systemd service during restore.")
+		@Option(names = { "--service-name" }, description = "Service name. "
+				+ "Default: jellyfin on Linux, JellyfinServer on Windows.")
+		private String serviceName = defaultServiceName();
+
+		@Option(names = { "--no-stop" }, description = "Do not stop or check Jellyfin before restore "
+				+ "(unsafe if the server is running).")
 		private boolean noStop;
 
 		@Option(names = {
@@ -439,16 +448,21 @@ class JellyfinBackup implements Callable<Integer> {
 
 		@Override
 		public Integer call() throws Exception {
+			if (dataDir == null) {
+				dataDir = defaultDataDir();
+			}
+			if (configDir == null) {
+				configDir = defaultConfigDir(dataDir);
+			}
 			if (!Files.isRegularFile(archiveFile)) {
 				System.err.printf("Error: Backup archive '%s' does not exist or is not a file.%n",
 						archiveFile);
 				return 1;
 			}
 
-			if (!isRunningAsRoot()
+			if (isLinux() && !isRunningAsRoot()
 					&& (configDir.toString().startsWith("/etc") || dataDir.toString().startsWith("/var"))) {
-				System.err.println(
-						"Error: 'jellyfin-backup restore' requires root privileges to write /var/lib/jellyfin and /etc/jellyfin.");
+				System.err.println("Error: Run as root to restore system Jellyfin directories.");
 				return 1;
 			}
 
@@ -486,21 +500,18 @@ class JellyfinBackup implements Callable<Integer> {
 			}
 
 			boolean serviceWasRunning = false;
-			if (!noStop && isSystemdServiceActive("jellyfin")) {
-				serviceWasRunning = true;
-				System.out.print("Stopping 'jellyfin' service before restore... ");
-				if (stopSystemdService("jellyfin")) {
-					System.out.println("OK");
-				} else {
-					System.err.println("FAILED");
-					System.err.println("Error: Could not stop jellyfin service before restore. Aborting.");
-					return 1;
-				}
-			}
 
 			long startTime = System.currentTimeMillis();
 			int exitCode = 0;
 			try {
+				if (!noStop) {
+					serviceWasRunning = isServiceRunning(serviceName);
+					if (serviceWasRunning) {
+						System.out.printf("Stopping '%s' service before restore...%n", serviceName);
+						changeServiceState(serviceName, false);
+					}
+					ensureWindowsServerStopped();
+				}
 				unpackArchive();
 			} catch (Exception e) {
 				System.err.println("Error: Failed to restore backup archive: " + e.getMessage());
@@ -511,14 +522,12 @@ class JellyfinBackup implements Callable<Integer> {
 				}
 
 				if (serviceWasRunning) {
-					System.out.print("Starting 'jellyfin' service... ");
-					if (startSystemdService("jellyfin")) {
-						System.out.println("OK");
-					} else {
-						System.err.println("FAILED (Please check 'systemctl status jellyfin')");
-						if (exitCode == 0) {
-							exitCode = 1;
-						}
+					try {
+						System.out.printf("Restarting '%s' service...%n", serviceName);
+						changeServiceState(serviceName, true);
+					} catch (Exception e) {
+						System.err.println("Error: Could not restart Jellyfin: " + e.getMessage());
+						exitCode = 1;
 					}
 				}
 			}
@@ -606,8 +615,7 @@ class JellyfinBackup implements Callable<Integer> {
 			}
 		}
 
-		/// Creates and checks each directory component without following
-		/// preexisting symlinks.
+		/// Creates and checks each directory component, rejecting symlinks and Windows junctions.
 		private static void ensureSafeDirectory(Path directory) throws IOException {
 			Path current = directory.getRoot();
 			for (Path component : directory) {
@@ -619,6 +627,8 @@ class JellyfinBackup implements Callable<Integer> {
 					Files.createDirectory(current);
 				} else if (!Files.isDirectory(current, LinkOption.NOFOLLOW_LINKS)) {
 					throw new IOException("Not a restore directory: " + current);
+				} else if (isWindows() && !current.toRealPath().equals(current)) {
+					throw new IOException("Directory link or alias in restore directory: " + current);
 				}
 			}
 		}
@@ -640,7 +650,7 @@ class JellyfinBackup implements Callable<Integer> {
 				if (current == null || !current.startsWith(root)) {
 					throw new IOException("Symlink escapes restore root: " + link + " -> " + linkTarget);
 				}
-				if (Files.isSymbolicLink(current)) {
+				if (Files.isSymbolicLink(current) || (isWindows() && Files.isDirectory(current))) {
 					current = current.toRealPath();
 					if (!current.startsWith(root)) {
 						throw new IOException("Symlink escapes restore root: " + link + " -> " + linkTarget);
@@ -917,39 +927,152 @@ class JellyfinBackup implements Callable<Integer> {
 		return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("linux");
 	}
 
-	static boolean isSystemdServiceActive(String serviceName) {
+	/// Returns whether this process is running on Windows.
+	static boolean isWindows() {
+		return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows");
+	}
+
+	/// Resolves Jellyfin's data root, preferring the standard Windows installation.
+	static Path defaultDataDir() {
+		String override = System.getenv("JELLYFIN_DATA_DIR");
+		if (override != null && !override.isBlank()) {
+			return Path.of(override);
+		}
+		if (!isWindows()) {
+			return Path.of("/var/lib/jellyfin");
+		}
+		var home = Path.of(System.getProperty("user.home"));
+		String programData = System.getenv("ProgramData");
+		Path shared = (programData == null || programData.isBlank()
+				? home.toAbsolutePath().getRoot().resolve("ProgramData") : Path.of(programData))
+				.resolve("Jellyfin").resolve("Server");
+		String localAppData = System.getenv("LOCALAPPDATA");
+		Path local = (localAppData == null || localAppData.isBlank()
+				? home.resolve("AppData").resolve("Local") : Path.of(localAppData)).resolve("jellyfin");
+		return Files.isDirectory(shared) || !Files.isDirectory(local) ? shared : local;
+	}
+
+	/// Resolves the config root after applying an explicit or default data directory.
+	static Path defaultConfigDir(Path dataDir) {
+		String override = System.getenv("JELLYFIN_CONFIG_DIR");
+		if (override != null && !override.isBlank()) {
+			return Path.of(override);
+		}
+		return isWindows() ? dataDir.resolve("config") : Path.of("/etc/jellyfin");
+	}
+
+	/// Returns the platform's standard Jellyfin service name.
+	static String defaultServiceName() {
+		return isWindows() ? "JellyfinServer" : "jellyfin";
+	}
+
+	/// Refuses to copy a live Windows tray/portable instance that service control cannot stop.
+	private static void ensureWindowsServerStopped() throws IOException, InterruptedException {
+		if (!isWindows()) {
+			return;
+		}
+		var process = new ProcessBuilder("tasklist.exe", "/FI", "IMAGENAME eq jellyfin.exe", "/FO", "CSV", "/NH")
+				.redirectErrorStream(true).start();
+		String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+		if (process.waitFor() != 0) {
+			throw new IOException("Cannot check for running Jellyfin processes: " + output.strip());
+		}
+		if (output.toLowerCase(Locale.ROOT).contains("\"jellyfin.exe\"")) {
+			throw new IOException("Jellyfin is still running. Quit the tray/portable server before continuing."
+					+ " Use --no-stop only if you accept copying a live database.");
+		}
+	}
+
+
+	/// Queries the platform service manager; Windows errors must not be mistaken for a stopped server.
+	static boolean isServiceRunning(String serviceName) throws IOException, InterruptedException {
+		if (isWindows()) {
+			return windowsServiceCommand(serviceName, "query") == 4;
+		}
 		if (!isLinux()) {
 			return false;
 		}
-		try {
-			Process process = new ProcessBuilder("systemctl", "is-active", serviceName).start();
-			String out = new String(process.getInputStream().readAllBytes()).trim();
-			process.waitFor();
-			return "active".equalsIgnoreCase(out);
-		} catch (Exception _) {
-			return false;
+		var process = new ProcessBuilder("systemctl", "is-active", serviceName).start();
+		String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+		process.waitFor();
+		return "active".equals(output.strip());
+	}
+
+	/// Starts or stops a service, waiting for Windows to reach the requested state.
+	static void changeServiceState(String serviceName, boolean start) throws IOException, InterruptedException {
+		if (isWindows()) {
+			windowsServiceCommand(serviceName, start ? "start" : "stop");
+			return;
+		}
+		var process = new ProcessBuilder("systemctl", start ? "start" : "stop", serviceName)
+				.redirectErrorStream(true).start();
+		String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+		if (process.waitFor() != 0) {
+			throw new IOException(output.strip());
 		}
 	}
 
-	static boolean stopSystemdService(String serviceName) {
-		try {
-			return new ProcessBuilder("systemctl", "stop", serviceName).start().waitFor() == 0;
-		} catch (Exception _) {
-			return false;
+	/// Uses Windows PowerShell's service API with literal names, numeric states, and bounded state transitions.
+	private static int windowsServiceCommand(String serviceName, String action) throws IOException, InterruptedException {
+		String script = """
+				$ErrorActionPreference = 'Stop'
+				[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+				try {
+				    $service = @(Get-Service | Where-Object { $_.Name -eq $env:JBANG_JELLYFIN_SERVICE })
+				    if ($service.Count -eq 0) {
+				        if ($env:JBANG_JELLYFIN_ACTION -eq 'query') { Write-Output 0; exit 0 }
+				        throw 'Jellyfin service is not installed.'
+				    }
+				    $service = $service[0]
+				    if ($env:JBANG_JELLYFIN_ACTION -eq 'query') {
+				        if ($service.Status -notin @('Running', 'Stopped')) {
+				            throw "Jellyfin service is in state $($service.Status). Wait for it to settle."
+				        }
+				        Write-Output ([int]$service.Status)
+				    } else {
+				        $target = if ($env:JBANG_JELLYFIN_ACTION -eq 'start') { 'Running' } else { 'Stopped' }
+				        if ($service.Status.ToString() -ne $target) {
+				            if ($target -eq 'Running') { $service.Start() } else { $service.Stop() }
+				            $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]$target,
+				                [TimeSpan]::FromSeconds(60))
+				        }
+				        Write-Output ([int]$service.Status)
+				    }
+				} catch {
+				    [Console]::Error.WriteLine($_.Exception.Message)
+				    exit 1
+				}
+				""";
+		var builder = new ProcessBuilder("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+				"-Command", script).redirectErrorStream(true);
+		builder.environment().put("JBANG_JELLYFIN_SERVICE", serviceName);
+		builder.environment().put("JBANG_JELLYFIN_ACTION", action);
+		var process = builder.start();
+		String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();
+		if (process.waitFor() != 0) {
+			throw new IOException(output + " Run PowerShell as Administrator to control Windows services.");
 		}
-	}
-
-	static boolean startSystemdService(String serviceName) {
 		try {
-			return new ProcessBuilder("systemctl", "start", serviceName).start().waitFor() == 0;
-		} catch (Exception _) {
-			return false;
+			return Integer.parseInt(output);
+		} catch (NumberFormatException e) {
+			throw new IOException("Unexpected Windows service response: " + output, e);
 		}
 	}
 
 	static String detectJellyfinVersion() {
 		try {
-			Process p = new ProcessBuilder("jellyfin", "--version").start();
+			String command = "jellyfin";
+			if (isWindows()) {
+				command = "jellyfin.exe";
+				String programFiles = System.getenv("ProgramFiles");
+				if (programFiles != null && !programFiles.isBlank()) {
+					Path installed = Path.of(programFiles, "Jellyfin", "Server", "jellyfin.exe");
+					if (Files.isRegularFile(installed)) {
+						command = installed.toString();
+					}
+				}
+			}
+			Process p = new ProcessBuilder(command, "--version").start();
 			String out = new String(p.getInputStream().readAllBytes()).trim();
 			if (!out.isBlank()) {
 				return out;

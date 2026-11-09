@@ -526,7 +526,7 @@ Compile, export, and manage standalone zero-overhead native executables.
 
 ## jellyfin-backup
 
-`jellyfin-backup` is a complete disaster recovery backup, restore, and inspection utility for Jellyfin media server across Linux distributions.
+`jellyfin-backup` is a complete disaster recovery backup, restore, and inspection utility for Jellyfin media server on Linux and Windows.
 
 ### Usage
 
@@ -548,7 +548,22 @@ Or restore onto a fresh OS installation:
 sudo jbang jellyfin-backup@alaurie restore /path/to/backups/jellyfin-backup-2026-09-04_120000.tar.gz
 ```
 
-Restore rejects archive links or preexisting directory links that escape the target directories. If an archive entry cannot be written, restore exits with an error rather than reporting completion.
+On Windows, use PowerShell (run as Administrator when controlling a Windows service):
+
+```powershell
+jbang jellyfin-backup@alaurie backup -o "$HOME\Downloads\jellyfin-backup.tar.gz"
+jbang jellyfin-backup@alaurie restore "$HOME\Downloads\jellyfin-backup.tar.gz"
+```
+
+Windows defaults to `%ProgramData%\Jellyfin\Server`, falling back to `%LOCALAPPDATA%\jellyfin` when only that installation exists. Configuration defaults to `<data-dir>\config`. Linux keeps `/var/lib/jellyfin` and `/etc/jellyfin`. `JELLYFIN_DATA_DIR` and `JELLYFIN_CONFIG_DIR` override these defaults; `-d` and `-c` take precedence over the environment. Custom installer/registry paths must be supplied explicitly. On Windows, `-d` also determines the default configuration directory unless `-c` or `JELLYFIN_CONFIG_DIR` is set.
+
+Both backup and restore stop a running service and restart it afterward, including on failure. The default service is `JellyfinServer` on Windows and `jellyfin` on Linux; override it with `--service-name`. Windows service transitions wait up to 60 seconds. Windows does not auto-elevate: permission failures explain that an Administrator shell is needed.
+
+For Windows tray/portable installs, quit Jellyfin before running either command. The utility refuses to proceed while `jellyfin.exe` is still running after service handling. `--no-stop` bypasses both service control and this process check; copying a live database can produce an inconsistent backup, and restoring over one is unsafe.
+
+The archive layout is unchanged, so existing Linux archives remain readable on Windows and Windows-created archives can be restored to separate Linux config/data directories. Nested Windows configuration is archived only once; cache and internal-backup exclusions also apply to Windows paths. Use a compatible Jellyfin version and review media paths and platform-specific plugins when migrating operating systems. Windows ACLs are inherited, not archived or repaired: ensure the service account has Modify access to the restored config/data directories. Restoring symbolic links on Windows may require Developer Mode or Administrator privileges.
+
+Restore rejects archive links or preexisting directory links that escape the target directories, including Windows junctions. If an archive entry cannot be written, restore exits with an error rather than reporting completion.
 
 Backup creation also fails on unreadable source entries instead of silently writing an incomplete archive.
 
@@ -566,6 +581,10 @@ Commands:
   inspect  Inspect the contents, manifest, and database metrics of a backup
              archive.
 ```
+
+For backup/restore flags, run `jbang jellyfin-backup@alaurie backup --help` or `jbang jellyfin-backup@alaurie restore --help`.
+
+---
 
 ## Development
 

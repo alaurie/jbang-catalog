@@ -12,7 +12,6 @@ package jellyfinbackup;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
@@ -30,8 +29,11 @@ import java.util.HexFormat;
 import java.util.Map;
 import java.util.zip.GZIPOutputStream;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.platform.engine.discovery.DiscoverySelectors;
 import org.junit.platform.launcher.core.LauncherDiscoveryRequestBuilder;
@@ -273,6 +275,65 @@ public class JellyfinBackupTest {
 	}
 
 	@Test
+	void testNestedWindowsLayoutRestoresToSeparateRoots(@TempDir Path tempDir) throws Exception {
+		Path source = tempDir.resolve("Jellyfin Server");
+		Path config = Files.createDirectories(source.resolve("config"));
+		Path database = Files.createDirectories(source.resolve("data"));
+		Path nestedCache = Files.createDirectories(source.resolve("metadata/cache"));
+		Path internalBackups = Files.createDirectories(source.resolve("data/backups"));
+		Files.writeString(config.resolve("system.xml"), "nested configuration");
+		Files.writeString(database.resolve("jellyfin.db"), "database");
+		Files.writeString(nestedCache.resolve("scratch"), "cache");
+		Files.writeString(internalBackups.resolve("previous.zip"), "old backup");
+		Path archive = tempDir.resolve("nested.tar.gz");
+
+		var backup = runCommand("backup", "--no-stop", "-c", config.toString(),
+				"-d", source.toString(), "-o", archive.toString());
+		assertEquals(0, backup.exitCode(), backup.stderr());
+		try (var input = new java.util.zip.GZIPInputStream(Files.newInputStream(archive));
+				var tar = new TarArchiveInputStream(input)) {
+			TarArchiveEntry entry;
+			while ((entry = tar.getNextEntry()) != null) {
+				assertFalse(entry.getName().startsWith("var/lib/jellyfin/config/"),
+						"Nested configuration must not be archived a second time as data");
+			}
+		}
+
+		Path restoredConfig = tempDir.resolve("restored-config");
+		Path restoredData = tempDir.resolve("restored-data");
+		var restore = runCommand("restore", "--yes", "--no-stop", "--no-chown",
+				"-c", restoredConfig.toString(), "-d", restoredData.toString(), archive.toString());
+		assertEquals(0, restore.exitCode(), restore.stderr());
+		assertEquals("nested configuration", Files.readString(restoredConfig.resolve("system.xml")));
+		assertEquals("database", Files.readString(restoredData.resolve("data/jellyfin.db")));
+		assertFalse(Files.exists(restoredData.resolve("config")));
+		assertFalse(Files.exists(restoredData.resolve("metadata/cache")));
+		assertFalse(Files.exists(restoredData.resolve("data/backups")));
+	}
+
+	@Test
+	void testNestedWindowsCacheAndBackupsCanBeIncluded(@TempDir Path tempDir) throws Exception {
+		Path source = tempDir.resolve("server");
+		Path config = Files.createDirectories(source.resolve("config"));
+		Files.writeString(config.resolve("system.xml"), "config");
+		Files.createDirectories(source.resolve("metadata/cache"));
+		Files.createDirectories(source.resolve("data/backups"));
+		Files.writeString(source.resolve("metadata/cache/payload"), "cached data");
+		Files.writeString(source.resolve("data/backups/previous.zip"), "archive");
+		Path archive = tempDir.resolve("with-cache.tar.gz");
+		var backup = runCommand("backup", "--no-stop", "--include-cache", "--include-internal-backups",
+				"-c", config.toString(), "-d", source.toString(), "-o", archive.toString());
+		assertEquals(0, backup.exitCode(), backup.stderr());
+		Path restored = tempDir.resolve("restored-server");
+		var restore = runCommand("restore", "--yes", "--no-stop", "--no-chown",
+				"-c", restored.resolve("config").toString(), "-d", restored.toString(), archive.toString());
+		assertEquals(0, restore.exitCode(), restore.stderr());
+		assertEquals("config", Files.readString(restored.resolve("config/system.xml")));
+		assertEquals("cached data", Files.readString(restored.resolve("metadata/cache/payload")));
+		assertEquals("archive", Files.readString(restored.resolve("data/backups/previous.zip")));
+	}
+
+	@Test
 	void testBackupFailurePreservesExistingArchiveAndChecksum(@TempDir Path tempDir)
 			throws Exception {
 		Path archive = tempDir.resolve("existing.tar.gz");
@@ -498,24 +559,38 @@ public class JellyfinBackupTest {
 	}
 
 	@Test
-	void testBuildSudoCommand() {
-		var javaCmd = JellyfinBackup.buildSudoCommand("/usr/bin/java",
-				new String[] { "-cp", "app.jar", "jellyfinbackup.JellyfinBackup", "backup" }, "backup");
-		assertNotNull(javaCmd);
-		assertEquals("sudo", javaCmd.get(0));
-		assertEquals("/usr/bin/java", javaCmd.get(1));
-		assertEquals("-cp", javaCmd.get(2));
-		assertEquals("app.jar", javaCmd.get(3));
-		assertEquals("jellyfinbackup.JellyfinBackup", javaCmd.get(4));
-		assertEquals("backup", javaCmd.get(5));
+	@EnabledOnOs(OS.WINDOWS)
+	void testWindowsJunctionCannotEscapeRestoreRoot(@TempDir Path tempDir) throws Exception {
+		Path outside = Files.createDirectory(tempDir.resolve("outside"));
+		Files.writeString(outside.resolve("sentinel"), "unchanged");
+		Path config = Files.createDirectory(tempDir.resolve("config"));
+		Path junction = config.resolve("linked");
+		var process = new ProcessBuilder("cmd.exe", "/c", "mklink", "/J",
+				junction.toString(), outside.toString()).redirectErrorStream(true).start();
+		String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+		assertEquals(0, process.waitFor(), output);
+		try {
+			Path archive = tempDir.resolve("junction-file.tar.gz");
+			createRestoreArchive(archive,
+					new ArchiveItem("etc/jellyfin/linked/sentinel", "overwritten", null));
+			var fileResult = restoreWithoutVerification(archive, config, tempDir.resolve("data"));
+			assertEquals(1, fileResult.exitCode(), fileResult.stderr());
+			assertEquals("unchanged", Files.readString(outside.resolve("sentinel")));
 
-		var nativeCmd = JellyfinBackup.buildSudoCommand("/bin/sh", null, "backup", "-o", "/tmp");
-		assertNotNull(nativeCmd);
-		assertEquals("sudo", nativeCmd.get(0));
-		assertEquals("/bin/sh", nativeCmd.get(1));
-		assertEquals("backup", nativeCmd.get(2));
-		assertEquals("-o", nativeCmd.get(3));
-		assertEquals("/tmp", nativeCmd.get(4));
+			Path linkArchive = tempDir.resolve("junction-link.tar.gz");
+			createRestoreArchive(linkArchive,
+					new ArchiveItem("etc/jellyfin/link", null, "linked/sentinel"));
+			var linkResult = restoreWithoutVerification(linkArchive, config, tempDir.resolve("data"));
+			assertEquals(1, linkResult.exitCode(), linkResult.stderr());
+			assertFalse(Files.exists(config.resolve("link"), LinkOption.NOFOLLOW_LINKS));
+			assertEquals("unchanged", Files.readString(outside.resolve("sentinel")));
+
+			var rootResult = restoreWithoutVerification(archive, junction, tempDir.resolve("data"));
+			assertEquals(1, rootResult.exitCode(), rootResult.stderr());
+			assertFalse(Files.exists(outside.resolve("linked")));
+		} finally {
+			Files.delete(junction);
+		}
 	}
 
 	public static void main(String... args) {
