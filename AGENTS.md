@@ -101,10 +101,14 @@ package <app-name>;
   @Command(
       name = "script-name",
       mixinStandardHelpOptions = true,
-      version = "script-name 1.0",
+      version = "script-name 1.0.0",
       description = "Concise description of what the utility does."
   )
   ```
+
+- **Semantic Versioning (`x.x.x`)**:
+  - Use `MAJOR.MINOR.PATCH` (`x.x.x`) in `@Command(version = "<script-name> x.x.x")`.
+  - Bump `PATCH` for bug fixes, `MINOR` for backwards-compatible features/options, and `MAJOR` for breaking CLI or output changes so `jbang --fresh` and `native-install` updates are verifiable via `--version`.
 
 - **Standard Options**:
   - `-h`, `--help`: Display usage options and exit.
@@ -257,7 +261,9 @@ Every new utility must be registered under `"aliases"` in `jbang-catalog.json`:
 
 Before committing any change:
 
-1. **Verify Execution & Help Output**:
+1. **Bump Version (`x.x.x`) & Verify Execution / Help Output**:
+
+   Ensure `@Command(version = ...)` follows semantic versioning (`MAJOR.MINOR.PATCH`) and is bumped for the change, then run:
 
    ```bash
    jbang <script>.java --help

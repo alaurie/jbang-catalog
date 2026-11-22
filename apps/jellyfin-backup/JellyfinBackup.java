@@ -55,7 +55,7 @@ import picocli.CommandLine.Parameters;
 /// systemd/Quadlet user services), and Windows service/tray/portable
 /// installations. Archives configuration, databases, plugins, and metadata using
 /// a platform-independent layout.
-@Command(name = "jellyfin-backup", mixinStandardHelpOptions = true, version = "jellyfin-backup 2.1", description = "Complete backup, restore, and disaster recovery utility for Jellyfin media server.", subcommands = {
+@Command(name = "jellyfin-backup", mixinStandardHelpOptions = true, version = "jellyfin-backup 2.1.0", description = "Complete backup, restore, and disaster recovery utility for Jellyfin media server.", subcommands = {
 		JellyfinBackup.BackupCmd.class, JellyfinBackup.RestoreCmd.class,
 		JellyfinBackup.InspectCmd.class })
 @SuppressWarnings("unused")
