@@ -526,7 +526,7 @@ Compile, export, and manage standalone zero-overhead native executables.
 
 ## jellyfin-backup
 
-`jellyfin-backup` is a complete disaster recovery backup, restore, and inspection utility for Jellyfin media server on Linux (native systemd and Podman/Docker containers, including rootless systemd/Quadlet user services) and Windows.
+`jellyfin-backup` is a complete disaster recovery backup, restore, and inspection utility for Jellyfin media server on Linux (native systemd and Podman/Docker containers, including rootless systemd/Quadlet user services and Compose files) and Windows.
 
 ### Usage
 

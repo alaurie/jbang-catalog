@@ -55,7 +55,7 @@ import picocli.CommandLine.Parameters;
 /// systemd/Quadlet user services), and Windows service/tray/portable
 /// installations. Archives configuration, databases, plugins, and metadata using
 /// a platform-independent layout.
-@Command(name = "jellyfin-backup", mixinStandardHelpOptions = true, version = "jellyfin-backup 2.1.0", description = "Complete backup, restore, and disaster recovery utility for Jellyfin media server.", subcommands = {
+@Command(name = "jellyfin-backup", mixinStandardHelpOptions = true, version = "jellyfin-backup 2.2.0", description = "Complete backup, restore, and disaster recovery utility for Jellyfin media server.", subcommands = {
 		JellyfinBackup.BackupCmd.class, JellyfinBackup.RestoreCmd.class,
 		JellyfinBackup.InspectCmd.class })
 @SuppressWarnings("unused")
@@ -82,7 +82,9 @@ class JellyfinBackup implements Callable<Integer> {
 			String systemdUnit,
 			ServiceScope serviceScope,
 			Path configDir,
-			Path dataDir) {
+			Path dataDir,
+			Path quadletFile,
+			Path composeFile) {
 	}
 
 	record TargetInstallation(
@@ -217,7 +219,7 @@ class JellyfinBackup implements Callable<Integer> {
 						ensureWindowsServerStopped();
 					}
 				}
-				createBackupArchive(finalArchiveFile, hasConfig, hasData, serverVersion);
+				createBackupArchive(finalArchiveFile, hasConfig, hasData, serverVersion, target.container());
 			} catch (Exception e) {
 				System.err.println("Error: Failed to create backup archive: " + e.getMessage());
 				exitCode = 1;
@@ -281,7 +283,7 @@ class JellyfinBackup implements Callable<Integer> {
 		}
 
 		private void createBackupArchive(Path archivePath, boolean hasConfig, boolean hasData,
-				String serverVersion) throws Exception {
+				String serverVersion, ContainerInfo targetContainer) throws Exception {
 			Path tempArchive = Path.of(archivePath.toString() + ".tmp");
 			Files.deleteIfExists(tempArchive);
 
@@ -318,7 +320,28 @@ class JellyfinBackup implements Callable<Integer> {
 						System.out.println("OK");
 					}
 
-					// 3. Write manifest
+					// 3. Archive Quadlet / Compose definition if present
+					boolean hasQuadlet = targetContainer != null && targetContainer.quadletFile() != null
+							&& Files.isRegularFile(targetContainer.quadletFile());
+					if (hasQuadlet) {
+						System.out.printf("Archiving Quadlet unit (%s)... ",
+								targetContainer.quadletFile().getFileName());
+						archiveSingleFile(targetContainer.quadletFile(),
+								"quadlet/" + targetContainer.quadletFile().getFileName(), tarOut);
+						System.out.println("OK");
+					}
+
+					boolean hasCompose = targetContainer != null && targetContainer.composeFile() != null
+							&& Files.isRegularFile(targetContainer.composeFile());
+					if (hasCompose) {
+						System.out.printf("Archiving Compose file (%s)... ",
+								targetContainer.composeFile().getFileName());
+						archiveSingleFile(targetContainer.composeFile(),
+								"compose/" + targetContainer.composeFile().getFileName(), tarOut);
+						System.out.println("OK");
+					}
+
+					// 4. Write manifest
 					String timestamp = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
 					String manifestJson = """
 							{
@@ -326,9 +349,12 @@ class JellyfinBackup implements Callable<Integer> {
 							  "timestamp": "%s",
 							  "serverVersion": "%s",
 							  "hasConfig": %b,
-							  "hasData": %b
+							  "hasData": %b,
+							  "hasQuadlet": %b,
+							  "hasCompose": %b
 							}
-							""".formatted(timestamp, serverVersion, hasConfig, hasData);
+							""".formatted(timestamp, serverVersion, hasConfig, hasData, hasQuadlet,
+							hasCompose);
 
 					byte[] manifestBytes = manifestJson.getBytes(StandardCharsets.UTF_8);
 					TarArchiveEntry manifestEntry = new TarArchiveEntry(MANIFEST_ENTRY_NAME);
@@ -350,6 +376,17 @@ class JellyfinBackup implements Callable<Integer> {
 			} finally {
 				Files.deleteIfExists(tempArchive);
 			}
+		}
+
+		private static void archiveSingleFile(Path file, String entryName, TarArchiveOutputStream tarOut)
+				throws IOException {
+			byte[] content = Files.readAllBytes(file);
+			TarArchiveEntry entry = new TarArchiveEntry(entryName);
+			entry.setSize(content.length);
+			entry.setModTime(Files.getLastModifiedTime(file).toMillis());
+			tarOut.putArchiveEntry(entry);
+			tarOut.write(content);
+			tarOut.closeArchiveEntry();
 		}
 
 		private void archiveDirectory(Path baseDir, String prefix, TarArchiveOutputStream tarOut,
@@ -510,6 +547,14 @@ class JellyfinBackup implements Callable<Integer> {
 				"--no-verify" }, description = "Skip SHA-256 checksum integrity verification before restoring.")
 		private boolean noVerify;
 
+		@Option(names = {
+				"--no-quadlet" }, description = "Skip restoring Quadlet .container files from the archive.")
+		private boolean noQuadlet;
+
+		@Option(names = {
+				"--no-compose" }, description = "Skip restoring Docker/Podman Compose files from the archive.")
+		private boolean noCompose;
+
 		@Option(names = { "-y", "--yes" }, description = "Skip confirmation prompt and proceed with restore.")
 		private boolean assumeYes;
 
@@ -590,7 +635,7 @@ class JellyfinBackup implements Callable<Integer> {
 						ensureWindowsServerStopped();
 					}
 				}
-				unpackArchive();
+				unpackArchive(target);
 			} catch (Exception e) {
 				System.err.println("Error: Failed to restore backup archive: " + e.getMessage());
 				exitCode = 1;
@@ -629,11 +674,13 @@ class JellyfinBackup implements Callable<Integer> {
 			return 0;
 		}
 
-		private void unpackArchive() throws Exception {
+		private void unpackArchive(TargetInstallation target) throws Exception {
 			Path configRoot = configDir.toAbsolutePath().normalize();
 			Path dataRoot = dataDir.toAbsolutePath().normalize();
 			ensureSafeDirectory(configRoot);
 			ensureSafeDirectory(dataRoot);
+			boolean restoredQuadlet = false;
+			boolean quadletUserScope = !isRunningAsRoot();
 
 			try (InputStream fis = Files.newInputStream(archiveFile);
 					BufferedInputStream bis = new BufferedInputStream(fis, 128 * 1024);
@@ -645,6 +692,47 @@ class JellyfinBackup implements Callable<Integer> {
 				while ((entry = tarIn.getNextEntry()) != null) {
 					String name = entry.getName();
 					if (name.equals(MANIFEST_ENTRY_NAME)) {
+						continue;
+					}
+
+					if (name.startsWith("quadlet/") && !entry.isDirectory()) {
+						if (!noQuadlet && isLinux()) {
+							String fileName = name.substring("quadlet/".length());
+							if (isSafeSingleFilename(fileName) && fileName.endsWith(".container")) {
+								Path quadletDir = (target.container() != null
+										&& target.container().quadletFile() != null)
+												? target.container().quadletFile().getParent()
+												: defaultQuadletDir(quadletUserScope);
+								ensureSafeDirectory(quadletDir);
+								Path quadletTarget = quadletDir.resolve(fileName).normalize();
+								if (!quadletTarget.startsWith(quadletDir)) {
+									throw new IOException("Quadlet entry escapes target dir: " + name);
+								}
+								prepareTargetFile(quadletTarget);
+								writeStreamToFile(tarIn, quadletTarget);
+								restoredQuadlet = true;
+								restoredFiles++;
+								System.out.printf("Restored Quadlet unit: %s%n", quadletTarget);
+							}
+						}
+						continue;
+					}
+
+					if (name.startsWith("compose/") && !entry.isDirectory()) {
+						if (!noCompose) {
+							String fileName = name.substring("compose/".length());
+							if (isSafeSingleFilename(fileName)) {
+								Path composeTarget = (target.container() != null
+										&& target.container().composeFile() != null)
+												? target.container().composeFile().toAbsolutePath().normalize()
+												: Path.of(fileName).toAbsolutePath().normalize();
+								ensureSafeDirectory(composeTarget.getParent());
+								prepareTargetFile(composeTarget);
+								writeStreamToFile(tarIn, composeTarget);
+								restoredFiles++;
+								System.out.printf("Restored Compose file: %s%n", composeTarget);
+							}
+						}
 						continue;
 					}
 
@@ -682,20 +770,32 @@ class JellyfinBackup implements Callable<Integer> {
 							}
 						} else {
 							prepareTargetFile(targetPath);
-							try (var out = Files.newOutputStream(targetPath, StandardOpenOption.CREATE_NEW,
-									StandardOpenOption.WRITE)) {
-								byte[] buf = new byte[64 * 1024];
-								int read;
-								while ((read = tarIn.read(buf)) != -1) {
-									out.write(buf, 0, read);
-								}
-								restoredFiles++;
-							}
+							writeStreamToFile(tarIn, targetPath);
+							restoredFiles++;
 						}
 					}
 				}
+				if (restoredQuadlet) {
+					reloadSystemdDaemon(quadletUserScope);
+				}
 				System.out.printf("Restored %d files into %s and %s.%n", restoredFiles, configDir, dataDir);
 			}
+		}
+
+		private static void writeStreamToFile(InputStream in, Path targetPath) throws IOException {
+			try (var out = Files.newOutputStream(targetPath, StandardOpenOption.CREATE_NEW,
+					StandardOpenOption.WRITE)) {
+				byte[] buf = new byte[64 * 1024];
+				int read;
+				while ((read = in.read(buf)) != -1) {
+					out.write(buf, 0, read);
+				}
+			}
+		}
+
+		private static boolean isSafeSingleFilename(String fileName) {
+			return !fileName.isEmpty() && !fileName.equals(".") && !fileName.equals("..")
+					&& !fileName.contains("/") && !fileName.contains("\\");
 		}
 
 		/// Creates and checks each directory component, rejecting symlinks and
@@ -801,6 +901,7 @@ class JellyfinBackup implements Callable<Integer> {
 
 			String manifestJson = null;
 			List<String> plugins = new ArrayList<>();
+			List<String> containerConfigs = new ArrayList<>();
 			long totalUncompressedSize = 0;
 			int totalEntries = 0;
 			long dbSize = 0;
@@ -818,6 +919,9 @@ class JellyfinBackup implements Callable<Integer> {
 
 					if (name.equals(MANIFEST_ENTRY_NAME)) {
 						manifestJson = new String(tarIn.readAllBytes(), StandardCharsets.UTF_8);
+					} else if ((name.startsWith("quadlet/") || name.startsWith("compose/"))
+							&& !entry.isDirectory()) {
+						containerConfigs.add(name);
 					} else if (name.contains("plugins/") && entry.isDirectory()) {
 						String[] parts = name.split("/");
 						for (int i = 0; i < parts.length - 1; i++) {
@@ -848,6 +952,12 @@ class JellyfinBackup implements Callable<Integer> {
 			System.out.printf("Total Files:             %d%n", totalEntries);
 			System.out.printf("Uncompressed Size:       %s%n", formatBytes(totalUncompressedSize));
 			System.out.printf("Database Payload Size:   %s%n", formatBytes(dbSize));
+			if (!containerConfigs.isEmpty()) {
+				System.out.println("\nContainer Definitions (" + containerConfigs.size() + "):");
+				for (String cfg : containerConfigs) {
+					System.out.println("  - " + cfg);
+				}
+			}
 			if (!plugins.isEmpty()) {
 				System.out.println("\nInstalled Plugins (" + plugins.size() + "):");
 				for (String p : plugins) {
@@ -1305,6 +1415,8 @@ class JellyfinBackup implements Callable<Integer> {
 				{{.Config.Image}}
 				{{index .Config.Labels "PODMAN_SYSTEMD_UNIT"}}
 				{{index .Config.Labels "org.opencontainers.image.version"}}
+				{{index .Config.Labels "com.docker.compose.project.config_files"}}
+				{{index .Config.Labels "com.docker.compose.project.working_dir"}}
 				---ENV---
 				{{range .Config.Env}}{{println .}}{{end}}---MOUNTS---
 				{{range .Mounts}}{{.Type}}{{"\\t"}}{{.Source}}{{"\\t"}}{{.Destination}}{{"\\n"}}{{end}}""";
@@ -1322,19 +1434,25 @@ class JellyfinBackup implements Callable<Integer> {
 		}
 		boolean running = "true".equalsIgnoreCase(lines.get(0).trim());
 		String image = lines.get(1).trim();
-		String systemdUnit = lines.get(2).trim();
-		if (systemdUnit.equals("<no value>")) {
-			systemdUnit = "";
-		}
-		String imageVersion = lines.get(3).trim();
-		if (imageVersion.equals("<no value>")) {
-			imageVersion = "";
+		String systemdUnit = cleanInspectValue(lines.get(2));
+		String imageVersion = cleanInspectValue(lines.get(3));
+		String composeConfigFiles = "";
+		String composeWorkingDir = "";
+
+		int bodyStart = 4;
+		if (lines.size() > 5 && !lines.get(4).equals("---ENV---")) {
+			composeConfigFiles = cleanInspectValue(lines.get(4));
+			bodyStart = 5;
+			if (lines.size() > 6 && !lines.get(5).equals("---ENV---")) {
+				composeWorkingDir = cleanInspectValue(lines.get(5));
+				bodyStart = 6;
+			}
 		}
 
 		Map<String, String> env = new LinkedHashMap<>();
 		List<MountInfo> mounts = new ArrayList<>();
 		String section = "";
-		for (int i = 4; i < lines.size(); i++) {
+		for (int i = bodyStart; i < lines.size(); i++) {
 			String line = lines.get(i);
 			if (line.equals("---ENV---")) {
 				section = "ENV";
@@ -1359,10 +1477,55 @@ class JellyfinBackup implements Callable<Integer> {
 
 		Path configDir = resolveJellyfinHostDir(env, mounts, true);
 		Path dataDir = resolveJellyfinHostDir(env, mounts, false);
+		Path composeFile = resolveComposeFile(composeConfigFiles, composeWorkingDir);
 		ServiceScope scope = systemdUnit.isEmpty() ? ServiceScope.CONTAINER
 				: ServiceScope.SYSTEMD_SYSTEM;
 		return new ContainerInfo(runtime, name, running, image, imageVersion,
-				systemdUnit.isEmpty() ? null : systemdUnit, scope, configDir, dataDir);
+				systemdUnit.isEmpty() ? null : systemdUnit, scope, configDir, dataDir, null,
+				composeFile);
+	}
+
+	private static String cleanInspectValue(String value) {
+		String trimmed = value == null ? "" : value.trim();
+		return trimmed.equals("<no value>") ? "" : trimmed;
+	}
+
+	static Path resolveComposeFile(String configFiles, String workingDir) {
+		if (configFiles != null && !configFiles.isBlank()) {
+			for (String entry : configFiles.split(",")) {
+				String trimmed = entry.trim();
+				if (trimmed.isEmpty()) {
+					continue;
+				}
+				Path candidate = Path.of(trimmed);
+				if (!candidate.isAbsolute() && workingDir != null && !workingDir.isBlank()) {
+					candidate = Path.of(workingDir).resolve(candidate);
+				}
+				if (Files.isRegularFile(candidate)) {
+					return candidate.normalize();
+				}
+			}
+			// Return first specified path even if not yet checked on disk when absolute
+			String first = configFiles.split(",")[0].trim();
+			if (!first.isEmpty()) {
+				Path p = Path.of(first);
+				if (!p.isAbsolute() && workingDir != null && !workingDir.isBlank()) {
+					return Path.of(workingDir).resolve(p).normalize();
+				}
+				return p.normalize();
+			}
+		}
+		if (workingDir != null && !workingDir.isBlank()) {
+			Path dir = Path.of(workingDir);
+			for (String name : new String[] { "compose.yaml", "compose.yml", "docker-compose.yaml",
+					"docker-compose.yml" }) {
+				Path candidate = dir.resolve(name);
+				if (Files.isRegularFile(candidate)) {
+					return candidate.normalize();
+				}
+			}
+		}
+		return null;
 	}
 
 	private static Path resolveJellyfinHostDir(Map<String, String> env, List<MountInfo> mounts,
@@ -1444,23 +1607,61 @@ class JellyfinBackup implements Callable<Integer> {
 		if (unit == null || unit.isBlank()) {
 			String candidateUnit = info.name() + ".service";
 			if (!isRunningAsRoot() && isSystemdUserServiceLoaded(candidateUnit)) {
+				Path quadlet = detectQuadletSourcePath(candidateUnit, true);
 				return new ContainerInfo(info.runtime(), info.name(), info.running(), info.image(),
 						info.imageVersion(), candidateUnit, ServiceScope.SYSTEMD_USER,
-						info.configDir(), info.dataDir());
+						info.configDir(), info.dataDir(), quadlet, info.composeFile());
 			}
 			return info;
 		}
 		if (!isRunningAsRoot() && isSystemdUserServiceLoaded(unit)) {
+			Path quadlet = detectQuadletSourcePath(unit, true);
 			return new ContainerInfo(info.runtime(), info.name(), info.running(), info.image(),
 					info.imageVersion(), unit, ServiceScope.SYSTEMD_USER, info.configDir(),
-					info.dataDir());
+					info.dataDir(), quadlet, info.composeFile());
 		}
 		if (isSystemdServiceLoaded(unit)) {
+			Path quadlet = detectQuadletSourcePath(unit, false);
 			return new ContainerInfo(info.runtime(), info.name(), info.running(), info.image(),
 					info.imageVersion(), unit, ServiceScope.SYSTEMD_SYSTEM, info.configDir(),
-					info.dataDir());
+					info.dataDir(), quadlet, info.composeFile());
 		}
 		return info;
+	}
+
+	private static Path detectQuadletSourcePath(String unit, boolean userScope) {
+		String sourcePath = userScope
+				? runCommandOutput("systemctl", "--user", "show", "-p", "SourcePath", "--value", unit)
+				: runCommandOutput("systemctl", "show", "-p", "SourcePath", "--value", unit);
+		if (sourcePath != null && sourcePath.endsWith(".container")) {
+			Path p = Path.of(sourcePath);
+			if (Files.isRegularFile(p)) {
+				return p;
+			}
+		}
+		String baseName = unit.endsWith(".service")
+				? unit.substring(0, unit.length() - ".service".length())
+				: unit;
+		Path fallback = defaultQuadletDir(userScope).resolve(baseName + ".container");
+		return Files.isRegularFile(fallback) ? fallback : null;
+	}
+
+	static Path defaultQuadletDir(boolean userScope) {
+		if (userScope) {
+			return Path.of(System.getProperty("user.home", ""), ".config", "containers", "systemd");
+		}
+		return Path.of("/etc/containers/systemd");
+	}
+
+	private static void reloadSystemdDaemon(boolean userScope) {
+		if (!isLinux()) {
+			return;
+		}
+		if (userScope) {
+			runCommandSuccess("systemctl", "--user", "daemon-reload");
+		} else {
+			runCommandSuccess("systemctl", "daemon-reload");
+		}
 	}
 
 	private static ContainerInfo detectContainerFromSystemd(String name) {
@@ -1471,8 +1672,14 @@ class JellyfinBackup implements Callable<Integer> {
 		if (!isRunningAsRoot() && isSystemdUserServiceLoaded(unit)) {
 			String content = runCommandOutput("systemctl", "--user", "cat", unit);
 			if (content != null && !content.isBlank()) {
-				return parseSystemdUnitContainer(unit, ServiceScope.SYSTEMD_USER, content,
-						isSystemdUserServiceActive(unit));
+				ContainerInfo parsed = parseSystemdUnitContainer(unit, ServiceScope.SYSTEMD_USER,
+						content, isSystemdUserServiceActive(unit));
+				if (parsed != null) {
+					return new ContainerInfo(parsed.runtime(), parsed.name(), parsed.running(),
+							parsed.image(), parsed.imageVersion(), parsed.systemdUnit(),
+							parsed.serviceScope(), parsed.configDir(), parsed.dataDir(),
+							detectQuadletSourcePath(unit, true), null);
+				}
 			}
 		}
 		if (isSystemdServiceLoaded(unit)) {
@@ -1483,7 +1690,14 @@ class JellyfinBackup implements Callable<Integer> {
 					active = isSystemdServiceActive(unit);
 				} catch (Exception _) {
 				}
-				return parseSystemdUnitContainer(unit, ServiceScope.SYSTEMD_SYSTEM, content, active);
+				ContainerInfo parsed = parseSystemdUnitContainer(unit, ServiceScope.SYSTEMD_SYSTEM,
+						content, active);
+				if (parsed != null) {
+					return new ContainerInfo(parsed.runtime(), parsed.name(), parsed.running(),
+							parsed.image(), parsed.imageVersion(), parsed.systemdUnit(),
+							parsed.serviceScope(), parsed.configDir(), parsed.dataDir(),
+							detectQuadletSourcePath(unit, false), null);
+				}
 			}
 		}
 		return null;
@@ -1550,7 +1764,7 @@ class JellyfinBackup implements Callable<Integer> {
 		Path dataDir = resolveJellyfinHostDir(env, mounts, false);
 		String imageVersion = extractImageTag(image);
 		return new ContainerInfo(runtime, containerName, active, image, imageVersion, unitName,
-				scope, configDir, dataDir);
+				scope, configDir, dataDir, null, null);
 	}
 
 	private static void addVolumeSpec(String spec, String userHome, List<MountInfo> mounts) {

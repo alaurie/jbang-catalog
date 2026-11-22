@@ -718,6 +718,55 @@ public class JellyfinBackupTest {
 				"Config subdir should not be duplicated inside data archive");
 	}
 
+	@Test
+	void testParseContainerInspectWithComposeLabels(@TempDir Path tempDir) throws Exception {
+		Path composeFile = tempDir.resolve("compose.yaml");
+		Files.writeString(composeFile, "services:\n  jellyfin:\n    image: jellyfin/jellyfin\n");
+		String inspectOutput = """
+				true
+				docker.io/jellyfin/jellyfin:latest
+				<no value>
+				<no value>
+				%s
+				%s
+				---ENV---
+				JELLYFIN_CONFIG_DIR=/config/config
+				---MOUNTS---
+				bind\t%s\t/config
+				""".formatted(composeFile.toString(), tempDir.toString(),
+				tempDir.resolve("config").toString());
+
+		var info = JellyfinBackup.parseContainerInspect("docker", "jellyfin", inspectOutput);
+		assertNotNull(info);
+		assertEquals(composeFile.normalize(), info.composeFile());
+	}
+
+	@Test
+	void testInspectAndRestoreQuadletAndComposeEntries(@TempDir Path tempDir) throws Exception {
+		Path archive = tempDir.resolve("container-defs.tar.gz");
+		createRestoreArchive(archive,
+				new ArchiveItem("etc/jellyfin/system.xml", "<Config/>", null),
+				new ArchiveItem("var/lib/jellyfin/data/jellyfin.db", "DB", null),
+				new ArchiveItem("quadlet/jellyfin.container", "[X-Container]\nImage=jellyfin\n", null),
+				new ArchiveItem("compose/compose.yaml", "services:\n  jellyfin:\n", null));
+
+		var inspectResult = runCommand("inspect", archive.toString());
+		assertEquals(0, inspectResult.exitCode(), inspectResult.stderr());
+		assertTrue(inspectResult.stdout().contains("quadlet/jellyfin.container"));
+		assertTrue(inspectResult.stdout().contains("compose/compose.yaml"));
+
+		Path outConfig = tempDir.resolve("out_etc");
+		Path outData = tempDir.resolve("out_var");
+		var restoreSkipResult = runCommand("restore", "--yes", "--no-stop", "--no-chown",
+				"--no-verify", "--no-quadlet", "--no-compose", "-c", outConfig.toString(), "-d",
+				outData.toString(), archive.toString());
+		assertEquals(0, restoreSkipResult.exitCode(), restoreSkipResult.stderr());
+		assertTrue(Files.exists(outConfig.resolve("system.xml")));
+		assertTrue(Files.exists(outData.resolve("data/jellyfin.db")));
+		assertFalse(restoreSkipResult.stdout().contains("Restored Quadlet unit"));
+		assertFalse(restoreSkipResult.stdout().contains("Restored Compose file"));
+	}
+
 	public static void main(String... args) {
 		var launcher = LauncherFactory.create();
 		var summaryListener = new SummaryGeneratingListener();
