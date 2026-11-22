@@ -34,8 +34,10 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
@@ -49,10 +51,11 @@ import picocli.CommandLine.Parameters;
 
 /// CLI utility to backup, restore, and inspect complete Jellyfin installations.
 ///
-/// Supports Linux systemd and Windows service installations, plus stopped
-/// Windows tray/portable installations. Archives configuration, databases,
-/// plugins, and metadata using a platform-independent layout.
-@Command(name = "jellyfin-backup", mixinStandardHelpOptions = true, version = "jellyfin-backup 2.0", description = "Complete backup, restore, and disaster recovery utility for Jellyfin media server.", subcommands = {
+/// Supports Linux systemd, Podman/Docker containers (including rootless
+/// systemd/Quadlet user services), and Windows service/tray/portable
+/// installations. Archives configuration, databases, plugins, and metadata using
+/// a platform-independent layout.
+@Command(name = "jellyfin-backup", mixinStandardHelpOptions = true, version = "jellyfin-backup 2.1", description = "Complete backup, restore, and disaster recovery utility for Jellyfin media server.", subcommands = {
 		JellyfinBackup.BackupCmd.class, JellyfinBackup.RestoreCmd.class,
 		JellyfinBackup.InspectCmd.class })
 @SuppressWarnings("unused")
@@ -60,8 +63,38 @@ class JellyfinBackup implements Callable<Integer> {
 
 	static final String MANIFEST_ENTRY_NAME = "jellyfin-manifest.json";
 
+	enum ServiceScope {
+		NONE,
+		SYSTEMD_SYSTEM,
+		SYSTEMD_USER,
+		CONTAINER
+	}
+
+	record MountInfo(String type, String source, String destination) {
+	}
+
+	record ContainerInfo(
+			String runtime,
+			String name,
+			boolean running,
+			String image,
+			String imageVersion,
+			String systemdUnit,
+			ServiceScope serviceScope,
+			Path configDir,
+			Path dataDir) {
+	}
+
+	record TargetInstallation(
+			Path configDir,
+			Path dataDir,
+			ContainerInfo container,
+			ServiceScope serviceScope,
+			String serviceName) {
+	}
+
 	void main(String... args) {
-		if (needsElevation(args) && !isRunningAsRoot() && isLinux()) {
+		if (shouldElevate(args)) {
 			int exitCode = reexecWithSudo(args);
 			System.exit(exitCode);
 		}
@@ -86,17 +119,22 @@ class JellyfinBackup implements Callable<Integer> {
 				"--output" }, description = "Target destination directory or .tar.gz archive path. Default: current directory.")
 		private Path outputPath;
 
-		@Option(names = { "-c", "--config-dir" }, description = "Configuration directory. Default: /etc/jellyfin on Linux, "
-				+ "<data-dir>/config on Windows; honors JELLYFIN_CONFIG_DIR.")
+		@Option(names = { "-c",
+				"--config-dir" }, description = "Configuration directory. Default: /etc/jellyfin on Linux "
+						+ "(or container mount), <data-dir>/config on Windows; honors JELLYFIN_CONFIG_DIR.")
 		private Path configDir;
 
-		@Option(names = { "-d", "--data-dir" }, description = "Data directory. Default: /var/lib/jellyfin on Linux; "
-				+ "auto-detected on Windows; honors JELLYFIN_DATA_DIR.")
+		@Option(names = { "-d", "--data-dir" }, description = "Data directory. Default: /var/lib/jellyfin on Linux "
+				+ "(or container mount), auto-detected on Windows; honors JELLYFIN_DATA_DIR.")
 		private Path dataDir;
 
 		@Option(names = { "--service-name" }, description = "Service name. "
 				+ "Default: jellyfin on Linux, JellyfinServer on Windows.")
 		private String serviceName = defaultServiceName();
+
+		@Option(names = {
+				"--container" }, description = "Jellyfin container name or ID (auto-detected if omitted).")
+		private String containerName;
 
 		@Option(names = {
 				"--no-stop" }, description = "Do not stop or check Jellyfin before backup (unsafe if the server is running).")
@@ -111,12 +149,16 @@ class JellyfinBackup implements Callable<Integer> {
 
 		@Override
 		public Integer call() throws Exception {
-			if (dataDir == null) {
-				dataDir = defaultDataDir();
+			TargetInstallation target;
+			try {
+				target = resolveTargetInstallation(configDir, dataDir, containerName, serviceName);
+			} catch (IllegalArgumentException e) {
+				System.err.println("Error: " + e.getMessage());
+				return 1;
 			}
-			if (configDir == null) {
-				configDir = defaultConfigDir(dataDir);
-			}
+			configDir = target.configDir();
+			dataDir = target.dataDir();
+
 			if (isLinux() && !isRunningAsRoot()
 					&& (configDir.toString().startsWith("/etc") || dataDir.toString().startsWith("/var"))) {
 				System.err.println("Error: Run as root to back up system Jellyfin directories.");
@@ -146,6 +188,9 @@ class JellyfinBackup implements Callable<Integer> {
 			System.out.println("===============================================================");
 			System.out.println("  Jellyfin Complete Disaster Recovery Backup");
 			System.out.println("===============================================================");
+			if (target.container() != null) {
+				System.out.printf("Mode:              %s%n", describeTarget(target));
+			}
 			System.out.printf("Configuration Dir: %s (%s)%n", configDir,
 					hasConfig ? "Found" : "Not Found");
 			System.out.printf("Data Dir:          %s (%s)%n", dataDir,
@@ -153,28 +198,39 @@ class JellyfinBackup implements Callable<Integer> {
 			System.out.printf("Archive Target:    %s%n", finalArchiveFile.toAbsolutePath());
 			System.out.println("---------------------------------------------------------------");
 
+			String serverVersion = detectServerVersion(target.container());
 			boolean serviceWasRunning = false;
 
 			long startTime = System.currentTimeMillis();
 			int exitCode = 0;
 			try {
 				if (!noStop) {
-					serviceWasRunning = isServiceRunning(serviceName);
+					serviceWasRunning = isTargetActive(target);
 					if (serviceWasRunning) {
-						System.out.printf("Stopping '%s' service for clean database snapshot...%n", serviceName);
-						changeServiceState(serviceName, false);
+						System.out.printf("Stopping '%s' for clean database snapshot...%n",
+								target.serviceName());
+						if (!stopTarget(target)) {
+							throw new IOException("Could not stop '" + target.serviceName() + "'.");
+						}
 					}
-					ensureWindowsServerStopped();
+					if (target.container() == null) {
+						ensureWindowsServerStopped();
+					}
 				}
-				createBackupArchive(finalArchiveFile, hasConfig, hasData);
+				createBackupArchive(finalArchiveFile, hasConfig, hasData, serverVersion);
 			} catch (Exception e) {
 				System.err.println("Error: Failed to create backup archive: " + e.getMessage());
 				exitCode = 1;
 			} finally {
 				if (serviceWasRunning) {
 					try {
-						System.out.printf("Restarting '%s' service...%n", serviceName);
-						changeServiceState(serviceName, true);
+						System.out.printf("Restarting '%s'...%n", target.serviceName());
+						if (!startTarget(target)) {
+							System.err.printf("FAILED (Please check %s)%n", targetStatusHint(target));
+							if (exitCode == 0) {
+								exitCode = 1;
+							}
+						}
 					} catch (Exception e) {
 						System.err.println("Error: Could not restart Jellyfin: " + e.getMessage());
 						exitCode = 1;
@@ -224,8 +280,8 @@ class JellyfinBackup implements Callable<Integer> {
 			}
 		}
 
-		private void createBackupArchive(Path archivePath, boolean hasConfig, boolean hasData)
-				throws Exception {
+		private void createBackupArchive(Path archivePath, boolean hasConfig, boolean hasData,
+				String serverVersion) throws Exception {
 			Path tempArchive = Path.of(archivePath.toString() + ".tmp");
 			Files.deleteIfExists(tempArchive);
 
@@ -250,15 +306,20 @@ class JellyfinBackup implements Callable<Integer> {
 
 					// 2. Archive /var/lib/jellyfin
 					if (hasData) {
+						Path excludedSubdir = null;
+						Path normConfig = configDir.toAbsolutePath().normalize();
+						Path normData = dataDir.toAbsolutePath().normalize();
+						if (hasConfig && !normConfig.equals(normData) && normConfig.startsWith(normData)) {
+							excludedSubdir = normConfig;
+						}
 						System.out.printf("Archiving databases, plugins & metadata (%s)... ", dataDir);
 						archiveDirectory(dataDir, "var/lib/jellyfin", tarOut, includeCache,
-								includeInternalBackups, hasConfig ? configDir.toAbsolutePath().normalize() : null);
+								includeInternalBackups, excludedSubdir);
 						System.out.println("OK");
 					}
 
 					// 3. Write manifest
 					String timestamp = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
-					String serverVersion = detectJellyfinVersion();
 					String manifestJson = """
 							{
 							  "generator": "jellyfin-backup 1.0",
@@ -292,12 +353,14 @@ class JellyfinBackup implements Callable<Integer> {
 		}
 
 		private void archiveDirectory(Path baseDir, String prefix, TarArchiveOutputStream tarOut,
-				boolean inclCache, boolean inclBackups, Path excludedConfig) throws Exception {
+				boolean inclCache, boolean inclBackups, Path excludedSubdir) throws Exception {
+			Path normExcluded = excludedSubdir != null ? excludedSubdir.toAbsolutePath().normalize() : null;
 			Files.walkFileTree(baseDir, new SimpleFileVisitor<>() {
 				@Override
 				public java.nio.file.FileVisitResult preVisitDirectory(Path dir,
 						BasicFileAttributes attrs) throws IOException {
-					if (!dir.equals(baseDir) && dir.toAbsolutePath().normalize().equals(excludedConfig)) {
+					if (normExcluded != null && !dir.equals(baseDir)
+							&& dir.toAbsolutePath().normalize().equals(normExcluded)) {
 						return java.nio.file.FileVisitResult.SKIP_SUBTREE;
 					}
 					String relPath = baseDir.relativize(dir).toString().replace('\\', '/');
@@ -308,7 +371,7 @@ class JellyfinBackup implements Callable<Integer> {
 						if (!inclBackups && isBackupPath(relPath)) {
 							return java.nio.file.FileVisitResult.SKIP_SUBTREE;
 						}
-						String entryName = prefix + "/" + relPath.replace('\\', '/') + "/";
+						String entryName = prefix + "/" + relPath + "/";
 						try {
 							TarArchiveEntry entry = new TarArchiveEntry(dir.toFile(), entryName);
 							entry.setModTime(attrs.lastModifiedTime().toMillis());
@@ -420,16 +483,20 @@ class JellyfinBackup implements Callable<Integer> {
 		private Path archiveFile;
 
 		@Option(names = { "-c", "--config-dir" }, description = "Target configuration directory. "
-				+ "Default: /etc/jellyfin on Linux, <data-dir>/config on Windows; honors JELLYFIN_CONFIG_DIR.")
+				+ "Default: /etc/jellyfin on Linux (or container mount), <data-dir>/config on Windows; honors JELLYFIN_CONFIG_DIR.")
 		private Path configDir;
 
 		@Option(names = { "-d", "--data-dir" }, description = "Target data directory. "
-				+ "Default: /var/lib/jellyfin on Linux; auto-detected on Windows; honors JELLYFIN_DATA_DIR.")
+				+ "Default: /var/lib/jellyfin on Linux (or container mount); auto-detected on Windows; honors JELLYFIN_DATA_DIR.")
 		private Path dataDir;
 
 		@Option(names = { "--service-name" }, description = "Service name. "
 				+ "Default: jellyfin on Linux, JellyfinServer on Windows.")
 		private String serviceName = defaultServiceName();
+
+		@Option(names = {
+				"--container" }, description = "Jellyfin container name or ID (auto-detected if omitted).")
+		private String containerName;
 
 		@Option(names = { "--no-stop" }, description = "Do not stop or check Jellyfin before restore "
 				+ "(unsafe if the server is running).")
@@ -448,17 +515,21 @@ class JellyfinBackup implements Callable<Integer> {
 
 		@Override
 		public Integer call() throws Exception {
-			if (dataDir == null) {
-				dataDir = defaultDataDir();
-			}
-			if (configDir == null) {
-				configDir = defaultConfigDir(dataDir);
-			}
 			if (!Files.isRegularFile(archiveFile)) {
 				System.err.printf("Error: Backup archive '%s' does not exist or is not a file.%n",
 						archiveFile);
 				return 1;
 			}
+
+			TargetInstallation target;
+			try {
+				target = resolveTargetInstallation(configDir, dataDir, containerName, serviceName);
+			} catch (IllegalArgumentException e) {
+				System.err.println("Error: " + e.getMessage());
+				return 1;
+			}
+			configDir = target.configDir();
+			dataDir = target.dataDir();
 
 			if (isLinux() && !isRunningAsRoot()
 					&& (configDir.toString().startsWith("/etc") || dataDir.toString().startsWith("/var"))) {
@@ -471,6 +542,9 @@ class JellyfinBackup implements Callable<Integer> {
 			System.out.println("===============================================================");
 			System.out.printf("Backup Archive:    %s (%s)%n", archiveFile.toAbsolutePath(),
 					formatBytes(Files.size(archiveFile)));
+			if (target.container() != null) {
+				System.out.printf("Mode:              %s%n", describeTarget(target));
+			}
 			System.out.printf("Target Config Dir: %s%n", configDir.toAbsolutePath());
 			System.out.printf("Target Data Dir:   %s%n", dataDir.toAbsolutePath());
 			System.out.println("---------------------------------------------------------------");
@@ -505,26 +579,35 @@ class JellyfinBackup implements Callable<Integer> {
 			int exitCode = 0;
 			try {
 				if (!noStop) {
-					serviceWasRunning = isServiceRunning(serviceName);
+					serviceWasRunning = isTargetActive(target);
 					if (serviceWasRunning) {
-						System.out.printf("Stopping '%s' service before restore...%n", serviceName);
-						changeServiceState(serviceName, false);
+						System.out.printf("Stopping '%s' before restore...%n", target.serviceName());
+						if (!stopTarget(target)) {
+							throw new IOException("Could not stop '" + target.serviceName() + "'.");
+						}
 					}
-					ensureWindowsServerStopped();
+					if (target.container() == null) {
+						ensureWindowsServerStopped();
+					}
 				}
 				unpackArchive();
 			} catch (Exception e) {
 				System.err.println("Error: Failed to restore backup archive: " + e.getMessage());
 				exitCode = 1;
 			} finally {
-				if (!noChown && isLinux()) {
+				if (!noChown && isLinux() && isRunningAsRoot() && target.container() == null) {
 					fixJellyfinPermissions();
 				}
 
 				if (serviceWasRunning) {
 					try {
-						System.out.printf("Restarting '%s' service...%n", serviceName);
-						changeServiceState(serviceName, true);
+						System.out.printf("Restarting '%s'...%n", target.serviceName());
+						if (!startTarget(target)) {
+							System.err.printf("FAILED (Please check %s)%n", targetStatusHint(target));
+							if (exitCode == 0) {
+								exitCode = 1;
+							}
+						}
 					} catch (Exception e) {
 						System.err.println("Error: Could not restart Jellyfin: " + e.getMessage());
 						exitCode = 1;
@@ -615,7 +698,8 @@ class JellyfinBackup implements Callable<Integer> {
 			}
 		}
 
-		/// Creates and checks each directory component, rejecting symlinks and Windows junctions.
+		/// Creates and checks each directory component, rejecting symlinks and
+		/// Windows junctions.
 		private static void ensureSafeDirectory(Path directory) throws IOException {
 			Path current = directory.getRoot();
 			for (Path component : directory) {
@@ -944,15 +1028,20 @@ class JellyfinBackup implements Callable<Integer> {
 		var home = Path.of(System.getProperty("user.home"));
 		String programData = System.getenv("ProgramData");
 		Path shared = (programData == null || programData.isBlank()
-				? home.toAbsolutePath().getRoot().resolve("ProgramData") : Path.of(programData))
-				.resolve("Jellyfin").resolve("Server");
+				? home.toAbsolutePath().getRoot().resolve("ProgramData")
+				: Path.of(programData))
+			.resolve("Jellyfin")
+			.resolve("Server");
 		String localAppData = System.getenv("LOCALAPPDATA");
 		Path local = (localAppData == null || localAppData.isBlank()
-				? home.resolve("AppData").resolve("Local") : Path.of(localAppData)).resolve("jellyfin");
+				? home.resolve("AppData").resolve("Local")
+				: Path.of(localAppData))
+			.resolve("jellyfin");
 		return Files.isDirectory(shared) || !Files.isDirectory(local) ? shared : local;
 	}
 
-	/// Resolves the config root after applying an explicit or default data directory.
+	/// Resolves the config root after applying an explicit or default
+	/// data directory.
 	static Path defaultConfigDir(Path dataDir) {
 		String override = System.getenv("JELLYFIN_CONFIG_DIR");
 		if (override != null && !override.isBlank()) {
@@ -966,13 +1055,15 @@ class JellyfinBackup implements Callable<Integer> {
 		return isWindows() ? "JellyfinServer" : "jellyfin";
 	}
 
-	/// Refuses to copy a live Windows tray/portable instance that service control cannot stop.
+	/// Refuses to copy a live Windows tray/portable instance that service control
+	/// cannot stop.
 	private static void ensureWindowsServerStopped() throws IOException, InterruptedException {
 		if (!isWindows()) {
 			return;
 		}
 		var process = new ProcessBuilder("tasklist.exe", "/FI", "IMAGENAME eq jellyfin.exe", "/FO", "CSV", "/NH")
-				.redirectErrorStream(true).start();
+			.redirectErrorStream(true)
+			.start();
 		String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
 		if (process.waitFor() != 0) {
 			throw new IOException("Cannot check for running Jellyfin processes: " + output.strip());
@@ -983,12 +1074,630 @@ class JellyfinBackup implements Callable<Integer> {
 		}
 	}
 
-
-	/// Queries the platform service manager; Windows errors must not be mistaken for a stopped server.
+	/// Queries the platform service manager; Windows errors must not be mistaken
+	/// for a stopped server.
 	static boolean isServiceRunning(String serviceName) throws IOException, InterruptedException {
 		if (isWindows()) {
 			return windowsServiceCommand(serviceName, "query") == 4;
 		}
+		return isSystemdServiceActive(serviceName);
+	}
+
+	static boolean shouldElevate(String... args) {
+		if (!needsElevation(args) || isRunningAsRoot() || !isLinux()) {
+			return false;
+		}
+		String containerArg = extractOptionValue(args, "--container");
+		String configArg = extractOptionValue(args, "-c", "--config-dir");
+		String dataArg = extractOptionValue(args, "-d", "--data-dir");
+
+		if (containerArg != null) {
+			ContainerInfo container = detectContainer(containerArg);
+			if (container != null && !requiresRootPath(container.configDir(), configArg)
+					&& !requiresRootPath(container.dataDir(), dataArg)) {
+				return false;
+			}
+			return true;
+		}
+
+		if (configArg != null || dataArg != null) {
+			return requiresRootPath(null, configArg) || requiresRootPath(null, dataArg);
+		}
+
+		ContainerInfo container = detectContainer(null);
+		if (container != null && !requiresRootPath(container.configDir(), null)
+				&& !requiresRootPath(container.dataDir(), null)) {
+			return false;
+		}
+		return true;
+	}
+
+	private static boolean requiresRootPath(Path resolvedPath, String explicitArg) {
+		String pathStr = explicitArg != null ? explicitArg
+				: (resolvedPath != null ? resolvedPath.toString() : "");
+		return pathStr.startsWith("/etc") || pathStr.startsWith("/var");
+	}
+
+	private static String extractOptionValue(String[] args, String... names) {
+		if (args == null) {
+			return null;
+		}
+		for (int i = 0; i < args.length; i++) {
+			String arg = args[i];
+			for (String name : names) {
+				if (arg.equals(name) && i + 1 < args.length) {
+					return args[i + 1];
+				}
+				if (arg.startsWith(name + "=")) {
+					return arg.substring(name.length() + 1);
+				}
+			}
+		}
+		return null;
+	}
+
+	static TargetInstallation resolveTargetInstallation(Path explicitConfigDir, Path explicitDataDir,
+			String requestedContainer, String serviceNameOverride) throws IOException, InterruptedException {
+		String effectiveService = (serviceNameOverride == null || serviceNameOverride.isBlank())
+				? defaultServiceName()
+				: serviceNameOverride;
+		Path defaultData = defaultDataDir();
+		Path defaultConfig = defaultConfigDir(defaultData);
+
+		if (requestedContainer != null && !requestedContainer.isBlank()) {
+			ContainerInfo container = detectContainer(requestedContainer);
+			if (container == null) {
+				throw new IllegalArgumentException(
+						"Container '%s' not found via podman, docker, or systemd."
+							.formatted(requestedContainer));
+			}
+			Path resolvedData = explicitDataDir != null ? explicitDataDir
+					: (container.dataDir() != null ? container.dataDir() : defaultData);
+			Path resolvedConfig = explicitConfigDir != null ? explicitConfigDir
+					: (container.configDir() != null ? container.configDir()
+							: defaultConfigDir(resolvedData));
+			String serviceName = container.serviceScope() == ServiceScope.CONTAINER
+					? container.name()
+					: container.systemdUnit();
+			return new TargetInstallation(resolvedConfig, resolvedData, container,
+					container.serviceScope(), serviceName);
+		}
+
+		if (explicitConfigDir != null || explicitDataDir != null) {
+			Path resolvedData = explicitDataDir != null ? explicitDataDir : defaultData;
+			Path resolvedConfig = explicitConfigDir != null ? explicitConfigDir
+					: defaultConfigDir(resolvedData);
+			return new TargetInstallation(resolvedConfig, resolvedData, null,
+					ServiceScope.SYSTEMD_SYSTEM, effectiveService);
+		}
+
+		if (!isWindows()) {
+			if (!isRunningAsRoot()) {
+				ContainerInfo container = detectContainer(null);
+				if (container != null) {
+					Path resolvedData = container.dataDir() != null ? container.dataDir() : defaultData;
+					Path resolvedConfig = container.configDir() != null ? container.configDir()
+							: defaultConfigDir(resolvedData);
+					String serviceName = container.serviceScope() == ServiceScope.CONTAINER
+							? container.name()
+							: container.systemdUnit();
+					return new TargetInstallation(resolvedConfig, resolvedData, container,
+							container.serviceScope(), serviceName);
+				}
+			} else {
+				boolean nativeExists = Files.isDirectory(defaultConfig)
+						|| Files.isDirectory(defaultData)
+						|| isSystemdServiceActive(effectiveService);
+				if (!nativeExists) {
+					ContainerInfo container = detectContainer(null);
+					if (container != null) {
+						Path resolvedData = container.dataDir() != null ? container.dataDir() : defaultData;
+						Path resolvedConfig = container.configDir() != null ? container.configDir()
+								: defaultConfigDir(resolvedData);
+						String serviceName = container.serviceScope() == ServiceScope.CONTAINER
+								? container.name()
+								: container.systemdUnit();
+						return new TargetInstallation(resolvedConfig, resolvedData, container,
+								container.serviceScope(), serviceName);
+					}
+				}
+			}
+		}
+
+		return new TargetInstallation(defaultConfig, defaultData, null,
+				ServiceScope.SYSTEMD_SYSTEM, effectiveService);
+	}
+
+	static String describeTarget(TargetInstallation target) {
+		ContainerInfo c = target.container();
+		if (c == null) {
+			return "Native systemd";
+		}
+		if (target.serviceScope() == ServiceScope.SYSTEMD_USER) {
+			return "Container (%s: %s, systemd --user: %s)".formatted(c.runtime(), c.name(),
+					c.systemdUnit());
+		}
+		if (target.serviceScope() == ServiceScope.SYSTEMD_SYSTEM) {
+			return "Container (%s: %s, systemd: %s)".formatted(c.runtime(), c.name(), c.systemdUnit());
+		}
+		return "Container (%s: %s)".formatted(c.runtime(), c.name());
+	}
+
+	static String targetStatusHint(TargetInstallation target) {
+		return switch (target.serviceScope()) {
+		case SYSTEMD_USER -> "'systemctl --user status " + target.serviceName() + "'";
+		case SYSTEMD_SYSTEM -> "'systemctl status " + target.serviceName() + "'";
+		case CONTAINER -> "'" + target.container().runtime() + " ps -a'";
+		case NONE -> "service status";
+		};
+	}
+
+	static ContainerInfo detectContainer(String requestedName) {
+		String[] runtimes = { "podman", "docker" };
+		if (requestedName != null && !requestedName.isBlank()) {
+			for (String runtime : runtimes) {
+				ContainerInfo info = inspectContainer(runtime, requestedName);
+				if (info != null) {
+					return enrichSystemdScope(info);
+				}
+			}
+			return detectContainerFromSystemd(requestedName);
+		}
+
+		ContainerInfo fallback = null;
+		for (String runtime : runtimes) {
+			String candidate = findJellyfinContainerName(runtime);
+			if (candidate != null) {
+				ContainerInfo info = inspectContainer(runtime, candidate);
+				if (info != null) {
+					info = enrichSystemdScope(info);
+					if (info.running()) {
+						return info;
+					}
+					if (fallback == null) {
+						fallback = info;
+					}
+				}
+			}
+		}
+		if (fallback != null) {
+			return fallback;
+		}
+		return detectContainerFromSystemd("jellyfin");
+	}
+
+	private static String findJellyfinContainerName(String runtime) {
+		String out = runCommandOutput(runtime, "ps", "-a", "--format",
+				"{{.Names}}\t{{.Image}}\t{{.State}}");
+		if (out == null || out.isBlank()) {
+			return null;
+		}
+		String stoppedMatch = null;
+		String imageMatch = null;
+		for (String line : out.lines().toList()) {
+			String[] parts = line.split("\t", -1);
+			if (parts.length < 3) {
+				continue;
+			}
+			String name = parts[0].trim();
+			String image = parts[1].trim().toLowerCase(Locale.ROOT);
+			String state = parts[2].trim().toLowerCase(Locale.ROOT);
+			boolean running = state.startsWith("up") || state.equals("running");
+			if (name.equalsIgnoreCase("jellyfin")) {
+				if (running) {
+					return name;
+				}
+				stoppedMatch = name;
+			} else if (image.contains("jellyfin")) {
+				if (running && imageMatch == null) {
+					imageMatch = name;
+				} else if (stoppedMatch == null) {
+					stoppedMatch = name;
+				}
+			}
+		}
+		return imageMatch != null ? imageMatch : stoppedMatch;
+	}
+
+	private static ContainerInfo inspectContainer(String runtime, String name) {
+		String format = """
+				{{.State.Running}}
+				{{.Config.Image}}
+				{{index .Config.Labels "PODMAN_SYSTEMD_UNIT"}}
+				{{index .Config.Labels "org.opencontainers.image.version"}}
+				---ENV---
+				{{range .Config.Env}}{{println .}}{{end}}---MOUNTS---
+				{{range .Mounts}}{{.Type}}{{"\\t"}}{{.Source}}{{"\\t"}}{{.Destination}}{{"\\n"}}{{end}}""";
+		String out = runCommandOutput(runtime, "inspect", name, "--format", format);
+		if (out == null || out.isBlank()) {
+			return null;
+		}
+		return parseContainerInspect(runtime, name, out);
+	}
+
+	static ContainerInfo parseContainerInspect(String runtime, String name, String inspectOutput) {
+		List<String> lines = inspectOutput.lines().toList();
+		if (lines.size() < 4) {
+			return null;
+		}
+		boolean running = "true".equalsIgnoreCase(lines.get(0).trim());
+		String image = lines.get(1).trim();
+		String systemdUnit = lines.get(2).trim();
+		if (systemdUnit.equals("<no value>")) {
+			systemdUnit = "";
+		}
+		String imageVersion = lines.get(3).trim();
+		if (imageVersion.equals("<no value>")) {
+			imageVersion = "";
+		}
+
+		Map<String, String> env = new LinkedHashMap<>();
+		List<MountInfo> mounts = new ArrayList<>();
+		String section = "";
+		for (int i = 4; i < lines.size(); i++) {
+			String line = lines.get(i);
+			if (line.equals("---ENV---")) {
+				section = "ENV";
+				continue;
+			}
+			if (line.equals("---MOUNTS---")) {
+				section = "MOUNTS";
+				continue;
+			}
+			if (section.equals("ENV")) {
+				int eq = line.indexOf('=');
+				if (eq > 0) {
+					env.put(line.substring(0, eq), line.substring(eq + 1));
+				}
+			} else if (section.equals("MOUNTS")) {
+				String[] parts = line.split("\t", -1);
+				if (parts.length >= 3) {
+					mounts.add(new MountInfo(parts[0].trim(), parts[1].trim(), parts[2].trim()));
+				}
+			}
+		}
+
+		Path configDir = resolveJellyfinHostDir(env, mounts, true);
+		Path dataDir = resolveJellyfinHostDir(env, mounts, false);
+		ServiceScope scope = systemdUnit.isEmpty() ? ServiceScope.CONTAINER
+				: ServiceScope.SYSTEMD_SYSTEM;
+		return new ContainerInfo(runtime, name, running, image, imageVersion,
+				systemdUnit.isEmpty() ? null : systemdUnit, scope, configDir, dataDir);
+	}
+
+	private static Path resolveJellyfinHostDir(Map<String, String> env, List<MountInfo> mounts,
+			boolean isConfig) {
+		String envKey = isConfig ? "JELLYFIN_CONFIG_DIR" : "JELLYFIN_DATA_DIR";
+		String containerPath = env.get(envKey);
+		if (containerPath != null && !containerPath.isBlank()) {
+			Path resolved = resolveContainerHostPath(containerPath, mounts);
+			if (resolved != null) {
+				return resolved;
+			}
+		}
+
+		String defaultSplit = isConfig ? "/etc/jellyfin" : "/var/lib/jellyfin";
+		Path splitResolved = resolveContainerHostPath(defaultSplit, mounts);
+		if (splitResolved != null) {
+			return splitResolved;
+		}
+
+		String fallbackContainerPath = isConfig ? "/config/config" : "/config";
+		Path configMount = resolveContainerHostPath(fallbackContainerPath, mounts);
+		if (configMount != null) {
+			return configMount;
+		}
+		return isConfig ? resolveContainerHostPath("/config", mounts) : null;
+	}
+
+	static Path resolveContainerHostPath(String containerPath, List<MountInfo> mounts) {
+		if (containerPath == null || containerPath.isBlank() || mounts == null) {
+			return null;
+		}
+		String normalizedTarget = trimTrailingSlash(containerPath.trim());
+		MountInfo bestMatch = null;
+		int bestLen = -1;
+		for (MountInfo m : mounts) {
+			if (m.source() == null || m.source().isBlank() || m.destination() == null) {
+				continue;
+			}
+			String dest = trimTrailingSlash(m.destination().trim());
+			boolean matches = normalizedTarget.equals(dest)
+					|| normalizedTarget.startsWith(dest + "/")
+					|| dest.equals("/");
+			if (matches && dest.length() > bestLen) {
+				bestMatch = m;
+				bestLen = dest.length();
+			}
+		}
+		if (bestMatch == null) {
+			return null;
+		}
+		String dest = trimTrailingSlash(bestMatch.destination().trim());
+		Path hostBase = Path.of(bestMatch.source());
+		if (normalizedTarget.equals(dest)) {
+			return hostBase;
+		}
+		String rel = dest.equals("/") ? normalizedTarget.substring(1)
+				: normalizedTarget.substring(dest.length() + 1);
+		Path resolved = hostBase;
+		for (String part : rel.split("/")) {
+			if (!part.isEmpty()) {
+				resolved = resolved.resolve(part);
+			}
+		}
+		return resolved;
+	}
+
+	private static String trimTrailingSlash(String path) {
+		while (path.length() > 1 && path.endsWith("/")) {
+			path = path.substring(0, path.length() - 1);
+		}
+		return path;
+	}
+
+	private static ContainerInfo enrichSystemdScope(ContainerInfo info) {
+		if (!isLinux()) {
+			return info;
+		}
+		String unit = info.systemdUnit();
+		if (unit == null || unit.isBlank()) {
+			String candidateUnit = info.name() + ".service";
+			if (!isRunningAsRoot() && isSystemdUserServiceLoaded(candidateUnit)) {
+				return new ContainerInfo(info.runtime(), info.name(), info.running(), info.image(),
+						info.imageVersion(), candidateUnit, ServiceScope.SYSTEMD_USER,
+						info.configDir(), info.dataDir());
+			}
+			return info;
+		}
+		if (!isRunningAsRoot() && isSystemdUserServiceLoaded(unit)) {
+			return new ContainerInfo(info.runtime(), info.name(), info.running(), info.image(),
+					info.imageVersion(), unit, ServiceScope.SYSTEMD_USER, info.configDir(),
+					info.dataDir());
+		}
+		if (isSystemdServiceLoaded(unit)) {
+			return new ContainerInfo(info.runtime(), info.name(), info.running(), info.image(),
+					info.imageVersion(), unit, ServiceScope.SYSTEMD_SYSTEM, info.configDir(),
+					info.dataDir());
+		}
+		return info;
+	}
+
+	private static ContainerInfo detectContainerFromSystemd(String name) {
+		if (!isLinux()) {
+			return null;
+		}
+		String unit = name.endsWith(".service") ? name : name + ".service";
+		if (!isRunningAsRoot() && isSystemdUserServiceLoaded(unit)) {
+			String content = runCommandOutput("systemctl", "--user", "cat", unit);
+			if (content != null && !content.isBlank()) {
+				return parseSystemdUnitContainer(unit, ServiceScope.SYSTEMD_USER, content,
+						isSystemdUserServiceActive(unit));
+			}
+		}
+		if (isSystemdServiceLoaded(unit)) {
+			String content = runCommandOutput("systemctl", "cat", unit);
+			if (content != null && !content.isBlank()) {
+				boolean active = false;
+				try {
+					active = isSystemdServiceActive(unit);
+				} catch (Exception _) {
+				}
+				return parseSystemdUnitContainer(unit, ServiceScope.SYSTEMD_SYSTEM, content, active);
+			}
+		}
+		return null;
+	}
+
+	static ContainerInfo parseSystemdUnitContainer(String unitName, ServiceScope scope,
+			String unitContent, boolean active) {
+		boolean looksLikeContainer = unitContent.contains("[X-Container]")
+				|| unitContent.contains("podman ") || unitContent.contains("docker ")
+				|| unitContent.contains("PODMAN_SYSTEMD_UNIT");
+		if (!looksLikeContainer) {
+			return null;
+		}
+		String runtime = unitContent.contains("docker ") && !unitContent.contains("podman")
+				? "docker"
+				: "podman";
+		String containerName = unitName.endsWith(".service")
+				? unitName.substring(0, unitName.length() - ".service".length())
+				: unitName;
+		String image = "";
+		Map<String, String> env = new LinkedHashMap<>();
+		List<MountInfo> mounts = new ArrayList<>();
+		String userHome = System.getProperty("user.home", "");
+
+		for (String rawLine : unitContent.lines().toList()) {
+			String line = rawLine.trim();
+			if (line.isEmpty() || line.startsWith("#")) {
+				continue;
+			}
+			if (line.startsWith("ContainerName=")) {
+				containerName = line.substring("ContainerName=".length()).trim();
+			} else if (line.startsWith("Image=")) {
+				image = line.substring("Image=".length()).trim();
+			} else if (line.startsWith("Volume=")) {
+				addVolumeSpec(line.substring("Volume=".length()).trim(), userHome, mounts);
+			} else if (line.startsWith("Environment=")) {
+				String envVal = line.substring("Environment=".length()).trim();
+				int eq = envVal.indexOf('=');
+				if (eq > 0) {
+					env.put(envVal.substring(0, eq), envVal.substring(eq + 1));
+				}
+			} else if (line.startsWith("ExecStart=")) {
+				String exec = line.substring("ExecStart=".length()).trim();
+				String[] tokens = exec.split("\\s+");
+				for (int i = 0; i < tokens.length; i++) {
+					if ((tokens[i].equals("-v") || tokens[i].equals("--volume"))
+							&& i + 1 < tokens.length) {
+						addVolumeSpec(tokens[++i], userHome, mounts);
+					} else if ((tokens[i].equals("-e") || tokens[i].equals("--env"))
+							&& i + 1 < tokens.length) {
+						String envVal = tokens[++i];
+						int eq = envVal.indexOf('=');
+						if (eq > 0) {
+							env.put(envVal.substring(0, eq), envVal.substring(eq + 1));
+						}
+					} else if (tokens[i].equals("--name") && i + 1 < tokens.length) {
+						containerName = tokens[++i];
+					}
+				}
+			}
+		}
+
+		Path configDir = resolveJellyfinHostDir(env, mounts, true);
+		Path dataDir = resolveJellyfinHostDir(env, mounts, false);
+		String imageVersion = extractImageTag(image);
+		return new ContainerInfo(runtime, containerName, active, image, imageVersion, unitName,
+				scope, configDir, dataDir);
+	}
+
+	private static void addVolumeSpec(String spec, String userHome, List<MountInfo> mounts) {
+		String expanded = spec.replace("%h", userHome);
+		String[] parts = expanded.split(":");
+		if (parts.length >= 2) {
+			mounts.add(new MountInfo("bind", parts[0], parts[1]));
+		}
+	}
+
+	static String extractImageTag(String image) {
+		if (image == null || image.isBlank()) {
+			return "";
+		}
+		int lastSlash = image.lastIndexOf('/');
+		int colon = image.lastIndexOf(':');
+		if (colon > lastSlash && colon + 1 < image.length()) {
+			return image.substring(colon + 1);
+		}
+		return "";
+	}
+
+	static boolean isTargetActive(TargetInstallation target) throws IOException, InterruptedException {
+		return switch (target.serviceScope()) {
+		case SYSTEMD_USER -> isSystemdUserServiceActive(target.serviceName());
+		case SYSTEMD_SYSTEM -> isServiceRunning(target.serviceName());
+		case CONTAINER -> target.container() != null && target.container().running();
+		case NONE -> false;
+		};
+	}
+
+	static boolean stopTarget(TargetInstallation target) throws IOException, InterruptedException {
+		switch (target.serviceScope()) {
+		case SYSTEMD_USER -> {
+			return stopSystemdUserService(target.serviceName());
+		}
+		case SYSTEMD_SYSTEM -> {
+			changeServiceState(target.serviceName(), false);
+			return true;
+		}
+		case CONTAINER -> {
+			return target.container() != null
+					&& runCommandSuccess(target.container().runtime(), "stop", target.serviceName());
+		}
+		case NONE -> {
+			return true;
+		}
+		}
+		return false;
+	}
+
+	static boolean startTarget(TargetInstallation target) throws IOException, InterruptedException {
+		switch (target.serviceScope()) {
+		case SYSTEMD_USER -> {
+			return startSystemdUserService(target.serviceName());
+		}
+		case SYSTEMD_SYSTEM -> {
+			changeServiceState(target.serviceName(), true);
+			return true;
+		}
+		case CONTAINER -> {
+			return target.container() != null
+					&& runCommandSuccess(target.container().runtime(), "start", target.serviceName());
+		}
+		case NONE -> {
+			return true;
+		}
+		}
+		return false;
+	}
+
+	static String detectServerVersion(ContainerInfo container) {
+		if (container != null) {
+			if (container.running()) {
+				for (String bin : new String[] { "/jellyfin/jellyfin", "jellyfin" }) {
+					String out = runCommandOutput(container.runtime(), "exec", container.name(), bin,
+							"--version");
+					if (out != null && !out.isBlank()) {
+						return out.trim();
+					}
+				}
+			}
+			if (container.imageVersion() != null && !container.imageVersion().isBlank()) {
+				return container.imageVersion();
+			}
+			String tag = extractImageTag(container.image());
+			if (!tag.isBlank()) {
+				return tag;
+			}
+		}
+		return detectJellyfinVersion();
+	}
+
+	private static String runCommandOutput(String... cmd) {
+		try {
+			Process process = new ProcessBuilder(cmd).redirectErrorStream(false).start();
+			String out = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8)
+				.trim();
+			int code = process.waitFor();
+			return code == 0 ? out : null;
+		} catch (Exception _) {
+			return null;
+		}
+	}
+
+	private static boolean runCommandSuccess(String... cmd) {
+		try {
+			return new ProcessBuilder(cmd).start().waitFor() == 0;
+		} catch (Exception _) {
+			return false;
+		}
+	}
+
+	static boolean isSystemdServiceLoaded(String serviceName) {
+		if (!isLinux()) {
+			return false;
+		}
+		String out = runCommandOutput("systemctl", "show", "-p", "LoadState", "--value", serviceName);
+		return "loaded".equalsIgnoreCase(out);
+	}
+
+	static boolean isSystemdUserServiceLoaded(String serviceName) {
+		if (!isLinux()) {
+			return false;
+		}
+		String out = runCommandOutput("systemctl", "--user", "show", "-p", "LoadState", "--value",
+				serviceName);
+		return "loaded".equalsIgnoreCase(out);
+	}
+
+	static boolean isSystemdUserServiceActive(String serviceName) {
+		if (!isLinux()) {
+			return false;
+		}
+		String out = runCommandOutput("systemctl", "--user", "is-active", serviceName);
+		return "active".equalsIgnoreCase(out);
+	}
+
+	static boolean stopSystemdUserService(String serviceName) {
+		return runCommandSuccess("systemctl", "--user", "stop", serviceName);
+	}
+
+	static boolean startSystemdUserService(String serviceName) {
+		return runCommandSuccess("systemctl", "--user", "start", serviceName);
+	}
+
+	static boolean isSystemdServiceActive(String serviceName) throws IOException, InterruptedException {
 		if (!isLinux()) {
 			return false;
 		}
@@ -1005,15 +1714,18 @@ class JellyfinBackup implements Callable<Integer> {
 			return;
 		}
 		var process = new ProcessBuilder("systemctl", start ? "start" : "stop", serviceName)
-				.redirectErrorStream(true).start();
+			.redirectErrorStream(true)
+			.start();
 		String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
 		if (process.waitFor() != 0) {
 			throw new IOException(output.strip());
 		}
 	}
 
-	/// Uses Windows PowerShell's service API with literal names, numeric states, and bounded state transitions.
-	private static int windowsServiceCommand(String serviceName, String action) throws IOException, InterruptedException {
+	/// Uses Windows PowerShell's service API with literal names, numeric states,
+	/// and bounded state transitions.
+	private static int windowsServiceCommand(String serviceName, String action)
+			throws IOException, InterruptedException {
 		String script = """
 				$ErrorActionPreference = 'Stop'
 				[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
@@ -1044,7 +1756,8 @@ class JellyfinBackup implements Callable<Integer> {
 				}
 				""";
 		var builder = new ProcessBuilder("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
-				"-Command", script).redirectErrorStream(true);
+				"-Command", script)
+			.redirectErrorStream(true);
 		builder.environment().put("JBANG_JELLYFIN_SERVICE", serviceName);
 		builder.environment().put("JBANG_JELLYFIN_ACTION", action);
 		var process = builder.start();

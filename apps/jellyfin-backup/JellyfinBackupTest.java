@@ -12,6 +12,7 @@ package jellyfinbackup;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
@@ -566,7 +567,9 @@ public class JellyfinBackupTest {
 		Path config = Files.createDirectory(tempDir.resolve("config"));
 		Path junction = config.resolve("linked");
 		var process = new ProcessBuilder("cmd.exe", "/c", "mklink", "/J",
-				junction.toString(), outside.toString()).redirectErrorStream(true).start();
+				junction.toString(), outside.toString())
+			.redirectErrorStream(true)
+			.start();
 		String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
 		assertEquals(0, process.waitFor(), output);
 		try {
@@ -591,6 +594,128 @@ public class JellyfinBackupTest {
 		} finally {
 			Files.delete(junction);
 		}
+	}
+
+	@Test
+	void testParseContainerInspectSplitDirs() {
+		String inspectOutput = """
+				true
+				docker.io/jellyfin/jellyfin:12.4
+				jellyfin.service
+				12.4
+				---ENV---
+				JELLYFIN_CONFIG_DIR=/etc/jellyfin
+				JELLYFIN_DATA_DIR=/var/lib/jellyfin
+				JELLYFIN_CACHE_DIR=/cache
+				---MOUNTS---
+				volume\t/var/lib/containers/storage/volumes/abc/_data\t/config
+				bind\t/home/alex/.local/share/jellyfin/etc/jellyfin\t/etc/jellyfin
+				bind\t/home/alex/.local/share/jellyfin/var/lib/jellyfin\t/var/lib/jellyfin
+				bind\t/home/alex/.cache/jellyfin\t/cache
+				""";
+
+		var info = JellyfinBackup.parseContainerInspect("podman", "jellyfin", inspectOutput);
+		assertNotNull(info);
+		assertEquals("podman", info.runtime());
+		assertEquals("jellyfin", info.name());
+		assertTrue(info.running());
+		assertEquals("docker.io/jellyfin/jellyfin:12.4", info.image());
+		assertEquals("12.4", info.imageVersion());
+		assertEquals("jellyfin.service", info.systemdUnit());
+		assertEquals(Path.of("/home/alex/.local/share/jellyfin/etc/jellyfin"), info.configDir());
+		assertEquals(Path.of("/home/alex/.local/share/jellyfin/var/lib/jellyfin"), info.dataDir());
+	}
+
+	@Test
+	void testParseContainerInspectSingleConfigMount() {
+		String inspectOutput = """
+				false
+				lscr.io/linuxserver/jellyfin:latest
+				<no value>
+				<no value>
+				---ENV---
+				PUID=1000
+				---MOUNTS---
+				bind\t/srv/jellyfin/config\t/config
+				bind\t/srv/media\t/data/movies
+				""";
+
+		var info = JellyfinBackup.parseContainerInspect("docker", "jellyfin", inspectOutput);
+		assertNotNull(info);
+		assertFalse(info.running());
+		assertEquals(JellyfinBackup.ServiceScope.CONTAINER, info.serviceScope());
+		assertEquals(Path.of("/srv/jellyfin/config/config"), info.configDir());
+		assertEquals(Path.of("/srv/jellyfin/config"), info.dataDir());
+	}
+
+	@Test
+	void testParseSystemdUnitContainerQuadlet() {
+		String unitContent = """
+				[Unit]
+				Description=Jellyfin media server
+
+				[X-Container]
+				Image=docker.io/jellyfin/jellyfin:12.4
+				ContainerName=jellyfin
+				Environment=JELLYFIN_DATA_DIR=/var/lib/jellyfin
+				Environment=JELLYFIN_CONFIG_DIR=/etc/jellyfin
+				Volume=%h/.local/share/jellyfin/etc/jellyfin:/etc/jellyfin
+				Volume=%h/.local/share/jellyfin/var/lib/jellyfin:/var/lib/jellyfin
+				""";
+
+		var info = JellyfinBackup.parseSystemdUnitContainer("jellyfin.service",
+				JellyfinBackup.ServiceScope.SYSTEMD_USER, unitContent, true);
+		assertNotNull(info);
+		assertEquals("podman", info.runtime());
+		assertEquals("jellyfin", info.name());
+		assertTrue(info.running());
+		assertEquals("12.4", info.imageVersion());
+		assertEquals(JellyfinBackup.ServiceScope.SYSTEMD_USER, info.serviceScope());
+		Path home = Path.of(System.getProperty("user.home", ""));
+		assertEquals(home.resolve(".local/share/jellyfin/etc/jellyfin"), info.configDir());
+		assertEquals(home.resolve(".local/share/jellyfin/var/lib/jellyfin"), info.dataDir());
+	}
+
+	@Test
+	void testExtractImageTag() {
+		assertEquals("12.4", JellyfinBackup.extractImageTag("docker.io/jellyfin/jellyfin:12.4"));
+		assertEquals("latest", JellyfinBackup.extractImageTag("localhost:5000/jellyfin:latest"));
+		assertEquals("", JellyfinBackup.extractImageTag("localhost:5000/jellyfin"));
+		assertEquals("", JellyfinBackup.extractImageTag(""));
+	}
+
+	@Test
+	void testShouldElevateWithExplicitPaths() {
+		assertFalse(JellyfinBackup.shouldElevate("backup", "--no-stop", "-c", "/tmp/etc", "-d",
+				"/tmp/var"));
+		if (JellyfinBackup.isLinux() && !JellyfinBackup.isRunningAsRoot()) {
+			assertTrue(JellyfinBackup.shouldElevate("backup", "-c", "/etc/jellyfin", "-d",
+					"/var/lib/jellyfin"));
+		}
+	}
+
+	@Test
+	void testBackupSkipsConfigSubdirInsideDataDir(@TempDir Path tempDir) throws Exception {
+		Path dataDir = tempDir.resolve("config");
+		Path configDir = dataDir.resolve("config");
+		Files.createDirectories(configDir);
+		Files.createDirectories(dataDir.resolve("data"));
+		Files.writeString(configDir.resolve("system.xml"), "<Config/>");
+		Files.writeString(dataDir.resolve("data/jellyfin.db"), "DB");
+
+		Path archive = tempDir.resolve("nested.tar.gz");
+		var result = runCommand("backup", "--no-stop", "-c", configDir.toString(), "-d",
+				dataDir.toString(), "-o", archive.toString());
+		assertEquals(0, result.exitCode(), result.stderr());
+
+		Path restoreConfig = tempDir.resolve("out_etc");
+		Path restoreData = tempDir.resolve("out_var");
+		var restoreResult = restoreWithoutVerification(archive, restoreConfig, restoreData);
+		assertEquals(0, restoreResult.exitCode(), restoreResult.stderr());
+		assertTrue(Files.exists(restoreConfig.resolve("system.xml")));
+		assertTrue(Files.exists(restoreData.resolve("data/jellyfin.db")));
+		assertFalse(Files.exists(restoreData.resolve("config/system.xml")),
+				"Config subdir should not be duplicated inside data archive");
 	}
 
 	public static void main(String... args) {

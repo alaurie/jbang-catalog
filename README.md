@@ -526,14 +526,20 @@ Compile, export, and manage standalone zero-overhead native executables.
 
 ## jellyfin-backup
 
-`jellyfin-backup` is a complete disaster recovery backup, restore, and inspection utility for Jellyfin media server on Linux and Windows.
+`jellyfin-backup` is a complete disaster recovery backup, restore, and inspection utility for Jellyfin media server on Linux (native systemd and Podman/Docker containers, including rootless systemd/Quadlet user services) and Windows.
 
 ### Usage
 
-To create a full Jellyfin backup archive:
+To create a full Jellyfin backup archive (auto-detecting native or container installations):
 
 ```bash
-sudo jbang jellyfin-backup@alaurie backup -o /path/to/backups/
+jbang jellyfin-backup@alaurie backup -o /path/to/backups/
+```
+
+Or explicitly target a specific container:
+
+```bash
+jbang jellyfin-backup@alaurie backup --container jellyfin -o /path/to/backups/
 ```
 
 Or inspect a backup file without extracting:
@@ -542,10 +548,10 @@ Or inspect a backup file without extracting:
 jbang jellyfin-backup@alaurie inspect /path/to/backups/jellyfin-backup-2026-09-04_120000.tar.gz
 ```
 
-Or restore onto a fresh OS installation:
+Or restore onto a fresh OS or container installation:
 
 ```bash
-sudo jbang jellyfin-backup@alaurie restore /path/to/backups/jellyfin-backup-2026-09-04_120000.tar.gz
+jbang jellyfin-backup@alaurie restore /path/to/backups/jellyfin-backup-2026-09-04_120000.tar.gz
 ```
 
 On Windows, use PowerShell (run as Administrator when controlling a Windows service):
