@@ -35,7 +35,7 @@ import picocli.CommandLine.Parameters;
 ///
 /// Supports checking files, recursive directory manifests, string inputs,
 /// benchmark mode, stdin, and verification files.
-@Command(name = "digest", mixinStandardHelpOptions = true, version = "digest 2.0", description = "Compute and verify cryptographic checksums for files or text input.")
+@Command(name = "digest", mixinStandardHelpOptions = true, version = "digest 2.0.1", description = "Compute and verify cryptographic checksums for files or text input.")
 @SuppressWarnings("unused")
 class Digest implements Callable<Integer> {
 
@@ -176,11 +176,12 @@ class Digest implements Callable<Integer> {
 	/// @return Status code 0 on success, 1 on error.
 	private int hashDirectory(Path dir) {
 		var hasError = false;
+		var buffer = ByteBuffer.allocateDirect(1024 * 1024);
 		try (var stream = Files.walk(dir)) {
 			var paths = stream.filter(Files::isRegularFile).sorted().toList();
 			for (var p : paths) {
 				var relPath = dir.relativize(p).toString();
-				var hashStr = computeHashForPath(p);
+				var hashStr = computeHashForPath(p, buffer);
 				if (hashStr != null) {
 					System.out.printf("%s  %s%n", hashStr, relPath);
 				} else {
@@ -248,9 +249,18 @@ class Digest implements Callable<Integer> {
 	private String computeHashForPath(Path path) {
 		try {
 			long totalBytes = Files.size(path);
-			var digest = MessageDigest.getInstance(algorithm);
 			int bufferSize = (int) Math.clamp(totalBytes, 64 * 1024, 8 * 1024 * 1024);
-			ByteBuffer buffer = ByteBuffer.allocateDirect(bufferSize);
+			return computeHashForPath(path, ByteBuffer.allocateDirect(bufferSize));
+		} catch (Exception e) {
+			System.err.printf("Error hashing file '%s': %s%n", path, e.getMessage());
+			return null;
+		}
+	}
+
+	private String computeHashForPath(Path path, ByteBuffer buffer) {
+		try {
+			var digest = MessageDigest.getInstance(algorithm);
+			buffer.clear();
 
 			try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
 				while (channel.read(buffer) > 0) {
@@ -324,7 +334,7 @@ class Digest implements Callable<Integer> {
 				var expectedHash = parts[0].trim();
 				var targetPathStr = parts[1].trim();
 
-				if (targetPathStr.startsWith("*") || targetPathStr.startsWith(" ")) {
+				if (targetPathStr.startsWith("*")) {
 					targetPathStr = targetPathStr.substring(1).trim();
 				}
 

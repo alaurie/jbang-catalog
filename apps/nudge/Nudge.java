@@ -16,17 +16,21 @@ import java.awt.Point;
 import java.awt.Robot;
 import java.awt.Toolkit;
 import java.awt.event.KeyEvent;
+import java.io.File;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
+import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.Callable;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
@@ -43,7 +47,7 @@ import picocli.CommandLine.Option;
 /// Supports Linux Wayland natively via direct kernel virtual input
 /// (`/dev/uinput` via FFM), CLI tools (`ydotool`, `wtype`, `dotool`), D-Bus idle
 /// inhibition, and standard `java.awt.Robot` on X11, macOS, and Windows.
-@Command(name = "nudge", mixinStandardHelpOptions = true, version = "nudge 2.0", description = "Simulates user activity (mouse movement, key press, scrolling) when idle to keep your"
+@Command(name = "nudge", mixinStandardHelpOptions = true, version = "nudge 2.0.1", description = "Simulates user activity (mouse movement, key press, scrolling) when idle to keep your"
 		+ " presence status active.", footer = { "", "Linux Wayland Note:",
 				"  Direct kernel virtual input (/dev/uinput via FFM) requires membership in the",
 				"  'input' group: sudo usermod -aG input $USER (requires re-login).",
@@ -115,6 +119,23 @@ class Nudge implements Callable<Integer> {
 			}
 		}
 
+		LocalTime windowStart = null;
+		LocalTime windowStop = null;
+		if (betweenHours != null && !betweenHours.isEmpty()) {
+			if (betweenHours.size() != 2) {
+				System.err.println("Error: --between requires two HH:mm times (e.g. --between 09:00 17:00).");
+				return 1;
+			}
+			try {
+				windowStart = LocalTime.parse(betweenHours.getFirst());
+				windowStop = LocalTime.parse(betweenHours.getLast());
+			} catch (Exception _) {
+				System.err.println(
+						"Error: Invalid --between time format. Expected HH:mm (e.g. 09:00 17:00).");
+				return 1;
+			}
+		}
+
 		backend = initializeBackend();
 		if (backend == null) {
 			System.err.println("Error: Could not initialize any input or presence backend.");
@@ -180,18 +201,11 @@ class Nudge implements Callable<Integer> {
 				}
 
 				var isOutsideHours = false;
-				if (betweenHours != null && betweenHours.size() == 2) {
-					try {
-						var now = LocalTime.now();
-						var start = LocalTime.parse(betweenHours.getFirst());
-						var stop = LocalTime.parse(betweenHours.getLast());
-						if (now.isBefore(start) || now.isAfter(stop)) {
-							isOutsideHours = true;
-						}
-					} catch (Exception _) {
-						System.err.println(
-								"Warning: Invalid --between time format. Expected HH:mm (e.g. 09:00 17:00).");
-					}
+				if (windowStart != null && windowStop != null) {
+					var now = LocalTime.now();
+					isOutsideHours = windowStart.isAfter(windowStop)
+							? (now.isBefore(windowStart) && now.isAfter(windowStop))
+							: (now.isBefore(windowStart) || now.isAfter(windowStop));
 				}
 
 				if (isOutsideHours) {
@@ -270,13 +284,15 @@ class Nudge implements Callable<Integer> {
 			}
 
 			// 3. Fallback: D-Bus Inhibit + AWT Robot if DISPLAY is set
-			log("Notice: Wayland session detected without /dev/uinput or CLI simulation tools.");
-			log("To enable direct kernel input simulation (for Teams/Slack):");
-			log("  1. Add user to input group: sudo usermod -aG input $USER");
-			log("  2. Or install ydotool: sudo apt install ydotool");
-			log("Activating D-Bus ScreenSaver Inhibit to keep desktop session active.");
-
-			return FallbackWaylandBackend.create();
+			var fallback = FallbackWaylandBackend.create();
+			if (fallback != null) {
+				log("Notice: Wayland session detected without /dev/uinput or CLI simulation tools.");
+				log("To enable direct kernel input simulation (for Teams/Slack):");
+				log("  1. Add user to input group: sudo usermod -aG input $USER");
+				log("  2. Or install ydotool: sudo apt install ydotool");
+				log("Activating D-Bus ScreenSaver Inhibit to keep desktop session active.");
+			}
+			return fallback;
 		}
 
 		try {
@@ -307,14 +323,16 @@ class Nudge implements Callable<Integer> {
 	/// @param command Command name.
 	/// @return `true` if command is found.
 	private static boolean hasCommand(String command) {
-		try {
-			var process = new ProcessBuilder("which", command).redirectOutput(ProcessBuilder.Redirect.DISCARD)
-				.redirectError(ProcessBuilder.Redirect.DISCARD)
-				.start();
-			return process.waitFor() == 0;
-		} catch (Exception _) {
+		var pathEnv = System.getenv("PATH");
+		if (pathEnv == null || pathEnv.isBlank()) {
 			return false;
 		}
+		for (var dir : pathEnv.split(File.pathSeparator)) {
+			if (!dir.isBlank() && new File(dir, command).canExecute()) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/// Moves mouse cursor according to configured mode (out-and-back or circular).
@@ -419,18 +437,25 @@ class Nudge implements Callable<Integer> {
 		private static final short KEY_LEFTSHIFT = 42;
 
 		private final int fd;
+		private final Arena eventArena;
+		private final MemorySegment eventSegment;
 		private final MethodHandle ioctl;
 		private final MethodHandle write;
 		private final MethodHandle close;
 
-		private UinputBackend(int fd, MethodHandle ioctl, MethodHandle write, MethodHandle close) {
+		private UinputBackend(int fd, Arena eventArena, MemorySegment eventSegment, MethodHandle ioctl,
+				MethodHandle write, MethodHandle close) {
 			this.fd = fd;
+			this.eventArena = eventArena;
+			this.eventSegment = eventSegment;
 			this.ioctl = ioctl;
 			this.write = write;
 			this.close = close;
 		}
 
 		public static UinputBackend create() {
+			int fd = -1;
+			MethodHandle closeHandle = null;
 			try {
 				var linker = Linker.nativeLinker();
 				var lookup = linker.defaultLookup();
@@ -443,10 +468,9 @@ class Nudge implements Callable<Integer> {
 				var writeHandle = linker.downcallHandle(lookup.find("write").orElseThrow(),
 						FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
 								ValueLayout.JAVA_LONG));
-				var closeHandle = linker.downcallHandle(lookup.find("close").orElseThrow(),
+				closeHandle = linker.downcallHandle(lookup.find("close").orElseThrow(),
 						FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
 
-				int fd;
 				try (var arena = Arena.ofConfined()) {
 					var path = arena.allocateFrom("/dev/uinput");
 					// O_WRONLY | O_NONBLOCK = 01 | 04000 = 2049
@@ -473,8 +497,16 @@ class Nudge implements Callable<Integer> {
 					ioctlHandle.invoke(fd, (long) UI_DEV_CREATE, 0L);
 				}
 
-				return new UinputBackend(fd, ioctlHandle, writeHandle, closeHandle);
+				var eventArena = Arena.ofConfined();
+				var eventSegment = eventArena.allocate(24);
+				return new UinputBackend(fd, eventArena, eventSegment, ioctlHandle, writeHandle, closeHandle);
 			} catch (Throwable _) {
+				if (fd >= 0 && closeHandle != null) {
+					try {
+						closeHandle.invoke(fd);
+					} catch (Throwable _) {
+					}
+				}
 				return null;
 			}
 		}
@@ -506,12 +538,12 @@ class Nudge implements Callable<Integer> {
 		}
 
 		private void emit(short type, short code, int value) {
-			try (var arena = Arena.ofConfined()) {
-				var event = arena.allocate(24);
-				event.set(ValueLayout.JAVA_SHORT, 16, type);
-				event.set(ValueLayout.JAVA_SHORT, 18, code);
-				event.set(ValueLayout.JAVA_INT, 20, value);
-				write.invoke(fd, event, 24L);
+			try {
+				eventSegment.fill((byte) 0);
+				eventSegment.set(ValueLayout.JAVA_SHORT, 16, type);
+				eventSegment.set(ValueLayout.JAVA_SHORT, 18, code);
+				eventSegment.set(ValueLayout.JAVA_INT, 20, value);
+				write.invoke(fd, eventSegment, 24L);
 			} catch (Throwable _) {
 				// Ignore write failures
 			}
@@ -535,6 +567,7 @@ class Nudge implements Callable<Integer> {
 			} catch (Throwable _) {
 				// Cleanup
 			}
+			eventArena.close();
 		}
 	}
 
@@ -565,7 +598,7 @@ class Nudge implements Callable<Integer> {
 		public void moveMouse(int dx, int dy) {
 			switch (tool) {
 			case "ydotool" -> run("ydotool", "mousemove", "--", String.valueOf(dx), String.valueOf(dy));
-			case "dotool" -> runPipe("echo 'mrel %d %d' | dotool".formatted(dx, dy));
+			case "dotool" -> runDotool("mrel %d %d\n".formatted(dx, dy));
 			default -> {
 			}
 			}
@@ -575,7 +608,7 @@ class Nudge implements Callable<Integer> {
 		public void scrollMouse(int clicks) {
 			switch (tool) {
 			case "ydotool" -> run("ydotool", "mousemove", "--wheel", String.valueOf(clicks));
-			case "dotool" -> runPipe("echo 'wheel %d' | dotool".formatted(clicks));
+			case "dotool" -> runDotool("wheel %d\n".formatted(clicks));
 			default -> {
 			}
 			}
@@ -586,7 +619,7 @@ class Nudge implements Callable<Integer> {
 			switch (tool) {
 			case "ydotool" -> run("ydotool", "key", "42:1", "42:0");
 			case "wtype" -> run("wtype", "-k", "Shift_L");
-			case "dotool" -> runPipe("echo 'key shift' | dotool");
+			case "dotool" -> runDotool("key shift\n");
 			default -> {
 			}
 			}
@@ -594,21 +627,29 @@ class Nudge implements Callable<Integer> {
 
 		private void run(String... args) {
 			try {
-				new ProcessBuilder(args).redirectOutput(ProcessBuilder.Redirect.DISCARD)
+				var process = new ProcessBuilder(args).redirectOutput(ProcessBuilder.Redirect.DISCARD)
 					.redirectError(ProcessBuilder.Redirect.DISCARD)
-					.start()
-					.waitFor();
+					.start();
+				if (!process.waitFor(2, TimeUnit.SECONDS)) {
+					process.destroyForcibly();
+				}
 			} catch (Exception _) {
 				// Ignored
 			}
 		}
 
-		private void runPipe(String shellCmd) {
+		private void runDotool(String input) {
 			try {
-				new ProcessBuilder("sh", "-c", shellCmd).redirectOutput(ProcessBuilder.Redirect.DISCARD)
+				var process = new ProcessBuilder("dotool").redirectOutput(ProcessBuilder.Redirect.DISCARD)
 					.redirectError(ProcessBuilder.Redirect.DISCARD)
-					.start()
-					.waitFor();
+					.start();
+				try (var os = process.getOutputStream()) {
+					os.write(input.getBytes(StandardCharsets.UTF_8));
+					os.flush();
+				}
+				if (!process.waitFor(2, TimeUnit.SECONDS)) {
+					process.destroyForcibly();
+				}
 			} catch (Exception _) {
 				// Ignored
 			}

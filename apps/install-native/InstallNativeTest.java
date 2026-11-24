@@ -49,6 +49,7 @@ public class InstallNativeTest {
 			System.setErr(printErr);
 			var app = new InstallNative();
 			var cmd = new CommandLine(app);
+			cmd.setColorScheme(CommandLine.Help.defaultColorScheme(CommandLine.Help.Ansi.OFF));
 			cmd.setOut(pw);
 			cmd.setErr(pw);
 			int exitCode = cmd.execute(args);

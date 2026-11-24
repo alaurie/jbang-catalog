@@ -22,6 +22,7 @@ import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -44,13 +45,14 @@ import picocli.CommandLine.Parameters;
 /// Supports compiling/exporting native binaries directly to `~/.local/bin` (or
 /// custom directory), listing native compatibility, and cleaning/uninstalling
 /// exported binaries.
-@Command(name = "install-native", mixinStandardHelpOptions = true, version = "install-native 2.0", description = "Compile, export, and manage standalone zero-overhead native executables.")
+@Command(name = "install-native", mixinStandardHelpOptions = true, version = "install-native 2.0.1", description = "Compile, export, and manage standalone zero-overhead native executables.")
 @SuppressWarnings("unused")
 class InstallNative implements Callable<Integer> {
 
 	private static final boolean IS_WINDOWS = System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("win");
 
 	private static final String REMOTE_CATALOG_URL = "https://raw.githubusercontent.com/alaurie/jbang-catalog/main/jbang-catalog.json";
+	private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(4)).build();
 
 	private static final Set<String> JNI_DEPENDENCY_PATTERNS = Set.of("oshi-core", "jna", "sqlite-jdbc",
 			"libjnidispatch");
@@ -388,19 +390,15 @@ class InstallNative implements Callable<Integer> {
 			if (pos >= src.length())
 				return null;
 			char c = src.charAt(pos);
-			if (c == '{')
-				return parseObject();
-			if (c == '[')
-				return parseArray();
-			if (c == '"')
-				return parseString();
-			if (c == 't' || c == 'f')
-				return parseBoolean();
-			if (c == 'n')
-				return parseNull();
-			if (c == '-' || (c >= '0' && c <= '9'))
-				return parseNumber();
-			throw new IllegalArgumentException("Unexpected char: " + c);
+			return switch (c) {
+			case '{' -> parseObject();
+			case '[' -> parseArray();
+			case '"' -> parseString();
+			case 't', 'f' -> parseBoolean();
+			case 'n' -> parseNull();
+			case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' -> parseNumber();
+			default -> throw new IllegalArgumentException("Unexpected char: " + c);
+			};
 		}
 
 		private Map<String, Object> parseObject() {
@@ -426,6 +424,8 @@ class InstallNative implements Callable<Integer> {
 				} else if (pos < src.length() && src.charAt(pos) == '}') {
 					pos++;
 					break;
+				} else {
+					throw new IllegalArgumentException("Expected ',' or '}' in JSON object at position " + pos);
 				}
 			}
 			return map;
@@ -447,6 +447,8 @@ class InstallNative implements Callable<Integer> {
 				} else if (pos < src.length() && src.charAt(pos) == ']') {
 					pos++;
 					break;
+				} else {
+					throw new IllegalArgumentException("Expected ',' or ']' in JSON array at position " + pos);
 				}
 			}
 			return list;
@@ -539,9 +541,8 @@ class InstallNative implements Callable<Integer> {
 		}
 
 		try {
-			HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(4)).build();
 			HttpRequest request = HttpRequest.newBuilder(URI.create(REMOTE_CATALOG_URL)).GET().build();
-			HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+			HttpResponse<String> response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
 			if (response.statusCode() == 200) {
 				return response.body();
 			}
@@ -594,9 +595,11 @@ class InstallNative implements Callable<Integer> {
 		if (scriptRef != null && !scriptRef.isBlank()) {
 			try {
 				String remoteUrl = "https://raw.githubusercontent.com/alaurie/jbang-catalog/main/" + scriptRef;
-				HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
-				HttpRequest request = HttpRequest.newBuilder(URI.create(remoteUrl)).GET().build();
-				HttpResponse<String> res = client.send(request, HttpResponse.BodyHandlers.ofString());
+				HttpRequest request = HttpRequest.newBuilder(URI.create(remoteUrl))
+					.timeout(Duration.ofSeconds(3))
+					.GET()
+					.build();
+				HttpResponse<String> res = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
 				if (res.statusCode() == 200) {
 					return res.body();
 				}
@@ -641,6 +644,7 @@ class InstallNative implements Callable<Integer> {
 		}
 
 		List<AppMetadata> result = new ArrayList<>();
+		Set<String> seenAliases = new HashSet<>();
 		for (String req : requestedApps) {
 			var app = findApp(catalogApps, req);
 			if (app == null) {
@@ -649,7 +653,7 @@ class InstallNative implements Callable<Integer> {
 			} else if (!includeAllForClean && !app.nativeSupported()) {
 				System.err.printf("Warning: '%s' is marked JVM-only (%s) - skipping native build.%n",
 						app.alias(), app.supportReason());
-			} else {
+			} else if (seenAliases.add(app.alias().toLowerCase(Locale.ROOT))) {
 				result.add(app);
 			}
 		}
@@ -850,10 +854,24 @@ class InstallNative implements Callable<Integer> {
 		String pathEnv = System.getenv("PATH");
 		if (pathEnv != null) {
 			String destStr = destination.toAbsolutePath().toString();
-			boolean onPath = List.of(pathEnv.split(File.pathSeparator))
-				.stream()
-				.map(p -> Path.of(p).toAbsolutePath().toString())
-				.anyMatch(p -> p.equalsIgnoreCase(destStr));
+			boolean onPath = false;
+			for (String segment : pathEnv.split(File.pathSeparator)) {
+				String trimmed = segment.trim();
+				if (trimmed.isEmpty()) {
+					continue;
+				}
+				if (IS_WINDOWS && trimmed.startsWith("\"") && trimmed.endsWith("\"") && trimmed.length() >= 2) {
+					trimmed = trimmed.substring(1, trimmed.length() - 1);
+				}
+				try {
+					if (Path.of(trimmed).toAbsolutePath().toString().equalsIgnoreCase(destStr)) {
+						onPath = true;
+						break;
+					}
+				} catch (Exception _) {
+					// Ignore malformed PATH entries
+				}
+			}
 
 			if (!onPath) {
 				System.out.println();

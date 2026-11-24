@@ -43,7 +43,7 @@ import picocli.CommandLine.Option;
 /// Designed for remote sessions, VDIs (Citrix, VMware Horizon, RDP), and virtual
 /// machines where copy-paste is blocked by security policy, but keyboard input
 /// events are accepted.
-@Command(name = "typeit", mixinStandardHelpOptions = true, version = "typeit 2.0", description = "Simulates typing clipboard text (or specified string) into the active window after a"
+@Command(name = "typeit", mixinStandardHelpOptions = true, version = "typeit 2.0.1", description = "Simulates typing clipboard text (or specified string) into the active window after a"
 		+ " countdown delay.", footer = { "", "Linux Wayland Note:",
 				"  Direct kernel virtual input (/dev/uinput via FFM) requires membership in the",
 				"  'input' group: sudo usermod -aG input $USER (requires re-login).",
@@ -338,8 +338,10 @@ class Typeit implements Callable<Integer> {
 	///         or unreadable.
 	private String readClipboardText() {
 		String osName = System.getProperty("os.name", "").toLowerCase();
+		boolean triedWlPaste = false;
 		if (osName.contains("linux")) {
 			if (isWaylandSession() || GraphicsEnvironment.isHeadless()) {
+				triedWlPaste = true;
 				String text = runCommandCaptureOutput("wl-paste", "--no-newline");
 				if (text != null && !text.isEmpty()) {
 					return text;
@@ -364,7 +366,7 @@ class Typeit implements Callable<Integer> {
 		}
 
 		if (osName.contains("linux")) {
-			String text = runCommandCaptureOutput("wl-paste", "--no-newline");
+			String text = triedWlPaste ? null : runCommandCaptureOutput("wl-paste", "--no-newline");
 			if (text != null && !text.isEmpty()) {
 				return text;
 			}
@@ -523,7 +525,7 @@ class Typeit implements Callable<Integer> {
 				setupSegment.set(ValueLayout.JAVA_SHORT, 4, (short) 0x5678);
 				setupSegment.set(ValueLayout.JAVA_SHORT, 6, (short) 1);
 				var nameBytes = "Typeit Virtual Keyboard".getBytes(StandardCharsets.UTF_8);
-				for (int i = 0; i < nameBytes.length; i++) {
+				for (int i = 0; i < Math.min(nameBytes.length, 79); i++) {
 					setupSegment.set(ValueLayout.JAVA_BYTE, 8 + i, nameBytes[i]);
 				}
 
@@ -559,23 +561,27 @@ class Typeit implements Callable<Integer> {
 			} catch (Throwable t) {
 				throw new RuntimeException("Failed to emit uinput event", t);
 			}
-			// Pace transitions, not just characters: remote clients must observe
-			// Shift before key-down and keep it active through key-up.
-			try {
-				Thread.sleep(Duration.ofMillis(speed));
-			} catch (InterruptedException _) {
-				Thread.currentThread().interrupt();
-			}
 		}
 
 		private void sendKey(short code, boolean shifted) {
 			if (shifted) {
 				emitEvent(KEY_LEFTSHIFT, 1);
+				pause(1);
 			}
 			emitEvent(code, 1);
 			emitEvent(code, 0);
 			if (shifted) {
+				pause(1);
 				emitEvent(KEY_LEFTSHIFT, 0);
+			}
+			pause(speed);
+		}
+
+		private static void pause(int millis) {
+			try {
+				Thread.sleep(Duration.ofMillis(millis));
+			} catch (InterruptedException _) {
+				Thread.currentThread().interrupt();
 			}
 		}
 

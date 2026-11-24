@@ -55,7 +55,7 @@ import picocli.CommandLine.Parameters;
 /// systemd/Quadlet user services), and Windows service/tray/portable
 /// installations. Archives configuration, databases, plugins, and metadata using
 /// a platform-independent layout.
-@Command(name = "jellyfin-backup", mixinStandardHelpOptions = true, version = "jellyfin-backup 2.2.0", description = "Complete backup, restore, and disaster recovery utility for Jellyfin media server.", subcommands = {
+@Command(name = "jellyfin-backup", mixinStandardHelpOptions = true, version = "jellyfin-backup 2.2.1", description = "Complete backup, restore, and disaster recovery utility for Jellyfin media server.", subcommands = {
 		JellyfinBackup.BackupCmd.class, JellyfinBackup.RestoreCmd.class,
 		JellyfinBackup.InspectCmd.class })
 @SuppressWarnings("unused")
@@ -162,7 +162,7 @@ class JellyfinBackup implements Callable<Integer> {
 			dataDir = target.dataDir();
 
 			if (isLinux() && !isRunningAsRoot()
-					&& (configDir.toString().startsWith("/etc") || dataDir.toString().startsWith("/var"))) {
+					&& (requiresRootPath(configDir, null) || requiresRootPath(dataDir, null))) {
 				System.err.println("Error: Run as root to back up system Jellyfin directories.");
 				return 1;
 			}
@@ -343,9 +343,11 @@ class JellyfinBackup implements Callable<Integer> {
 
 					// 4. Write manifest
 					String timestamp = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+					String escapedVersion = serverVersion == null ? ""
+							: serverVersion.replace("\\", "\\\\").replace("\"", "\\\"");
 					String manifestJson = """
 							{
-							  "generator": "jellyfin-backup 1.0",
+							  "generator": "jellyfin-backup 2.2.1",
 							  "timestamp": "%s",
 							  "serverVersion": "%s",
 							  "hasConfig": %b,
@@ -353,7 +355,7 @@ class JellyfinBackup implements Callable<Integer> {
 							  "hasQuadlet": %b,
 							  "hasCompose": %b
 							}
-							""".formatted(timestamp, serverVersion, hasConfig, hasData, hasQuadlet,
+							""".formatted(timestamp, escapedVersion, hasConfig, hasData, hasQuadlet,
 							hasCompose);
 
 					byte[] manifestBytes = manifestJson.getBytes(StandardCharsets.UTF_8);
@@ -428,7 +430,7 @@ class JellyfinBackup implements Callable<Integer> {
 					if (!inclCache && isCachePath(relPath)) {
 						return java.nio.file.FileVisitResult.CONTINUE;
 					}
-					if (!inclBackups
+					if (!inclBackups && isBackupPath(relPath)
 							&& (file.toString().endsWith(".zip") || file.toString().endsWith(".tar.gz"))) {
 						return java.nio.file.FileVisitResult.CONTINUE;
 					}
@@ -577,7 +579,7 @@ class JellyfinBackup implements Callable<Integer> {
 			dataDir = target.dataDir();
 
 			if (isLinux() && !isRunningAsRoot()
-					&& (configDir.toString().startsWith("/etc") || dataDir.toString().startsWith("/var"))) {
+					&& (requiresRootPath(configDir, null) || requiresRootPath(dataDir, null))) {
 				System.err.println("Error: Run as root to restore system Jellyfin directories.");
 				return 1;
 			}
@@ -922,10 +924,11 @@ class JellyfinBackup implements Callable<Integer> {
 					} else if ((name.startsWith("quadlet/") || name.startsWith("compose/"))
 							&& !entry.isDirectory()) {
 						containerConfigs.add(name);
-					} else if (name.contains("plugins/") && entry.isDirectory()) {
+					} else if (name.contains("plugins/")) {
 						String[] parts = name.split("/");
 						for (int i = 0; i < parts.length - 1; i++) {
-							if (parts[i].equals("plugins") && !parts[i + 1].equals("configurations")) {
+							if (parts[i].equals("plugins") && !parts[i + 1].isEmpty()
+									&& !parts[i + 1].equals("configurations")) {
 								String pluginName = parts[i + 1];
 								if (!plugins.contains(pluginName)) {
 									plugins.add(pluginName);
@@ -1225,7 +1228,8 @@ class JellyfinBackup implements Callable<Integer> {
 	private static boolean requiresRootPath(Path resolvedPath, String explicitArg) {
 		String pathStr = explicitArg != null ? explicitArg
 				: (resolvedPath != null ? resolvedPath.toString() : "");
-		return pathStr.startsWith("/etc") || pathStr.startsWith("/var");
+		return pathStr.equals("/etc") || pathStr.startsWith("/etc/")
+				|| pathStr.equals("/var") || pathStr.startsWith("/var/");
 	}
 
 	private static String extractOptionValue(String[] args, String... names) {
@@ -1432,7 +1436,7 @@ class JellyfinBackup implements Callable<Integer> {
 		if (lines.size() < 4) {
 			return null;
 		}
-		boolean running = "true".equalsIgnoreCase(lines.get(0).trim());
+		boolean running = "true".equalsIgnoreCase(lines.getFirst().trim());
 		String image = lines.get(1).trim();
 		String systemdUnit = cleanInspectValue(lines.get(2));
 		String imageVersion = cleanInspectValue(lines.get(3));
@@ -1517,8 +1521,8 @@ class JellyfinBackup implements Callable<Integer> {
 		}
 		if (workingDir != null && !workingDir.isBlank()) {
 			Path dir = Path.of(workingDir);
-			for (String name : new String[] { "compose.yaml", "compose.yml", "docker-compose.yaml",
-					"docker-compose.yml" }) {
+			for (String name : List.of("compose.yaml", "compose.yml", "docker-compose.yaml",
+					"docker-compose.yml")) {
 				Path candidate = dir.resolve(name);
 				if (Files.isRegularFile(candidate)) {
 					return candidate.normalize();
@@ -1797,49 +1801,35 @@ class JellyfinBackup implements Callable<Integer> {
 	}
 
 	static boolean stopTarget(TargetInstallation target) throws IOException, InterruptedException {
-		switch (target.serviceScope()) {
-		case SYSTEMD_USER -> {
-			return stopSystemdUserService(target.serviceName());
-		}
+		return switch (target.serviceScope()) {
+		case SYSTEMD_USER -> stopSystemdUserService(target.serviceName());
 		case SYSTEMD_SYSTEM -> {
 			changeServiceState(target.serviceName(), false);
-			return true;
+			yield true;
 		}
-		case CONTAINER -> {
-			return target.container() != null
-					&& runCommandSuccess(target.container().runtime(), "stop", target.serviceName());
-		}
-		case NONE -> {
-			return true;
-		}
-		}
-		return false;
+		case CONTAINER -> target.container() != null
+				&& runCommandSuccess(target.container().runtime(), "stop", target.serviceName());
+		case NONE -> true;
+		};
 	}
 
 	static boolean startTarget(TargetInstallation target) throws IOException, InterruptedException {
-		switch (target.serviceScope()) {
-		case SYSTEMD_USER -> {
-			return startSystemdUserService(target.serviceName());
-		}
+		return switch (target.serviceScope()) {
+		case SYSTEMD_USER -> startSystemdUserService(target.serviceName());
 		case SYSTEMD_SYSTEM -> {
 			changeServiceState(target.serviceName(), true);
-			return true;
+			yield true;
 		}
-		case CONTAINER -> {
-			return target.container() != null
-					&& runCommandSuccess(target.container().runtime(), "start", target.serviceName());
-		}
-		case NONE -> {
-			return true;
-		}
-		}
-		return false;
+		case CONTAINER -> target.container() != null
+				&& runCommandSuccess(target.container().runtime(), "start", target.serviceName());
+		case NONE -> true;
+		};
 	}
 
 	static String detectServerVersion(ContainerInfo container) {
 		if (container != null) {
 			if (container.running()) {
-				for (String bin : new String[] { "/jellyfin/jellyfin", "jellyfin" }) {
+				for (String bin : List.of("/jellyfin/jellyfin", "jellyfin")) {
 					String out = runCommandOutput(container.runtime(), "exec", container.name(), bin,
 							"--version");
 					if (out != null && !out.isBlank()) {

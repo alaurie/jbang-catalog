@@ -41,7 +41,7 @@ import picocli.CommandLine.Parameters;
 /// Splits JWT parts (header, payload, signature), base64url decodes header and
 /// payload, pretty prints JSON structures, checks expiration/timestamp claims,
 /// verifies HMAC signatures, and exports claims to shell environment variables.
-@Command(name = "jwt", mixinStandardHelpOptions = true, version = "jwt 2.0", description = "Inspect and decode JSON Web Tokens (JWT) without sending tokens to third parties.")
+@Command(name = "jwt", mixinStandardHelpOptions = true, version = "jwt 2.0.1", description = "Inspect and decode JSON Web Tokens (JWT) without sending tokens to third parties.")
 @SuppressWarnings("unused")
 class Jwt implements Callable<Integer> {
 
@@ -233,7 +233,7 @@ class Jwt implements Callable<Integer> {
 			mac.init(keySpec);
 			var computedBytes = mac.doFinal(signingInput.getBytes(StandardCharsets.UTF_8));
 			return MessageDigest.isEqual(computedBytes, Base64.getUrlDecoder().decode(signature));
-		} catch (Exception e) {
+		} catch (Exception _) {
 			return false;
 		}
 	}
@@ -274,7 +274,7 @@ class Jwt implements Callable<Integer> {
 			return tokenOrFile;
 		}
 
-		if (System.in.available() > 0 || (tokenOrFile != null && tokenOrFile.equals("-"))) {
+		if (System.console() == null || "-".equals(tokenOrFile)) {
 			try (var br = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
 				var sb = new StringBuilder();
 				String line;
@@ -299,7 +299,7 @@ class Jwt implements Callable<Integer> {
 				.onUnmappableCharacter(CodingErrorAction.REPORT)
 				.decode(ByteBuffer.wrap(bytes))
 				.toString();
-		} catch (IllegalArgumentException | CharacterCodingException e) {
+		} catch (IllegalArgumentException | CharacterCodingException _) {
 			return null;
 		}
 	}
@@ -319,31 +319,26 @@ class Jwt implements Callable<Integer> {
 	}
 
 	private static String formatJsonValue(Object val) {
-		if (val == null)
-			return "null";
-		if (val instanceof String s)
-			return "\"" + escapeJson(s) + "\"";
-		if (val instanceof Number || val instanceof Boolean)
-			return val.toString();
-		return prettyFormat(val, 0);
+		return switch (val) {
+		case null -> "null";
+		case String s -> "\"" + escapeJson(s) + "\"";
+		case Number _,Boolean _ -> val.toString();
+		default -> prettyFormat(val, 0);
+		};
 	}
 
 	private static String prettyFormat(Object obj, int indent) {
 		String pad = "  ".repeat(indent);
 		String innerPad = "  ".repeat(indent + 1);
 
-		if (obj == null) {
-			return "null";
-		}
-		if (obj instanceof String s) {
-			return "\"" + escapeJson(s) + "\"";
-		}
-		if (obj instanceof Number || obj instanceof Boolean) {
-			return obj.toString();
-		}
-		if (obj instanceof Map<?, ?> map) {
-			if (map.isEmpty())
-				return "{}";
+		return switch (obj) {
+		case null -> "null";
+		case String s -> "\"" + escapeJson(s) + "\"";
+		case Number _,Boolean _ -> obj.toString();
+		case Map<?, ?> map -> {
+			if (map.isEmpty()) {
+				yield "{}";
+			}
 			var sb = new StringBuilder("{\n");
 			int i = 0;
 			for (var entry : map.entrySet()) {
@@ -357,12 +352,12 @@ class Jwt implements Callable<Integer> {
 				}
 				sb.append("\n");
 			}
-			sb.append(pad).append("}");
-			return sb.toString();
+			yield sb.append(pad).append("}").toString();
 		}
-		if (obj instanceof List<?> list) {
-			if (list.isEmpty())
-				return "[]";
+		case List<?> list -> {
+			if (list.isEmpty()) {
+				yield "[]";
+			}
 			var sb = new StringBuilder("[\n");
 			for (int i = 0; i < list.size(); i++) {
 				sb.append(innerPad).append(prettyFormat(list.get(i), indent + 1));
@@ -371,18 +366,34 @@ class Jwt implements Callable<Integer> {
 				}
 				sb.append("\n");
 			}
-			sb.append(pad).append("]");
-			return sb.toString();
+			yield sb.append(pad).append("]").toString();
 		}
-		return String.valueOf(obj);
+		default -> String.valueOf(obj);
+		};
 	}
 
 	private static String escapeJson(String s) {
-		return s.replace("\\", "\\\\")
-			.replace("\"", "\\\"")
-			.replace("\n", "\\n")
-			.replace("\r", "\\r")
-			.replace("\t", "\\t");
+		var sb = new StringBuilder(s.length());
+		for (int i = 0; i < s.length(); i++) {
+			char c = s.charAt(i);
+			switch (c) {
+			case '\\' -> sb.append("\\\\");
+			case '"' -> sb.append("\\\"");
+			case '\b' -> sb.append("\\b");
+			case '\f' -> sb.append("\\f");
+			case '\n' -> sb.append("\\n");
+			case '\r' -> sb.append("\\r");
+			case '\t' -> sb.append("\\t");
+			default -> {
+				if (c < 0x20) {
+					sb.append("\\u%04x".formatted((int) c));
+				} else {
+					sb.append(c);
+				}
+			}
+			}
+		}
+		return sb.toString();
 	}
 
 	/// Lightweight recursive-descent JSON parser for standard JSON structures.
@@ -409,19 +420,15 @@ class Jwt implements Callable<Integer> {
 			if (pos >= src.length())
 				throw new IllegalArgumentException("Missing JSON value");
 			char c = src.charAt(pos);
-			if (c == '{')
-				return parseObject();
-			if (c == '[')
-				return parseArray();
-			if (c == '"')
-				return parseString();
-			if (c == 't' || c == 'f')
-				return parseBoolean();
-			if (c == 'n')
-				return parseNull();
-			if (c == '-' || (c >= '0' && c <= '9'))
-				return parseNumber();
-			throw new IllegalArgumentException("Unexpected char: " + c);
+			return switch (c) {
+			case '{' -> parseObject();
+			case '[' -> parseArray();
+			case '"' -> parseString();
+			case 't', 'f' -> parseBoolean();
+			case 'n' -> parseNull();
+			case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' -> parseNumber();
+			default -> throw new IllegalArgumentException("Unexpected char: " + c);
+			};
 		}
 
 		private Map<String, Object> parseObject() {

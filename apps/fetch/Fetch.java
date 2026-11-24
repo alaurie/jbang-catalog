@@ -44,7 +44,7 @@ import picocli.CommandLine.Parameters;
 ///
 /// Supports concurrent chunked range requests and automatic remote
 /// manifest probing.
-@Command(name = "fetch", mixinStandardHelpOptions = true, version = "fetch 2.0", description = "High-performance multi-threaded CLI file downloader with auto-checksum verification")
+@Command(name = "fetch", mixinStandardHelpOptions = true, version = "fetch 2.0.1", description = "High-performance multi-threaded CLI file downloader with auto-checksum verification")
 @SuppressWarnings("unused")
 class Fetch implements Callable<Integer> {
 
@@ -111,8 +111,8 @@ class Fetch implements Callable<Integer> {
 		return builder;
 	}
 
-	static void main(String... args) {
-		int exitCode = new CommandLine(new Fetch()).execute(args);
+	void main(String... args) {
+		int exitCode = new CommandLine(this).execute(args);
 		System.exit(exitCode);
 	}
 
@@ -127,11 +127,29 @@ class Fetch implements Callable<Integer> {
 		String defaultFileName = (pathStr == null || pathStr.isBlank() || pathStr.endsWith("/")) ? "downloaded_file"
 				: Path.of(pathStr).getFileName().toString();
 
-		if (outputPath == null) {
-			outputPath = Path.of(defaultFileName);
-		} else if (Files.isDirectory(outputPath) || outputPath.toString().endsWith("/")
-				|| outputPath.toString().endsWith("\\")) {
-			outputPath = outputPath.resolve(defaultFileName);
+		boolean isDirectoryTarget = outputPath == null || Files.isDirectory(outputPath)
+				|| outputPath.toString().endsWith("/") || outputPath.toString().endsWith("\\");
+		Path targetDir = isDirectoryTarget ? outputPath : null;
+
+		HttpRequest headReq = applyHeaders(HttpRequest.newBuilder(uri))
+			.method("HEAD", HttpRequest.BodyPublishers.noBody())
+			.build();
+		HttpResponse<Void> headRes = client.send(headReq, HttpResponse.BodyHandlers.discarding());
+
+		int headStatus = headRes.statusCode();
+		if (headStatus >= 400) {
+			System.err.println("Error: Server returned HTTP " + headStatus + " for " + uri);
+			return 1;
+		}
+
+		// Content-Disposition filename resolution if output path wasn't an explicit custom file
+		if (isDirectoryTarget) {
+			String disposition = headRes.headers().firstValue("content-disposition").orElse(null);
+			String extractedFilename = parseContentDispositionFilename(disposition);
+			String resolvedName = (extractedFilename != null && !extractedFilename.isBlank())
+					? Path.of(extractedFilename).getFileName().toString()
+					: defaultFileName;
+			outputPath = targetDir != null ? targetDir.resolve(resolvedName) : Path.of(resolvedName);
 		}
 		if (outputPath.getParent() != null) {
 			Files.createDirectories(outputPath.getParent());
@@ -170,26 +188,6 @@ class Fetch implements Callable<Integer> {
 				}
 			} else {
 				System.out.println("Local file exists. Re-downloading...");
-			}
-		}
-
-		HttpRequest headReq = applyHeaders(HttpRequest.newBuilder(uri))
-			.method("HEAD", HttpRequest.BodyPublishers.noBody())
-			.build();
-		HttpResponse<Void> headRes = client.send(headReq, HttpResponse.BodyHandlers.discarding());
-
-		int headStatus = headRes.statusCode();
-		if (headStatus >= 400) {
-			System.err.println("Error: Server returned HTTP " + headStatus + " for " + uri);
-			return 1;
-		}
-
-		// Content-Disposition filename resolution if output path wasn't an explicit custom file
-		String disposition = headRes.headers().firstValue("content-disposition").orElse(null);
-		if (disposition != null && (outputPath == null || Files.isDirectory(outputPath))) {
-			String extractedFilename = parseContentDispositionFilename(disposition);
-			if (extractedFilename != null && !extractedFilename.isBlank()) {
-				outputPath = outputPath != null ? outputPath.resolve(extractedFilename) : Path.of(extractedFilename);
 			}
 		}
 
@@ -342,7 +340,10 @@ class Fetch implements Callable<Integer> {
 
 		for (String candidate : candidates) {
 			URI manifestUri = baseUri.resolve(candidate);
-			HttpRequest req = HttpRequest.newBuilder(manifestUri).timeout(MANIFEST_TIMEOUT).GET().build();
+			HttpRequest req = applyHeaders(HttpRequest.newBuilder(manifestUri))
+				.timeout(MANIFEST_TIMEOUT)
+				.GET()
+				.build();
 
 			try {
 				HttpResponse<String> res = client.send(req, HttpResponse.BodyHandlers
@@ -397,6 +398,7 @@ class Fetch implements Callable<Integer> {
 			if (!quiet) {
 				System.out.println("FAILED (Error reading file)");
 			}
+			System.err.println("Error verifying checksum: " + e.getMessage());
 			return false;
 		}
 	}
@@ -550,7 +552,7 @@ class Fetch implements Callable<Integer> {
 								throw new RuntimeException(e);
 							}
 							try {
-								Thread.sleep(500L * attempt);
+								Thread.sleep(500L * (attempt + 1));
 							} catch (InterruptedException _) {
 								throw new RuntimeException(e);
 							}
@@ -766,7 +768,9 @@ class Fetch implements Callable<Integer> {
 	}
 
 	private String extractHash(String manifestBody, String filename) {
-		for (String line : manifestBody.lines().map(String::trim).toList()) {
+		var it = manifestBody.lines().map(String::trim).iterator();
+		while (it.hasNext()) {
+			String line = it.next();
 			if (line.isBlank() || line.startsWith("#")) {
 				continue;
 			}
@@ -948,8 +952,7 @@ class Fetch implements Callable<Integer> {
 			int width = Math.max(1, terminalWidth);
 			double percent = totalBytes > 0 ? Math.min(100.0, (current * 100.0) / totalBytes) : 0.0;
 			if (totalBytes <= 0) {
-				return fit(
-						String.format("%s %6.2f MB (%5.2f MB/s)", taskName, current / 1_048_576.0, speedMBps),
+				return fit("%s %6.2f MB (%5.2f MB/s)".formatted(taskName, current / 1_048_576.0, speedMBps),
 						width);
 			}
 
@@ -958,19 +961,19 @@ class Fetch implements Callable<Integer> {
 			int barWidth = Math.clamp(width - 68, 0, 30);
 			int completed = (int) Math.round((percent / 100.0) * barWidth);
 			String bar = "█".repeat(completed) + "░".repeat(barWidth - completed);
-			String line = String.format("%s [%s] %5.1f%% (%6.2f / %6.2f MB) %5.2f MB/s %02d:%02d",
+			String line = "%s [%s] %5.1f%% (%6.2f / %6.2f MB) %5.2f MB/s %02d:%02d".formatted(
 					truncate(taskName, 20), bar, percent, current / 1_048_576.0, totalBytes / 1_048_576.0,
 					speedMBps, etaSec / 60, etaSec % 60);
 			if (line.length() <= width) {
 				return line;
 			}
 
-			line = String.format("%5.1f%% %6.2f/%6.2f MB %5.2f MB/s", percent, current / 1_048_576.0,
+			line = "%5.1f%% %6.2f/%6.2f MB %5.2f MB/s".formatted(percent, current / 1_048_576.0,
 					totalBytes / 1_048_576.0, speedMBps);
 			if (line.length() <= width) {
 				return line;
 			}
-			return fit(String.format("%5.1f%% %6.2f/%6.2f MB", percent, current / 1_048_576.0,
+			return fit("%5.1f%% %6.2f/%6.2f MB".formatted(percent, current / 1_048_576.0,
 					totalBytes / 1_048_576.0), width);
 		}
 

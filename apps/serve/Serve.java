@@ -52,7 +52,7 @@ import picocli.CommandLine.Parameters;
 /// Lightweight HTTP file server utility inspired by `python -m http.server`.
 ///
 /// Built using Java's built-in `SimpleFileServer` and `HttpServer` APIs.
-@Command(name = "serve", mixinStandardHelpOptions = true, version = "serve 2.0", description = "Simple HTTP file server inspired by python -m http.server")
+@Command(name = "serve", mixinStandardHelpOptions = true, version = "serve 2.0.1", description = "Simple HTTP file server inspired by python -m http.server")
 @SuppressWarnings("unused")
 class Serve implements Callable<Integer> {
 
@@ -554,6 +554,12 @@ class Serve implements Callable<Integer> {
 		private volatile long lastEventTime;
 
 		private record SseClient(HttpExchange exchange, OutputStream os) {
+			void send(byte[] data) throws IOException {
+				synchronized (os) {
+					os.write(data);
+					os.flush();
+				}
+			}
 		}
 
 		LiveReloadManager(Path rootDir, boolean verbose) {
@@ -568,7 +574,7 @@ class Serve implements Callable<Integer> {
 		}
 
 		private void registerAll(Path start) throws IOException {
-			Files.walkFileTree(start, new SimpleFileVisitor<Path>() {
+			Files.walkFileTree(start, new SimpleFileVisitor<>() {
 				@Override
 				public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
 					Path fileName = dir.getFileName();
@@ -677,8 +683,7 @@ class Serve implements Callable<Integer> {
 			int count = 0;
 			for (var client : clients) {
 				try {
-					client.os().write(msg);
-					client.os().flush();
+					client.send(msg);
 					count++;
 				} catch (Exception _) {
 					clients.remove(client);
@@ -700,8 +705,7 @@ class Serve implements Callable<Integer> {
 			try {
 				while (running.get()) {
 					Thread.sleep(15_000);
-					os.write(": ping\n\n".getBytes(StandardCharsets.UTF_8));
-					os.flush();
+					client.send(": ping\n\n".getBytes(StandardCharsets.UTF_8));
 				}
 			} catch (Exception _) {
 				// Client disconnected or server shutting down
