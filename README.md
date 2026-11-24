@@ -306,58 +306,6 @@ Compute and verify cryptographic checksums for files or text input.
   -V, --version             Print version information and exit.
 ```
 
-### Usage
-
-To run it via jbang from this catalog repository:
-
-```bash
-jbang fetch@alaurie https://example.com/file.iso
-```
-
-Or specify concurrent connection chunks and custom output path:
-
-```bash
-jbang fetch@alaurie -c 8 -o debian.iso https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-13.0.0-amd64-netinst.iso
-```
-
-Or explicitly verify against a specific hash (skips download if file already exists locally and matches):
-
-```bash
-jbang fetch@alaurie -o debian.iso --expected-hash 4ffa57f26c713cde084b728a64b1c79b74465e6b8e043175e3b6c364377613c8 https://example.com/file.zip
-```
-
-Or skip automatic checksum probing:
-
-```bash
-jbang fetch@alaurie --no-checksum https://example.com/file.zip
-```
-
-Or, if you clone the repository locally:
-
-```bash
-jbang fetch https://example.com/file.iso
-```
-
-### Options
-
-```
-Usage: fetch [-hV] [--no-checksum] [-c=<connections>]
-             [--expected-hash=<explicitHash>] [-o=<outputPath>] <uri>
-High-performance multi-threaded CLI file downloader with auto-checksum
-verification
-      <uri>           Target URL to download
-  -c, --connections=<connections>
-                      Concurrent chunk download connections
-      --expected-hash=<explicitHash>
-                      Explicitly verify against this hash (auto-detects
-                        algorithm by length). Bypasses server probe.
-  -h, --help          Show this help message and exit.
-      --no-checksum   Skip automatic checksum probing and verification
-  -o, --output=<outputPath>
-                      Target file output path
-  -V, --version       Print version information and exit.
-```
-
 ---
 
 ## fetch
@@ -384,6 +332,19 @@ Or download with custom concurrent connections or explicit checksum verification
 jbang fetch@alaurie https://example.com/file.tar.gz -c 8 --retries 3 --print-hash
 ```
 
+Or bulk-download matching files from a directory index or URL list:
+
+```bash
+# Preview all video files on an index page, excluding samples
+jbang fetch@alaurie --dry-run --type video --exclude "*sample*" https://example.com/media/
+
+# Recursively download all images into ./images
+jbang fetch@alaurie -r --type image -o ./images https://example.com/gallery/
+
+# Download matching files from a URL list file (or '-' for stdin)
+jbang fetch@alaurie -i urls.txt --ext mkv,mp4 -o ./downloads
+```
+
 Or, if you clone the repository locally:
 
 ```bash
@@ -399,38 +360,63 @@ Downloads have no fixed total-duration timeout, so large files can continue past
 `--print-hash` calculates and displays the SHA-256 digest of the saved file upon completion. `--retries` specifies the number of transient reconnection attempts per chunk worker before failing.
 `--expected-hash` cannot be combined with `--no-checksum`; use one explicit verification policy.
 
-
 ### Options
 
 ```
-Usage: fetch [-hqV] [--no-checksum] [--no-resume] [--print-hash]
-             [-A=<customUserAgent>] [-c=<connections>]
-             [--expected-hash=<explicitHash>] [-o=<outputPath>]
-             [--retries=<retries>] [-H=<headers>]... <uri>
+Usage: fetch [-hqrV] [--bulk] [--dry-run] [--no-checksum] [--no-resume]
+             [--print-hash] [-A=<customUserAgent>] [-c=<connections>]
+             [--expected-hash=<explicitHash>] [-i=<inputSource>]
+             [--max-depth=<maxDepth>] [-o=<outputPath>] [--retries=<retries>]
+             [--exclude=<excludeGlobs>]... [--ext=<filterExts>[,
+             <filterExts>...]]... [-H=<headers>]... [--match=<includeGlobs>]...
+             [--type=<filterTypes>[,<filterTypes>...]]... [<uri>]
 High-performance multi-threaded CLI file downloader with auto-checksum
 verification
-      <uri>                 Target URL to download
+      [<uri>]               Target URL (or HTML page URL in bulk mode) to
+                              download
   -A, --user-agent=<customUserAgent>
                             Custom User-Agent string
+      --bulk                Bulk download mode: extract and download matching
+                              links from an HTML page or directory index
   -c, --connections=<connections>
                             Concurrent chunk download connections
+      --dry-run             List matched bulk URLs without downloading
+      --exclude=<excludeGlobs>
+                            Bulk filter: exclude filenames matching glob
+                              pattern (e.g. '*sample*')
       --expected-hash=<explicitHash>
                             Explicitly verify against this hash (auto-detects
                               algorithm by length). Bypasses server probe.
+      --ext=<filterExts>[,<filterExts>...]
+                            Bulk filter by file extension(s), e.g. --ext mp4,mkv
   -h, --help                Show this help message and exit.
   -H, --header=<headers>    Custom HTTP header(s) to send (e.g. -H
                               'Authorization: Bearer token')
+  -i, --input=<inputSource> Read target URLs from a file (or '-' for stdin) for
+                              bulk download
+      --match=<includeGlobs>
+                            Bulk filter: include filenames matching glob
+                              pattern (e.g. '*1080p*')
+      --max-depth=<maxDepth>
+                            Maximum recursion depth for --recursive (default: 3)
       --no-checksum         Skip automatic checksum probing and verification
       --no-resume           Disable automatic download resumption and start
                               fresh
-  -o, --output=<outputPath> Target file output path
+  -o, --output=<outputPath> Target file output path (or destination directory
+                              in bulk mode)
       --print-hash          Compute and print SHA-256 hash of the downloaded
                               file upon completion
   -q, --quiet               Quiet mode: disable progress bar and non-essential
                               logs
+  -r, --recursive           Recursively crawl subdirectories on the same
+                              host/path in bulk mode
       --retries=<retries>   Number of retries for failed chunk requests
                               (default: 0)
+      --type=<filterTypes>[,<filterTypes>...]
+                            Bulk filter by category: video, image, audio,
+                              archive, doc
   -V, --version             Print version information and exit.
+```
 
 ---
 
