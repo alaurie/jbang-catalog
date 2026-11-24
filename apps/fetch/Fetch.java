@@ -11,23 +11,34 @@ package fetch;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.net.URI;
+import java.net.URLDecoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.PathMatcher;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -44,14 +55,15 @@ import picocli.CommandLine.Parameters;
 ///
 /// Supports concurrent chunked range requests and automatic remote
 /// manifest probing.
-@Command(name = "fetch", mixinStandardHelpOptions = true, version = "fetch 2.0.1", description = "High-performance multi-threaded CLI file downloader with auto-checksum verification")
+@Command(name = "fetch", mixinStandardHelpOptions = true, version = "fetch 2.1.0", description = "High-performance multi-threaded CLI file downloader with auto-checksum verification")
 @SuppressWarnings("unused")
 class Fetch implements Callable<Integer> {
 
-	@Parameters(index = "0", description = "Target URL to download")
+	@Parameters(index = "0", arity = "0..1", description = "Target URL (or HTML page URL in bulk mode) to download")
 	private URI uri;
 
-	@Option(names = { "-o", "--output" }, description = "Target file output path")
+	@Option(names = { "-o",
+			"--output" }, description = "Target file output path (or destination directory in bulk mode)")
 	private Path outputPath;
 
 	@Option(names = { "-c",
@@ -84,12 +96,61 @@ class Fetch implements Callable<Integer> {
 			"--retries" }, defaultValue = "0", description = "Number of retries for failed chunk requests (default: 0)")
 	private int retries = 0;
 
+	@Option(names = {
+			"--bulk" }, description = "Bulk download mode: extract and download matching links from an HTML page or directory index")
+	private boolean bulk;
+
+	@Option(names = { "-i",
+			"--input" }, description = "Read target URLs from a file (or '-' for stdin) for bulk download")
+	private String inputSource;
+
+	@Option(names = {
+			"--type" }, split = ",", description = "Bulk filter by category: video, image, audio, archive, doc")
+	private List<String> filterTypes = new ArrayList<>();
+
+	@Option(names = { "--ext" }, split = ",", description = "Bulk filter by file extension(s), e.g. --ext mp4,mkv")
+	private List<String> filterExts = new ArrayList<>();
+
+	@Option(names = {
+			"--match" }, description = "Bulk filter: include filenames matching glob pattern (e.g. '*1080p*')")
+	private List<String> includeGlobs = new ArrayList<>();
+
+	@Option(names = {
+			"--exclude" }, description = "Bulk filter: exclude filenames matching glob pattern (e.g. '*sample*')")
+	private List<String> excludeGlobs = new ArrayList<>();
+
+	@Option(names = { "-r",
+			"--recursive" }, description = "Recursively crawl subdirectories on the same host/path in bulk mode")
+	private boolean recursive;
+
+	@Option(names = {
+			"--max-depth" }, defaultValue = "3", description = "Maximum recursion depth for --recursive (default: 3)")
+	private int maxDepth = 3;
+
+	@Option(names = { "--dry-run" }, description = "List matched bulk URLs without downloading")
+	private boolean dryRun;
+
 	private static final List<String> CANDIDATE_MANIFESTS = List.of("SHA512SUMS", "SHA256SUMS", "SHA512", "SHA256",
 			"MD5SUMS", "MD5", "CHECKSUMS",
 			"CHECKSUM", "sha512sums.txt", "sha256sums.txt", "sha512sum.txt", "sha256sum.txt");
 	private static final int MAX_MANIFEST_BYTES = 64 * 1024;
+	private static final int MAX_HTML_BYTES = 4 * 1024 * 1024;
 	private static final Duration MANIFEST_TIMEOUT = Duration.ofSeconds(3);
 	private static final Pattern CONTENT_RANGE = Pattern.compile("bytes ([0-9]+)-([0-9]+)/([0-9]+)");
+	private static final Pattern HTML_LINK_PATTERN = Pattern
+		.compile("(?i)\\b(?:href|src)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')");
+
+	private static final Map<String, Set<String>> TYPE_PRESETS = Map.of(
+			"video", Set.of("mp4", "mkv", "webm", "avi", "mov", "m4v", "flv", "wmv", "ts", "m2ts", "ogv"),
+			"image", Set.of("jpg", "jpeg", "png", "gif", "webp", "svg", "avif", "bmp", "tiff", "tif", "ico", "heic"),
+			"audio", Set.of("mp3", "flac", "wav", "ogg", "m4a", "aac", "opus", "wma", "aiff"),
+			"archive", Set.of("zip", "tar", "gz", "tgz", "bz2", "xz", "7z", "rar", "zst"),
+			"doc", Set.of("pdf", "epub", "txt", "md", "csv", "json", "xml", "docx", "xlsx", "pptx"));
+
+	private record CachedManifest(String candidate, String algorithm, String body) {
+	}
+
+	private final Map<URI, List<CachedManifest>> directoryManifestCache = new HashMap<>();
 
 	private final HttpClient client = HttpClient.newBuilder()
 		.followRedirects(HttpClient.Redirect.NORMAL)
@@ -118,10 +179,368 @@ class Fetch implements Callable<Integer> {
 
 	@Override
 	public Integer call() throws Exception {
+		if (uri == null && (inputSource == null || inputSource.isBlank())) {
+			System.err.println("Error: Either a target URL or --input (-i) must be specified.");
+			return 1;
+		}
 		if (skipChecksum && explicitHash != null && !explicitHash.isBlank()) {
 			System.err.println("Error: --expected-hash cannot be combined with --no-checksum.");
 			return 1;
 		}
+
+		boolean hasFilters = !filterTypes.isEmpty() || !filterExts.isEmpty()
+				|| !includeGlobs.isEmpty() || !excludeGlobs.isEmpty();
+		boolean isBulkMode = bulk || inputSource != null || hasFilters || recursive || dryRun;
+
+		if (isBulkMode) {
+			return runBulkDownload();
+		}
+		return downloadSingleFile(uri, outputPath);
+	}
+
+	private int runBulkDownload() throws Exception {
+		if (explicitHash != null && !explicitHash.isBlank()) {
+			System.err.println("Error: --expected-hash cannot be used in bulk download mode.");
+			return 1;
+		}
+		if (outputPath != null && Files.isRegularFile(outputPath)) {
+			System.err.printf("Error: Output path '%s' is an existing file; bulk mode requires a directory.%n",
+					outputPath);
+			return 1;
+		}
+
+		Set<String> allowedExts;
+		try {
+			allowedExts = resolveAllowedExtensions();
+		} catch (IllegalArgumentException e) {
+			System.err.println("Error: " + e.getMessage());
+			return 1;
+		}
+
+		var includeMatchers = compileGlobs(includeGlobs);
+		var excludeMatchers = compileGlobs(excludeGlobs);
+
+		List<URI> candidates;
+		if (inputSource != null && !inputSource.isBlank()) {
+			candidates = readUrlsFromInput(inputSource);
+		} else {
+			candidates = discoverBulkLinks(uri, Math.max(0, maxDepth));
+		}
+
+		var matched = new ArrayList<URI>();
+		for (var candidate : candidates) {
+			if (matchesFilters(candidate, allowedExts, includeMatchers, excludeMatchers)) {
+				matched.add(candidate);
+			}
+		}
+
+		if (matched.isEmpty()) {
+			System.out.println("No matching files found.");
+			return 0;
+		}
+
+		if (dryRun) {
+			System.out.printf("Matched %d file(s):%n", matched.size());
+			for (var item : matched) {
+				System.out.println(item);
+			}
+			return 0;
+		}
+
+		Path targetDir = outputPath != null ? outputPath : Path.of(".");
+		Files.createDirectories(targetDir);
+
+		int total = matched.size();
+		int succeeded = 0;
+		int failed = 0;
+		URI baseRoot = uri != null ? uri.resolve("./") : null;
+
+		for (int i = 0; i < total; i++) {
+			var itemUri = matched.get(i);
+			Path itemOut = resolveBulkTargetPath(targetDir, baseRoot, itemUri);
+			if (!quiet) {
+				System.out.printf("%n[%d/%d] %s%n", i + 1, total, itemUri);
+			}
+			int rc = downloadSingleFile(itemUri, itemOut);
+			if (rc == 0) {
+				succeeded++;
+			} else {
+				failed++;
+			}
+		}
+
+		if (!quiet) {
+			System.out.printf("%nBulk download complete: %d succeeded, %d failed (out of %d).%n",
+					succeeded, failed, total);
+		}
+		return failed == 0 ? 0 : 1;
+	}
+
+	private Set<String> resolveAllowedExtensions() {
+		var exts = new LinkedHashSet<String>();
+		for (var rawType : filterTypes) {
+			var key = rawType.trim().toLowerCase(Locale.ROOT);
+			if (key.isEmpty()) {
+				continue;
+			}
+			var normalized = switch (key) {
+			case "videos" -> "video";
+			case "images" -> "image";
+			case "audios" -> "audio";
+			case "archives" -> "archive";
+			case "docs", "document", "documents" -> "doc";
+			default -> key;
+			};
+			var preset = TYPE_PRESETS.get(normalized);
+			if (preset == null) {
+				throw new IllegalArgumentException("Unknown --type category '" + rawType
+						+ "'. Supported: video, image, audio, archive, doc.");
+			}
+			exts.addAll(preset);
+		}
+		for (var rawExt : filterExts) {
+			var ext = rawExt.trim().toLowerCase(Locale.ROOT);
+			if (ext.startsWith(".")) {
+				ext = ext.substring(1);
+			}
+			if (!ext.isEmpty()) {
+				exts.add(ext);
+			}
+		}
+		return exts;
+	}
+
+	private static List<PathMatcher> compileGlobs(List<String> patterns) {
+		var fs = FileSystems.getDefault();
+		var matchers = new ArrayList<PathMatcher>(patterns.size());
+		for (var pattern : patterns) {
+			if (pattern != null && !pattern.isBlank()) {
+				matchers.add(fs.getPathMatcher("glob:" + pattern.trim()));
+			}
+		}
+		return matchers;
+	}
+
+	private List<URI> readUrlsFromInput(String source) throws IOException {
+		var urls = new LinkedHashSet<URI>();
+		BufferedReader reader;
+		boolean closeReader;
+		if ("-".equals(source.trim())) {
+			reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
+			closeReader = false;
+		} else {
+			reader = Files.newBufferedReader(Path.of(source), StandardCharsets.UTF_8);
+			closeReader = true;
+		}
+		try {
+			String line;
+			while ((line = reader.readLine()) != null) {
+				var trimmed = line.trim();
+				if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+					continue;
+				}
+				try {
+					var parsed = URI.create(trimmed);
+					if (isHttpUri(parsed)) {
+						urls.add(stripFragment(parsed));
+					}
+				} catch (Exception _) {
+					System.err.println("Warning: Skipping invalid URL: " + trimmed);
+				}
+			}
+		} finally {
+			if (closeReader) {
+				reader.close();
+			}
+		}
+		return List.copyOf(urls);
+	}
+
+	private List<URI> discoverBulkLinks(URI rootUri, int maxCrawlDepth) throws Exception {
+		record PageNode(URI pageUri, int depth) {
+		}
+
+		var discoveredFiles = new LinkedHashSet<URI>();
+		var visitedPages = new HashSet<URI>();
+		var queue = new ArrayDeque<PageNode>();
+
+		URI scopeRoot = rootUri.resolve("./");
+		String scopeHost = scopeRoot.getHost();
+		String scopePath = scopeRoot.getPath() != null ? scopeRoot.getPath() : "/";
+
+		queue.add(new PageNode(stripFragment(rootUri), 0));
+
+		while (!queue.isEmpty()) {
+			var node = queue.poll();
+			if (!visitedPages.add(node.pageUri())) {
+				continue;
+			}
+
+			var req = applyHeaders(HttpRequest.newBuilder(node.pageUri()))
+				.timeout(Duration.ofSeconds(15))
+				.GET()
+				.build();
+			HttpResponse<String> res = client.send(req,
+					HttpResponse.BodyHandlers.limiting(HttpResponse.BodyHandlers.ofString(), MAX_HTML_BYTES));
+			if (res.statusCode() >= 400) {
+				System.err.printf("Warning: HTTP %d while scanning %s%n", res.statusCode(), node.pageUri());
+				continue;
+			}
+
+			String contentType = res.headers().firstValue("content-type").orElse("").toLowerCase(Locale.ROOT);
+			if (!contentType.contains("html") && !contentType.isEmpty()) {
+				// Direct file URL passed with filters/bulk: treat it as a candidate file.
+				discoveredFiles.add(node.pageUri());
+				continue;
+			}
+
+			var matcher = HTML_LINK_PATTERN.matcher(res.body());
+			while (matcher.find()) {
+				String raw = matcher.group(1) != null ? matcher.group(1) : matcher.group(2);
+				if (raw == null) {
+					continue;
+				}
+				String trimmed = raw.trim();
+				if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("?")
+						|| trimmed.toLowerCase(Locale.ROOT).startsWith("javascript:")
+						|| trimmed.toLowerCase(Locale.ROOT).startsWith("mailto:")
+						|| trimmed.toLowerCase(Locale.ROOT).startsWith("data:")) {
+					continue;
+				}
+
+				URI resolved;
+				try {
+					resolved = stripFragment(node.pageUri().resolve(trimmed));
+				} catch (Exception _) {
+					continue;
+				}
+				if (!isHttpUri(resolved)) {
+					continue;
+				}
+
+				String resolvedPath = resolved.getPath();
+				if (resolvedPath == null || resolvedPath.isEmpty()) {
+					continue;
+				}
+
+				if (resolvedPath.endsWith("/")) {
+					if (recursive && node.depth() < maxCrawlDepth
+							&& isWithinScope(resolved, scopeHost, scopePath)
+							&& !visitedPages.contains(resolved)) {
+						queue.add(new PageNode(resolved, node.depth() + 1));
+					}
+					continue;
+				}
+
+				discoveredFiles.add(resolved);
+			}
+		}
+
+		return List.copyOf(discoveredFiles);
+	}
+
+	private static boolean isHttpUri(URI u) {
+		String scheme = u.getScheme();
+		return "http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme);
+	}
+
+	private static URI stripFragment(URI u) {
+		if (u.getFragment() == null) {
+			return u;
+		}
+		return URI.create(u.toString().substring(0, u.toString().indexOf('#')));
+	}
+
+	private static boolean isWithinScope(URI candidate, String scopeHost, String scopePath) {
+		if (scopeHost == null || !scopeHost.equalsIgnoreCase(candidate.getHost())) {
+			return false;
+		}
+		String p = candidate.getPath();
+		return p != null && p.startsWith(scopePath);
+	}
+
+	private static boolean matchesFilters(URI candidate, Set<String> allowedExts,
+			List<PathMatcher> includeMatchers, List<PathMatcher> excludeMatchers) {
+		String filename = extractDecodedFileName(candidate);
+		if (filename == null || filename.isBlank()) {
+			return false;
+		}
+
+		if (!allowedExts.isEmpty()) {
+			int dot = filename.lastIndexOf('.');
+			if (dot <= 0 || dot == filename.length() - 1) {
+				return false;
+			}
+			String ext = filename.substring(dot + 1).toLowerCase(Locale.ROOT);
+			if (!allowedExts.contains(ext)) {
+				return false;
+			}
+		}
+
+		Path namePath = Path.of(filename);
+		if (!includeMatchers.isEmpty()) {
+			boolean anyMatch = false;
+			for (var m : includeMatchers) {
+				if (m.matches(namePath)) {
+					anyMatch = true;
+					break;
+				}
+			}
+			if (!anyMatch) {
+				return false;
+			}
+		}
+
+		for (var m : excludeMatchers) {
+			if (m.matches(namePath)) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	private static String extractDecodedFileName(URI u) {
+		String path = u.getPath();
+		if (path == null || path.isBlank() || path.endsWith("/")) {
+			return null;
+		}
+		int slash = path.lastIndexOf('/');
+		String rawName = slash >= 0 ? path.substring(slash + 1) : path;
+		if (rawName.isEmpty() || ".".equals(rawName) || "..".equals(rawName)) {
+			return null;
+		}
+		try {
+			return URLDecoder.decode(rawName, StandardCharsets.UTF_8);
+		} catch (Exception _) {
+			return rawName;
+		}
+	}
+
+	private Path resolveBulkTargetPath(Path targetDir, URI baseRoot, URI itemUri) {
+		String fileName = extractDecodedFileName(itemUri);
+		if (fileName == null || fileName.isBlank()) {
+			fileName = "downloaded_file";
+		}
+		fileName = Path.of(fileName).getFileName().toString();
+
+		if (recursive && baseRoot != null && isWithinScope(itemUri, baseRoot.getHost(),
+				baseRoot.getPath() != null ? baseRoot.getPath() : "/")) {
+			URI rel = baseRoot.relativize(itemUri);
+			String relPath = rel.getPath();
+			if (relPath != null && !relPath.isBlank() && !rel.isAbsolute()) {
+				Path resolved = targetDir.resolve(relPath).normalize();
+				if (resolved.startsWith(targetDir.normalize())) {
+					return resolved;
+				}
+			}
+		}
+		return targetDir.resolve(fileName);
+	}
+
+	private int downloadSingleFile(URI targetUri, Path targetOutput) throws Exception {
+		this.uri = targetUri;
+		this.outputPath = targetOutput;
 
 		String pathStr = uri.getPath();
 		String defaultFileName = (pathStr == null || pathStr.isBlank() || pathStr.endsWith("/")) ? "downloaded_file"
@@ -330,15 +749,26 @@ class Fetch implements Callable<Integer> {
 	private ExpectedHash findExpectedHash(String remoteFilename, String localFilename) {
 		URI baseUri = uri.resolve("./");
 
-		List<String> candidates = new ArrayList<>(CANDIDATE_MANIFESTS);
-		candidates.add(remoteFilename + ".sha256");
-		candidates.add(remoteFilename + ".sha512");
-		if (!localFilename.equals(remoteFilename)) {
-			candidates.add(localFilename + ".sha256");
-			candidates.add(localFilename + ".sha512");
+		var cachedManifests = directoryManifestCache.computeIfAbsent(baseUri, this::fetchDirectoryManifests);
+		for (var manifest : cachedManifests) {
+			String expectedHash = extractHash(manifest.body(), remoteFilename);
+			if (expectedHash == null && !localFilename.equals(remoteFilename)) {
+				expectedHash = extractHash(manifest.body(), localFilename);
+			}
+			if (expectedHash != null) {
+				return new ExpectedHash(manifest.algorithm(), expectedHash, manifest.candidate());
+			}
 		}
 
-		for (String candidate : candidates) {
+		List<String> perFileCandidates = new ArrayList<>();
+		perFileCandidates.add(remoteFilename + ".sha256");
+		perFileCandidates.add(remoteFilename + ".sha512");
+		if (!localFilename.equals(remoteFilename)) {
+			perFileCandidates.add(localFilename + ".sha256");
+			perFileCandidates.add(localFilename + ".sha512");
+		}
+
+		for (String candidate : perFileCandidates) {
 			URI manifestUri = baseUri.resolve(candidate);
 			HttpRequest req = applyHeaders(HttpRequest.newBuilder(manifestUri))
 				.timeout(MANIFEST_TIMEOUT)
@@ -364,6 +794,27 @@ class Fetch implements Callable<Integer> {
 			}
 		}
 		return null;
+	}
+
+	private List<CachedManifest> fetchDirectoryManifests(URI baseUri) {
+		var found = new ArrayList<CachedManifest>();
+		for (String candidate : CANDIDATE_MANIFESTS) {
+			URI manifestUri = baseUri.resolve(candidate);
+			HttpRequest req = applyHeaders(HttpRequest.newBuilder(manifestUri))
+				.timeout(MANIFEST_TIMEOUT)
+				.GET()
+				.build();
+			try {
+				HttpResponse<String> res = client.send(req, HttpResponse.BodyHandlers
+					.limiting(HttpResponse.BodyHandlers.ofString(), MAX_MANIFEST_BYTES));
+				if (res.statusCode() == 200) {
+					found.add(new CachedManifest(candidate, determineAlgorithm(candidate), res.body()));
+				}
+			} catch (Exception _) {
+				// Continue scanning candidates if request fails
+			}
+		}
+		return List.copyOf(found);
 	}
 
 	private boolean verifyAutoChecksum(ExpectedHash expectedHash, String streamedHash,

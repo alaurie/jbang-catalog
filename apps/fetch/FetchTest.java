@@ -319,7 +319,8 @@ public class FetchTest {
 		assertSlowDownloadCompletes(tempDir, false);
 	}
 
-	/// Streams bytes regularly beyond the former request deadline, then verifies the published file.
+	/// Streams bytes regularly beyond the former request deadline, then verifies
+	/// the published file.
 	private void assertSlowDownloadCompletes(Path tempDir, boolean ranged) throws Exception {
 		int bytesPerWorker = ranged ? 34 : 64;
 		byte[] payload = new byte[bytesPerWorker * (ranged ? 4 : 1)];
@@ -347,8 +348,9 @@ public class FetchTest {
 					String[] bounds = range.substring(6).split("-");
 					start = Integer.parseInt(bounds[0]);
 					end = Integer.parseInt(bounds[1]);
-					exchange.getResponseHeaders().set("Content-Range",
-							"bytes " + start + "-" + end + "/" + payload.length);
+					exchange.getResponseHeaders()
+						.set("Content-Range",
+								"bytes " + start + "-" + end + "/" + payload.length);
 				}
 				exchange.sendResponseHeaders(ranged ? 206 : 200, end - start + 1);
 				try (var out = exchange.getResponseBody()) {
@@ -959,6 +961,181 @@ public class FetchTest {
 			try (var os = exchange.getResponseBody()) {
 				os.write(data);
 			}
+		}
+	}
+
+	@Test
+	@Timeout(15)
+	void testBulkDownloadTypeFilter(@TempDir Path tempDir) throws Exception {
+		var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		server.createContext("/", exchange -> {
+			String path = exchange.getRequestURI().getPath();
+			if ("/".equals(path)) {
+				String html = """
+						<html><body>
+						  <a href="../">Parent</a>
+						  <a href="photo1.jpg">photo1.jpg</a>
+						  <a href="diagram.png">diagram.png</a>
+						  <a href="movie.mp4">movie.mp4</a>
+						  <a href="notes.txt">notes.txt</a>
+						</body></html>
+						""";
+				byte[] bytes = html.getBytes(StandardCharsets.UTF_8);
+				exchange.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
+				exchange.sendResponseHeaders(200, bytes.length);
+				try (var os = exchange.getResponseBody()) {
+					os.write(bytes);
+				}
+				return;
+			}
+			byte[] payload = ("content-of-" + path).getBytes(StandardCharsets.UTF_8);
+			if ("HEAD".equals(exchange.getRequestMethod())) {
+				exchange.getResponseHeaders().set("Content-Length", String.valueOf(payload.length));
+				exchange.sendResponseHeaders(200, -1);
+				return;
+			}
+			exchange.sendResponseHeaders(200, payload.length);
+			try (var os = exchange.getResponseBody()) {
+				os.write(payload);
+			}
+		});
+		server.start();
+		try {
+			int port = server.getAddress().getPort();
+			var result = runCommand("--no-checksum", "-q", "--type", "image",
+					"-o", tempDir.toString(), "http://127.0.0.1:" + port + "/");
+			assertEquals(0, result.exitCode());
+			assertTrue(Files.isRegularFile(tempDir.resolve("photo1.jpg")));
+			assertTrue(Files.isRegularFile(tempDir.resolve("diagram.png")));
+			assertFalse(Files.exists(tempDir.resolve("movie.mp4")));
+			assertFalse(Files.exists(tempDir.resolve("notes.txt")));
+		} finally {
+			server.stop(0);
+		}
+	}
+
+	@Test
+	@Timeout(15)
+	void testBulkDryRunAndExclude(@TempDir Path tempDir) throws Exception {
+		var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		server.createContext("/", exchange -> {
+			String html = """
+					<html><body>
+					  <a href="clip1.mp4">clip1.mp4</a>
+					  <a href="clip1-sample.mp4">clip1-sample.mp4</a>
+					  <a href="poster.jpg">poster.jpg</a>
+					</body></html>
+					""";
+			byte[] bytes = html.getBytes(StandardCharsets.UTF_8);
+			exchange.getResponseHeaders().set("Content-Type", "text/html");
+			exchange.sendResponseHeaders(200, bytes.length);
+			try (var os = exchange.getResponseBody()) {
+				os.write(bytes);
+			}
+		});
+		server.start();
+		try {
+			int port = server.getAddress().getPort();
+			var result = runCommand("--dry-run", "--type", "video", "--exclude", "*sample*",
+					"-o", tempDir.toString(), "http://127.0.0.1:" + port + "/");
+			assertEquals(0, result.exitCode());
+			assertTrue(result.stdout().contains("clip1.mp4"));
+			assertFalse(result.stdout().contains("clip1-sample.mp4"));
+			assertFalse(result.stdout().contains("poster.jpg"));
+			assertFalse(Files.exists(tempDir.resolve("clip1.mp4")));
+		} finally {
+			server.stop(0);
+		}
+	}
+
+	@Test
+	@Timeout(15)
+	void testBulkRecursiveCrawl(@TempDir Path tempDir) throws Exception {
+		var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		server.createContext("/", exchange -> {
+			String path = exchange.getRequestURI().getPath();
+			if ("/media/".equals(path)) {
+				String html = """
+						<a href="sub/">sub/</a>
+						<a href="/outside/ignored.png">ignored.png</a>
+						<a href="root.png">root.png</a>
+						""";
+				byte[] bytes = html.getBytes(StandardCharsets.UTF_8);
+				exchange.getResponseHeaders().set("Content-Type", "text/html");
+				exchange.sendResponseHeaders(200, bytes.length);
+				try (var os = exchange.getResponseBody()) {
+					os.write(bytes);
+				}
+				return;
+			}
+			if ("/media/sub/".equals(path)) {
+				String html = "<a href=\"nested.png\">nested.png</a><a href=\"skip.txt\">skip.txt</a>";
+				byte[] bytes = html.getBytes(StandardCharsets.UTF_8);
+				exchange.getResponseHeaders().set("Content-Type", "text/html");
+				exchange.sendResponseHeaders(200, bytes.length);
+				try (var os = exchange.getResponseBody()) {
+					os.write(bytes);
+				}
+				return;
+			}
+			byte[] payload = path.getBytes(StandardCharsets.UTF_8);
+			if ("HEAD".equals(exchange.getRequestMethod())) {
+				exchange.getResponseHeaders().set("Content-Length", String.valueOf(payload.length));
+				exchange.sendResponseHeaders(200, -1);
+				return;
+			}
+			exchange.sendResponseHeaders(200, payload.length);
+			try (var os = exchange.getResponseBody()) {
+				os.write(payload);
+			}
+		});
+		server.start();
+		try {
+			int port = server.getAddress().getPort();
+			var result = runCommand("--no-checksum", "-q", "-r", "--max-depth", "1", "--ext", "png",
+					"-o", tempDir.toString(), "http://127.0.0.1:" + port + "/media/");
+			assertEquals(0, result.exitCode());
+			assertTrue(Files.isRegularFile(tempDir.resolve("root.png")));
+			assertTrue(Files.isRegularFile(tempDir.resolve("sub/nested.png")));
+			assertFalse(Files.exists(tempDir.resolve("sub/skip.txt")));
+		} finally {
+			server.stop(0);
+		}
+	}
+
+	@Test
+	@Timeout(15)
+	void testBulkInputFile(@TempDir Path tempDir) throws Exception {
+		var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		server.createContext("/", exchange -> {
+			byte[] payload = ("data:" + exchange.getRequestURI().getPath()).getBytes(StandardCharsets.UTF_8);
+			if ("HEAD".equals(exchange.getRequestMethod())) {
+				exchange.getResponseHeaders().set("Content-Length", String.valueOf(payload.length));
+				exchange.sendResponseHeaders(200, -1);
+				return;
+			}
+			exchange.sendResponseHeaders(200, payload.length);
+			try (var os = exchange.getResponseBody()) {
+				os.write(payload);
+			}
+		});
+		server.start();
+		try {
+			int port = server.getAddress().getPort();
+			Path urlList = tempDir.resolve("urls.txt");
+			Files.writeString(urlList, """
+					# comment
+					http://127.0.0.1:%d/a.webp
+					http://127.0.0.1:%d/b.mp4
+					""".formatted(port, port));
+			Path outDir = tempDir.resolve("out");
+			var result = runCommand("--no-checksum", "-q", "-i", urlList.toString(), "--type", "image",
+					"-o", outDir.toString());
+			assertEquals(0, result.exitCode());
+			assertTrue(Files.isRegularFile(outDir.resolve("a.webp")));
+			assertFalse(Files.exists(outDir.resolve("b.mp4")));
+		} finally {
+			server.stop(0);
 		}
 	}
 
